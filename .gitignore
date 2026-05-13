@@ -1,0 +1,21 @@
+# Sim artifacts
+*.vvp
+*.vcd
+a.out
+
+# Vivado / synthesis
+*.log
+*.jou
+build_arty*/
+.Xil/
+clockInfo.txt
+dfx_runtime.txt
+
+# Python
+__pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+
+# Tooling / project-local
+no_commit/
+.claude/

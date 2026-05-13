@@ -1,0 +1,98 @@
+CAPI=2:
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+
+name: bard0:eth:emaczero:0.1.0
+description: emacZero — open-source 10/100/1G Ethernet MAC (MII / RGMII)
+
+filesets:
+  rtl_core:
+    files:
+      - rtl/crc32.v
+      - rtl/async_fifo.v
+      - rtl/sync_fifo.v
+      - rtl/mii_if.v
+      - rtl/eth_mac_rx.v
+      - rtl/eth_mac_tx.v
+      - rtl/eth_mac.v
+      - rtl/mdio_master.v
+      - rtl/eth_stats.v
+      - rtl/eth_pause.v
+      - rtl/axilite_regs.v
+      - rtl/ddr_output.v
+      - rtl/ddr_input.v
+      - rtl/rgmii_if.v
+      - rtl/gmii_cdc.v
+      - rtl/net/tx_csum_off.v
+      - rtl/eth_mac_sys.v
+    file_type: verilogSource
+
+  rtl_l3:
+    files:
+      - rtl/net/net_rx.v
+      - rtl/net/icmp_echo.v
+      - rtl/net/udp_echo.v
+      - rtl/net/udp_blast.v
+      - rtl/net/udp_blast_trigger.v
+      - rtl/net/udp_iperf_sink.v
+      - rtl/net/udp_stats_reply.v
+    file_type: verilogSource
+
+  fpga_arty_rtl:
+    files:
+      - fpga/arty_a7/rtl/clk_gen.v
+      - fpga/arty_a7/rtl/uart_tx.v
+      - fpga/arty_a7/rtl/arp_responder.v
+      - fpga/arty_a7/rtl/test_sequencer.v
+      - fpga/arty_a7/rtl/arty_tx_arbiter.v
+      - fpga/arty_a7/rtl/arty_a7_top.v
+    file_type: verilogSource
+
+  fpga_arty_xdc:
+    files:
+      - fpga/arty_a7/constraints/arty_a7.xdc
+    file_type: xdc
+
+targets:
+  default:
+    description: eth_mac_sys IP (MII or RGMII), no L3
+    filesets: [rtl_core]
+    toplevel: eth_mac_sys
+
+  with_l3:
+    description: eth_mac_sys plus L3 RX parser and ICMP echo responder
+    filesets: [rtl_core, rtl_l3]
+    toplevel: eth_mac_sys
+
+  arty_a7:
+    description: Arty A7-100T hardware test (MII)
+    filesets: [rtl_core, rtl_l3, fpga_arty_rtl, fpga_arty_xdc]
+    toplevel: arty_a7_top
+    tools:
+      vivado:
+        part: xc7a100tcsg324-1
+
+parameters:
+  PHY_INTERFACE:
+    datatype: str
+    description: '"MII" (10/100) or "RGMII" (10/100/1G)'
+    paramtype: vlogparam
+    default: "MII"
+
+  RGMII_SPEEDS:
+    datatype: str
+    description: '"ALL" | "1G_ONLY" | "10_100" — drops unused DDR cells'
+    paramtype: vlogparam
+    default: "ALL"
+
+  MAX_FRAME:
+    datatype: int
+    description: Max frame size in bytes (1518 standard, up to 9018 jumbo)
+    paramtype: vlogparam
+    default: 1518
+
+  MCAST_HASH_FILTER:
+    datatype: int
+    description: Enable 64-bit multicast hash filter (1=enabled)
+    paramtype: vlogparam
+    default: 0

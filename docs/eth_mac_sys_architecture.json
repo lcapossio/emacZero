@@ -1,0 +1,159 @@
+{
+  "title": "eth_mac_sys Architecture",
+  "top": "eth_mac_sys",
+  "theme": "dark",
+  "grid": {
+    "cell_w": 255,
+    "cell_h": 98,
+    "gutter_x": 145,
+    "gutter_y": 150,
+    "margin": 44
+  },
+  "domains": {
+    "sys": {
+      "color": "#E3F2FD",
+      "border": "#1565C0"
+    },
+    "media": {
+      "color": "#E8F5E9",
+      "border": "#2E7D32"
+    }
+  },
+  "blocks": [
+    {
+      "id": "axis_tx",
+      "label": "AXI-Stream TX",
+      "external": true,
+      "row": 0,
+      "col": 0,
+      "sublabel": "s_axis_*"
+    },
+    {
+      "id": "tx_path",
+      "label": "TX path",
+      "domain": "sys",
+      "row": 0,
+      "col": 1,
+      "sublabel": "tx_csum_off + eth_mac_tx + PAUSE"
+    },
+    {
+      "id": "phy_if",
+      "label": "PHY interface",
+      "domain": "sys",
+      "domain_b": "media",
+      "row": 0,
+      "col": 2,
+      "sublabel": "mii_if or gmii_cdc + rgmii_if"
+    },
+    {
+      "id": "phy",
+      "label": "Ethernet PHY",
+      "external": true,
+      "row": 0,
+      "col": 3,
+      "sublabel": "MII / RGMII pins"
+    },
+    {
+      "id": "axi_lite",
+      "label": "AXI4-Lite Host",
+      "external": true,
+      "row": 1,
+      "col": 0,
+      "sublabel": "s_axi_*"
+    },
+    {
+      "id": "csr_stats",
+      "label": "CSR + stats",
+      "domain": "sys",
+      "row": 1,
+      "col": 1,
+      "sublabel": "axilite_regs + eth_stats"
+    },
+    {
+      "id": "mdio",
+      "label": "mdio_master",
+      "domain": "sys",
+      "row": 1,
+      "col": 2,
+      "sublabel": "AXI-Lite commanded PHY management"
+    },
+    {
+      "id": "axis_rx",
+      "label": "AXI-Stream RX",
+      "external": true,
+      "row": 2,
+      "col": 0,
+      "sublabel": "m_axis_*"
+    },
+    {
+      "id": "rx_path",
+      "label": "RX path",
+      "domain": "sys",
+      "row": 2,
+      "col": 1,
+      "sublabel": "eth_mac_rx + filtering"
+    }
+  ],
+  "edges": [
+    {
+      "from": "axis_tx",
+      "to": "tx_path",
+      "kind": "axi-stream",
+      "width": 8
+    },
+    {
+      "from": "tx_path",
+      "to": "phy_if",
+      "kind": "generic",
+      "width": "GMII"
+    },
+    {
+      "from": "phy_if",
+      "to": "phy",
+      "kind": "cdc",
+      "width": "MII/RGMII"
+    },
+    {
+      "from": "phy_if",
+      "to": "rx_path",
+      "kind": "generic",
+      "width": "GMII"
+    },
+    {
+      "from": "rx_path",
+      "to": "axis_rx",
+      "kind": "axi-stream",
+      "width": 8
+    },
+    {
+      "from": "axi_lite",
+      "to": "csr_stats",
+      "kind": "axi-lite",
+      "width": 32
+    },
+    {
+      "from": "csr_stats",
+      "to": "mdio",
+      "kind": "generic",
+      "width": "MDIO cmd"
+    },
+    {
+      "from": "mdio",
+      "to": "phy",
+      "kind": "generic",
+      "width": "MDC/MDIO"
+    },
+    {
+      "from": "csr_stats",
+      "to": "tx_path",
+      "kind": "generic",
+      "width": "TX cfg"
+    },
+    {
+      "from": "csr_stats",
+      "to": "rx_path",
+      "kind": "generic",
+      "width": "RX cfg/filter"
+    }
+  ]
+}

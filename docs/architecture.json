@@ -1,0 +1,155 @@
+{
+  "title": "emacZero Arty A7 Top-Level Architecture",
+  "top": "arty_a7_top",
+  "theme": "dark",
+  "grid": {
+    "cell_w": 350,
+    "cell_h": 136,
+    "gutter_x": 205,
+    "gutter_y": 154,
+    "margin": 44
+  },
+  "domains": {
+    "sys": {
+      "freq_mhz": 100,
+      "color": "#E3F2FD",
+      "border": "#1565C0"
+    },
+    "phy": {
+      "freq_mhz": 25,
+      "color": "#E8F5E9",
+      "border": "#2E7D32"
+    }
+  },
+  "blocks": [
+    {
+      "id": "tx_sources",
+      "label": "TX packet sources",
+      "domain": "sys",
+      "row": 0,
+      "col": 0,
+      "sublabel": "test / ARP / ICMP / UDP / blast"
+    },
+    {
+      "id": "tx_arb",
+      "label": "arty_tx_arbiter",
+      "domain": "sys",
+      "row": 0,
+      "col": 1,
+      "sublabel": "6-input AXIS mux"
+    },
+    {
+      "id": "mac_sys",
+      "label": "eth_mac_sys",
+      "domain": "sys",
+      "domain_b": "phy",
+      "row": 0,
+      "col": 2,
+      "sublabel": "MAC + CSR + stats + MDIO"
+    },
+    {
+      "id": "host_phy",
+      "label": "DP83848 PHY",
+      "external": true,
+      "row": 0,
+      "col": 3,
+      "sublabel": "MII + MDIO"
+    },
+    {
+      "id": "test_seq",
+      "label": "test_sequencer",
+      "domain": "sys",
+      "row": 1,
+      "col": 2,
+      "sublabel": "CSR init / UART status"
+    },
+    {
+      "id": "uart",
+      "label": "uart_tx",
+      "domain": "sys",
+      "row": 2,
+      "col": 2,
+      "sublabel": "serial log"
+    },
+    {
+      "id": "net_rx",
+      "label": "net_rx",
+      "domain": "sys",
+      "row": 1,
+      "col": 3,
+      "sublabel": "Ethernet/IP/UDP demux"
+    },
+    {
+      "id": "rx_services",
+      "label": "RX services",
+      "domain": "sys",
+      "row": 1,
+      "col": 4,
+      "sublabel": "ARP / ICMP / UDP echo / stats"
+    },
+    {
+      "id": "iperf_sink",
+      "label": "udp_iperf_sink",
+      "domain": "sys",
+      "row": 2,
+      "col": 4,
+      "sublabel": "UDP/5001 counters"
+    }
+  ],
+  "edges": [
+    {
+      "from": "tx_sources",
+      "to": "tx_arb",
+      "kind": "axi-stream",
+      "width": 8
+    },
+    {
+      "from": "tx_arb",
+      "to": "mac_sys",
+      "kind": "axi-stream",
+      "width": 8
+    },
+    {
+      "from": "mac_sys",
+      "to": "host_phy",
+      "kind": "cdc",
+      "width": "MII"
+    },
+    {
+      "from": "mac_sys",
+      "to": "net_rx",
+      "kind": "axi-stream",
+      "width": 8
+    },
+    {
+      "from": "net_rx",
+      "to": "rx_services",
+      "kind": "generic",
+      "width": "L3"
+    },
+    {
+      "from": "net_rx",
+      "to": "iperf_sink",
+      "kind": "generic",
+      "width": "UDP"
+    },
+    {
+      "from": "iperf_sink",
+      "to": "rx_services",
+      "kind": "generic",
+      "width": "stats"
+    },
+    {
+      "from": "test_seq",
+      "to": "mac_sys",
+      "kind": "axi-lite",
+      "width": 32
+    },
+    {
+      "from": "test_seq",
+      "to": "uart",
+      "kind": "generic",
+      "width": 8
+    }
+  ]
+}

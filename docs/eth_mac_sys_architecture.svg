@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1543" height="802" viewBox="0 0 1543 802" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" style="background:#000000">
+  <defs>
+    <marker id="ah-solid" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#e2e8f0"/></marker>
+    <marker id="ah-thin" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#9ca3af"/></marker>
+    <marker id="ah-stream" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d9f99d"/></marker>
+    <marker id="ah-axil" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#93c5fd"/></marker>
+    <marker id="ah-cdc" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d8b4fe"/></marker>
+    <marker id="ah-open" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0.5,0.5 L0.5,5.5 L8,3 z" fill="#000000" stroke="#e2e8f0" stroke-width="1"/></marker>
+    <linearGradient id="grad-phy_if" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="50%" stop-color="#E3F2FD"/><stop offset="50%" stop-color="#E8F5E9"/></linearGradient>
+  </defs>
+  <rect width="1543" height="802" fill="#000000" id="_canvas_bg"/>
+  <text x="771.5" y="24" text-anchor="middle" font-size="21" font-weight="600" fill="#e2e8f0" letter-spacing="0.2">eth_mac_sys Architecture</text>
+  <rect id="axis_tx" x="44" y="74" width="255" height="98" fill="#374151" stroke="#9ca3af" stroke-width="1.4" rx="8"/>
+  <text x="172" y="121" text-anchor="middle" font-size="18" font-weight="600" fill="#e2e8f0">AXI-Stream TX</text>
+  <text x="172" y="137" text-anchor="middle" font-size="15" font-style="italic" fill="#e2e8f0" opacity="0.85">s_axis_*</text>
+  <rect id="tx_path" x="444" y="74" width="255" height="98" fill="#E3F2FD" stroke="#1565C0" stroke-width="1.4" rx="8"/>
+  <text x="572" y="121" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2937">TX path</text>
+  <text x="572" y="137" text-anchor="middle" font-size="15" font-style="italic" fill="#1f2937" opacity="0.85">tx_csum_off + eth_mac_tx + PAUSE</text>
+  <rect id="phy_if" x="844" y="74" width="255" height="98" fill="url(#grad-phy_if)" stroke="#4b5563" stroke-width="1.4" rx="8"/>
+  <text x="972" y="121" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2937">PHY interface</text>
+  <text x="972" y="137" text-anchor="middle" font-size="15" font-style="italic" fill="#1f2937" opacity="0.85">mii_if or gmii_cdc + rgmii_if</text>
+  <rect id="phy" x="1244" y="74" width="255" height="98" fill="#374151" stroke="#9ca3af" stroke-width="1.4" rx="8"/>
+  <text x="1372" y="121" text-anchor="middle" font-size="18" font-weight="600" fill="#e2e8f0">Ethernet PHY</text>
+  <text x="1372" y="137" text-anchor="middle" font-size="15" font-style="italic" fill="#e2e8f0" opacity="0.85">MII / RGMII pins</text>
+  <rect id="axi_lite" x="44" y="322" width="255" height="98" fill="#374151" stroke="#9ca3af" stroke-width="1.4" rx="8"/>
+  <text x="172" y="369" text-anchor="middle" font-size="18" font-weight="600" fill="#e2e8f0">AXI4-Lite Host</text>
+  <text x="172" y="385" text-anchor="middle" font-size="15" font-style="italic" fill="#e2e8f0" opacity="0.85">s_axi_*</text>
+  <rect id="csr_stats" x="444" y="322" width="255" height="98" fill="#E3F2FD" stroke="#1565C0" stroke-width="1.4" rx="8"/>
+  <text x="572" y="369" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2937">CSR + stats</text>
+  <text x="572" y="385" text-anchor="middle" font-size="15" font-style="italic" fill="#1f2937" opacity="0.85">axilite_regs + eth_stats</text>
+  <rect id="mdio" x="844" y="322" width="255" height="98" fill="#E3F2FD" stroke="#1565C0" stroke-width="1.4" rx="8"/>
+  <text x="972" y="369" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2937">mdio_master</text>
+  <text x="972" y="385" text-anchor="middle" font-size="15" font-style="italic" fill="#1f2937" opacity="0.85">AXI-Lite commanded PHY management</text>
+  <rect id="axis_rx" x="44" y="570" width="255" height="98" fill="#374151" stroke="#9ca3af" stroke-width="1.4" rx="8"/>
+  <text x="172" y="617" text-anchor="middle" font-size="18" font-weight="600" fill="#e2e8f0">AXI-Stream RX</text>
+  <text x="172" y="633" text-anchor="middle" font-size="15" font-style="italic" fill="#e2e8f0" opacity="0.85">m_axis_*</text>
+  <rect id="rx_path" x="444" y="570" width="255" height="98" fill="#E3F2FD" stroke="#1565C0" stroke-width="1.4" rx="8"/>
+  <text x="572" y="617" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2937">RX path</text>
+  <text x="572" y="633" text-anchor="middle" font-size="15" font-style="italic" fill="#1f2937" opacity="0.85">eth_mac_rx + filtering</text>
+  <path id="edge_axis_tx_to_tx_path" d="M 299.0,123.0 L 371.5,123.0 L 444.0,123.0" stroke="#d9f99d" stroke-width="2.2" fill="none" marker-end="url(#ah-stream)"/>
+  <rect x="302.0" y="104.2" width="72.0" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="338.0" y="119.0" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-S 8b</text>
+  <path id="edge_tx_path_to_phy_if" d="M 699.0,123.0 L 739.0,123.0 L 739.0,106.7 L 844.0,106.7" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
+  <rect x="772.0" y="87.9" width="39.0" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="791.5" y="102.7" text-anchor="middle" font-size="15" fill="#e2e8f0">GMII</text>
+  <path id="edge_phy_if_to_phy" d="M 1099.0,123.0 L 1139.0,123.0 L 1139.0,106.7 L 1244.0,106.7" stroke="#d8b4fe" stroke-width="1.8" fill="none" marker-end="url(#ah-cdc)" stroke-dasharray="6,3"/>
+  <rect x="1127.8" y="87.9" width="113.3" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="1184.4" y="102.7" text-anchor="middle" font-size="15" fill="#e2e8f0">CDC MII/RGMII</text>
+  <path id="edge_phy_if_to_rx_path" d="M 844.0,139.3 L 804.0,139.3 L 804.0,619.0 L 699.0,619.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
+  <rect x="784.5" y="412.4" width="39.0" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="804.0" y="427.2" text-anchor="middle" font-size="15" fill="#e2e8f0">GMII</text>
+  <path id="edge_rx_path_to_axis_rx" d="M 444.0,619.0 L 371.5,619.0 L 299.0,619.0" stroke="#d9f99d" stroke-width="2.2" fill="none" marker-end="url(#ah-stream)"/>
+  <rect x="369.0" y="600.2" width="72.0" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="405.0" y="615.0" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-S 8b</text>
+  <path id="edge_axi_lite_to_csr_stats" d="M 299.0,371.0 L 371.5,371.0 L 444.0,371.0" stroke="#93c5fd" stroke-width="2.5" fill="none" marker-end="url(#ah-axil)"/>
+  <rect x="302.0" y="352.2" width="80.2" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="342.1" y="367.0" text-anchor="middle" font-size="15" fill="#e2e8f0">AXI-L 32b</text>
+  <path id="edge_csr_stats_to_mdio" d="M 699.0,371.0 L 739.0,371.0 L 844.0,371.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
+  <rect x="730.0" y="361.2" width="72.0" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="766.0" y="376.0" text-anchor="middle" font-size="15" fill="#e2e8f0">MDIO cmd</text>
+  <path id="edge_mdio_to_phy" d="M 1099.0,371.0 L 1204.0,371.0 L 1204.0,139.3 L 1244.0,139.3" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
+  <rect x="1168.0" y="243.4" width="72.0" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="1204.0" y="258.2" text-anchor="middle" font-size="15" fill="#e2e8f0">MDC/MDIO</text>
+  <path id="edge_csr_stats_to_tx_path" d="M 571.5,322.0 L 571.5,247.0 L 571.5,172.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
+  <rect x="543.8" y="272.8" width="55.5" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="571.5" y="287.5" text-anchor="middle" font-size="15" fill="#e2e8f0">TX cfg</text>
+  <path id="edge_csr_stats_to_rx_path" d="M 571.5,420.0 L 571.5,495.0 L 571.5,570.0" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
+  <rect x="514.9" y="445.8" width="113.3" height="19.0" fill="#1f2937" stroke="#4b5563" stroke-width="0.6" rx="3"/>
+  <text x="571.5" y="460.5" text-anchor="middle" font-size="15" fill="#e2e8f0">RX cfg/filter</text>
+  <text x="44" y="722" font-size="15" font-weight="600" fill="#9ca3af" letter-spacing="0.5">CLOCK DOMAINS</text>
+  <rect x="44" y="736" width="18" height="14" fill="#E3F2FD" stroke="#1565C0" stroke-width="0.8" rx="3"/>
+  <text x="68" y="747" font-size="15" fill="#e2e8f0">sys</text>
+  <rect x="120" y="736" width="18" height="14" fill="#E8F5E9" stroke="#2E7D32" stroke-width="0.8" rx="3"/>
+  <text x="144" y="747" font-size="15" fill="#e2e8f0">media</text>
+  <text x="44" y="772" font-size="15" font-weight="600" fill="#9ca3af" letter-spacing="0.5">CONNECTION STYLES</text>
+  <path id="legend-arrow-axi-stream" d="M 44,793 L 80,793" stroke="#d9f99d" stroke-width="2.2" fill="none" marker-end="url(#ah-stream)"/>
+  <text x="90" y="797" font-size="15" fill="#e2e8f0">AXI-Stream</text>
+  <path id="legend-arrow-generic" d="M 212,793 L 248,793" stroke="#9ca3af" stroke-width="1.4" fill="none" marker-end="url(#ah-thin)"/>
+  <text x="258" y="797" font-size="15" fill="#e2e8f0">Generic / discrete</text>
+  <path id="legend-arrow-cdc" d="M 460,793 L 496,793" stroke="#d8b4fe" stroke-width="1.8" fill="none" marker-end="url(#ah-cdc)" stroke-dasharray="6,3"/>
+  <text x="506" y="797" font-size="15" fill="#e2e8f0">CDC traversal (re-clocked)</text>
+  <path id="legend-arrow-axi-lite" d="M 788,793 L 824,793" stroke="#93c5fd" stroke-width="2.5" fill="none" marker-end="url(#ah-axil)"/>
+  <text x="834" y="797" font-size="15" fill="#e2e8f0">AXI4-Lite control</text>
+</svg>
