@@ -511,10 +511,13 @@ TESTS = [
 def run_simulation():
     header("PHASE 1: Simulation (Icarus Verilog)")
     all_pass = True
+    run_dir = os.path.join(PROJECT_DIR, "sim", f".run_{os.getpid()}")
+    os.makedirs(run_dir, exist_ok=True)
 
     for t in TESTS:
         srcs = " ".join(os.path.join(PROJECT_DIR, s) for s in t["srcs"])
-        out = os.path.join(PROJECT_DIR, t["out"])
+        out_name = os.path.basename(t["out"])
+        out = os.path.join(run_dir, out_name)
 
         extra_args = t.get("iverilog_args", "")
         rc, stdout, stderr = run_cmd(
@@ -530,7 +533,7 @@ def run_simulation():
         sim_timeout = t.get("sim_timeout", 60)
         rc, stdout, stderr = run_cmd(
             f'{VVP_BIN} "{out}"',
-            cwd=PROJECT_DIR, timeout=sim_timeout
+            cwd=run_dir, timeout=sim_timeout
         )
 
         combined = stdout + stderr
