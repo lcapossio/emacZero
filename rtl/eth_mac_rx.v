@@ -9,7 +9,10 @@
 
 module eth_mac_rx #(
     parameter MCAST_HASH_FILTER   = 0,
-    parameter AXIS_FIFO_ADDR_WIDTH = 8,    // 256 bytes (BRAM-backed sync FIFO)
+    // The PHY cannot be backpressured. Keep enough RX buffering for typical
+    // downstream DMA stalls before declaring an overflow error; the system
+    // wrapper's error-drop stage provides the full-frame correctness boundary.
+    parameter AXIS_FIFO_ADDR_WIDTH = 11,   // 2048 bytes (BRAM-backed sync FIFO)
     parameter MAX_FRAME_STD       = 1518,  // 802.3 standard
     parameter MAX_FRAME_JUMBO     = 9018   // typical jumbo MTU + headers
 )(
@@ -112,6 +115,11 @@ module eth_mac_rx #(
     reg       push_last;
     reg       push_err;
     reg       push_sof;
+    reg       push_en_r;
+    reg [7:0] push_data_r;
+    reg       push_last_r;
+    reg       push_err_r;
+    reg       push_sof_r;
 
     wire        fifo_full;
     wire        fifo_overflow;
@@ -124,8 +132,8 @@ module eth_mac_rx #(
     ) u_fifo (
         .clk         (clk),
         .rst_n       (rst_n),
-        .wr_data     ({push_sof, push_err, push_last, push_data}),
-        .wr_en       (push_en),
+        .wr_data     ({push_sof_r, push_err_r, push_last_r, push_data_r}),
+        .wr_en       (push_en_r),
         .wr_full     (fifo_full),
         .rd_data     (fifo_rd_data),
         .rd_valid    (fifo_rd_valid),
@@ -159,8 +167,9 @@ module eth_mac_rx #(
     wire err_oversize_now = (!jumbo_en && (byte_cnt > MAX_FRAME_STD)) ||
                             (jumbo_en  && (byte_cnt > MAX_FRAME_JUMBO));
 
-    // Combinational push request from the receive FSM. Lifted out of the FSM
-    // always block so it drives sync_fifo.wr_en cleanly on the same posedge.
+    // Combinational push request from the receive FSM. This is registered
+    // before sync_fifo so MAC filtering does not directly drive the FIFO CE
+    // fanout in the same 100 MHz cycle.
     always @* begin
         push_en   = 1'b0;
         push_data = 8'd0;
@@ -218,10 +227,20 @@ module eth_mac_rx #(
             stat_err_oversize <= 1'b0;
             stat_is_bcast     <= 1'b0;
             stat_is_mcast     <= 1'b0;
+            push_en_r         <= 1'b0;
+            push_data_r       <= 8'd0;
+            push_last_r       <= 1'b0;
+            push_err_r        <= 1'b0;
+            push_sof_r        <= 1'b0;
         end else begin
             crc_init         <= 1'b0;
             crc_data_valid   <= 1'b0;
             stat_done         <= 1'b0;
+            push_en_r         <= push_en;
+            push_data_r       <= push_data;
+            push_last_r       <= push_last;
+            push_err_r        <= push_err;
+            push_sof_r        <= push_sof;
 
             case (state)
                 S_IDLE: begin

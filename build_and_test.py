@@ -331,6 +331,14 @@ TESTS = [
         "out": "sim/tb_mii_loopback.vvp",
     },
     {
+        "name": "MII-RX-REPLAY-STRESS",
+        "srcs": ["sim/tb/xpm_fifo_async_model.v", "rtl/async_fifo.v", "rtl/mii_if.v",
+                 "sim/tb/tb_mii_rx_replay_stress.v"],
+        "out": "sim/tb_mii_rx_replay_stress.vvp",
+        "iverilog_args": "-DSYNTHESIS",
+        "sim_timeout": 120,
+    },
+    {
         "name": "ETH-STATS",
         "srcs": ["rtl/eth_stats.v", "sim/tb/tb_eth_stats.v"],
         "out": "sim/tb_eth_stats.vvp",
@@ -508,8 +516,9 @@ def run_simulation():
         srcs = " ".join(os.path.join(PROJECT_DIR, s) for s in t["srcs"])
         out = os.path.join(PROJECT_DIR, t["out"])
 
+        extra_args = t.get("iverilog_args", "")
         rc, stdout, stderr = run_cmd(
-            f'{IVERILOG_BIN} -g2001 {_incdir_args()} -o "{out}" {srcs}',
+            f'{IVERILOG_BIN} -g2001 {extra_args} {_incdir_args()} -o "{out}" {srcs}',
             cwd=PROJECT_DIR, timeout=30
         )
         if rc != 0:

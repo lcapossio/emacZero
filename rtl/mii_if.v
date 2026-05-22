@@ -86,6 +86,12 @@ module mii_if (
     reg [9:0]  rx_wr_data;
     reg        rx_wr_en;
     wire       rx_wr_full;
+    wire       rx_wr_accept;
+    wire       rx_full_write;
+    wire       rx_fifo_overflow;
+    wire       rx_rd_valid;
+    wire [12:0] rx_wr_data_count;
+    reg        rx_fifo_full_seen;
 
     always @(posedge mii_rx_clk or negedge rx_rst_n_s2) begin
         if (!rx_rst_n_s2) begin
@@ -107,9 +113,13 @@ module mii_if (
             rx_dv_d1   <= 1'b0;
             rx_wr_data <= 10'd0;
             rx_wr_en   <= 1'b0;
+            rx_fifo_full_seen <= 1'b0;
         end else begin
             rx_wr_en <= 1'b0;
             rx_dv_d1 <= mii_rx_dv_iob;
+
+            if (rx_full_write || rx_fifo_overflow)
+                rx_fifo_full_seen <= 1'b1;
 
             if (mii_rx_dv_iob) begin
                 if (!rx_nib_sel) begin
@@ -117,15 +127,19 @@ module mii_if (
                     rx_er_low  <= mii_rx_er_iob;
                     rx_nib_sel <= 1'b1;
                 end else begin
-                    rx_wr_data <= {1'b0, rx_er_low | mii_rx_er_iob, mii_rxd_iob, rx_nib_low};
+                    rx_wr_data <= {1'b0,
+                                   rx_er_low | mii_rx_er_iob |
+                                   rx_fifo_full_seen | rx_full_write,
+                                   mii_rxd_iob, rx_nib_low};
                     rx_wr_en   <= 1'b1;
                     rx_nib_sel <= 1'b0;
                 end
             end else begin
                 rx_nib_sel <= 1'b0;
                 if (rx_dv_d1) begin
-                    rx_wr_data <= {1'b1, 1'b0, 8'h00};
+                    rx_wr_data <= {1'b1, rx_fifo_full_seen, 8'h00};
                     rx_wr_en   <= 1'b1;
+                    rx_fifo_full_seen <= 1'b0;
                 end
             end
         end
@@ -145,10 +159,14 @@ module mii_if (
     wire       rx_wr_rst_busy;
     wire       rx_rd_rst_busy;
     wire       rx_prog_empty;
+    wire       rx_rd_word_valid;
+
+    assign rx_full_write = rx_wr_en && rx_wr_full;
+    assign rx_wr_accept = rx_wr_en && !rx_wr_full && !rx_wr_rst_busy;
 
 `ifdef SYNTHESIS
     xpm_fifo_async #(
-        .FIFO_WRITE_DEPTH(2048),
+        .FIFO_WRITE_DEPTH(4096),
         .WRITE_DATA_WIDTH(10),
         .READ_DATA_WIDTH(10),
         .READ_MODE("FWFT"),
@@ -158,13 +176,13 @@ module mii_if (
         .FULL_RESET_VALUE(0),
         .PROG_EMPTY_THRESH(64),
         .PROG_FULL_THRESH(10),
-        .RD_DATA_COUNT_WIDTH(11),
-        .WR_DATA_COUNT_WIDTH(11),
-        .USE_ADV_FEATURES("0200"),
+        .RD_DATA_COUNT_WIDTH(13),
+        .WR_DATA_COUNT_WIDTH(13),
+        .USE_ADV_FEATURES("1200"),
         .WAKEUP_TIME(0)
     ) u_rx_fifo (
         .wr_clk        (mii_rx_clk),
-        .wr_en         (rx_wr_en && !rx_wr_rst_busy),
+        .wr_en         (rx_wr_accept),
         .din           (rx_wr_data),
         .full          (rx_wr_full),
         .wr_rst_busy   (rx_wr_rst_busy),
@@ -179,26 +197,29 @@ module mii_if (
         .injectdbiterr (1'b0),
         .sbiterr       (),
         .dbiterr       (),
-        .overflow      (),
+        .overflow      (rx_fifo_overflow),
         .underflow     (),
         .prog_full     (),
         .prog_empty    (rx_prog_empty),
         .almost_full   (),
         .almost_empty  (),
-        .wr_data_count (),
+        .wr_data_count (rx_wr_data_count),
         .rd_data_count (),
-        .data_valid    (),
+        .data_valid    (rx_rd_valid),
         .wr_ack        ()
     );
 `else
     assign rx_prog_empty = 1'b1;
     assign rx_wr_rst_busy = 1'b0;
     assign rx_rd_rst_busy = 1'b0;
+    assign rx_fifo_overflow = rx_full_write;
+    assign rx_wr_data_count = 13'd0;
+    assign rx_rd_valid = !rx_rd_empty;
     async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(11)) u_rx_fifo (
         .wr_clk  (mii_rx_clk),
         .wr_rst_n(rx_rst_n_s2),
         .wr_data (rx_wr_data),
-        .wr_en   (rx_wr_en && !rx_wr_full),
+        .wr_en   (rx_wr_accept),
         .wr_full (rx_wr_full),
         .rd_clk  (clk),
         .rd_rst_n(rst_n),
@@ -208,28 +229,139 @@ module mii_if (
     );
 `endif
 
-    reg        rx_reading;
+    // In FWFT mode, empty can remain deasserted while the previous word is
+    // still present after rd_en. Use data_valid so replay only consumes a word
+    // when the FIFO has presented fresh data; otherwise bytes can be duplicated
+    // inside the reconstructed GMII frame and FCS will fail.
+    assign rx_rd_word_valid = rx_rd_valid && !rx_rd_rst_busy;
+
+    localparam [2:0]
+        RX_REPLAY_IDLE  = 3'd0,
+        RX_REPLAY_LOAD  = 3'd1,
+        RX_REPLAY_PRIME = 3'd2,
+        RX_REPLAY_WAIT  = 3'd3,
+        RX_REPLAY_SEND  = 3'd4;
+
+    reg [2:0]  rx_replay_state;
+    reg        rx_load_wait;
+    reg [15:0] rx_load_count;
+    reg [15:0] rx_replay_len;
+    reg [15:0] rx_replay_index;
+    reg [15:0] rx_mem_rd_addr;
+    reg [8:0]  rx_mem_rd_data;
+    reg        rx_mem_wr_en;
+    reg [11:0] rx_mem_wr_addr;
+    reg [8:0]  rx_mem_wr_data;
+    wire       rx_mem_rd_en;
+    wire [11:0] rx_mem_rd_addr_reg;
+    wire [8:0] rx_frame_mem_dout;
     (* ASYNC_REG = "TRUE" *) reg rx_toggle_s1, rx_toggle_s2, rx_toggle_s3;
-    reg [7:0]  rx_avail_delay;
+    // Wait after the write-clock EOF toggle before replay. The async XPM FIFO
+    // can expose the EOF toggle to sys_clk before all recently-written data
+    // and the EOF marker are safely visible at the read port under burst load.
+    // 4095 cycles is about 41 us at 100 MHz, still below a 100 Mbps MTU frame
+    // time but large enough to prevent replay from catching the CDC tail.
+    localparam [11:0] RX_FRAME_VIS_DELAY = 12'd4095;
+
+    reg        rx_avail_wait_active;
+    reg [11:0] rx_avail_wait_cnt;
     reg [3:0]  rx_frames_pending;
     reg        rx_frame_done_pulse;
 
     wire rx_frame_avail = (rx_toggle_s2 != rx_toggle_s3);
-    wire rx_frame_avail_d = rx_avail_delay[7];
+    wire rx_frame_avail_d = rx_avail_wait_active &&
+                            (rx_avail_wait_cnt == RX_FRAME_VIS_DELAY);
     wire rx_frame_ready = (rx_frames_pending > 0);
+
+    assign rx_mem_rd_en = (rx_replay_state == RX_REPLAY_PRIME) ||
+                          ((rx_replay_state == RX_REPLAY_WAIT) &&
+                           (rx_replay_len > 16'd1)) ||
+                          ((rx_replay_state == RX_REPLAY_SEND) &&
+                           ((rx_replay_index + 16'd2) < rx_replay_len));
+    assign rx_mem_rd_addr_reg =
+        (rx_replay_state == RX_REPLAY_PRIME) ? 12'd0 :
+        (rx_replay_state == RX_REPLAY_WAIT)  ? 12'd1 :
+                                               rx_mem_rd_addr[11:0];
+
+`ifdef XILINX_7SERIES
+    xpm_memory_sdpram #(
+        .ADDR_WIDTH_A(12),
+        .ADDR_WIDTH_B(12),
+        .AUTO_SLEEP_TIME(0),
+        .BYTE_WRITE_WIDTH_A(9),
+        .CASCADE_HEIGHT(0),
+        .CLOCKING_MODE("common_clock"),
+        .ECC_MODE("no_ecc"),
+        .MEMORY_INIT_FILE("none"),
+        .MEMORY_INIT_PARAM("0"),
+        .MEMORY_OPTIMIZATION("true"),
+        .MEMORY_PRIMITIVE("block"),
+        .MEMORY_SIZE(9 * 4096),
+        .MESSAGE_CONTROL(0),
+        .READ_DATA_WIDTH_B(9),
+        .READ_LATENCY_B(1),
+        .READ_RESET_VALUE_B("0"),
+        .RST_MODE_A("SYNC"),
+        .RST_MODE_B("SYNC"),
+        .USE_EMBEDDED_CONSTRAINT(0),
+        .USE_MEM_INIT(0),
+        .WAKEUP_TIME("disable_sleep"),
+        .WRITE_DATA_WIDTH_A(9),
+        .WRITE_MODE_B("read_first")
+    ) u_rx_frame_mem (
+        .sleep(1'b0),
+        .clka(clk),
+        .ena(rx_mem_wr_en),
+        .wea(1'b1),
+        .addra(rx_mem_wr_addr),
+        .dina(rx_mem_wr_data),
+        .injectsbiterra(1'b0),
+        .injectdbiterra(1'b0),
+        .clkb(clk),
+        .rstb(1'b0),
+        .enb(rx_mem_rd_en),
+        .regceb(1'b1),
+        .addrb(rx_mem_rd_addr_reg),
+        .doutb(rx_frame_mem_dout),
+        .sbiterrb(),
+        .dbiterrb()
+    );
+`else
+    (* ram_style = "block" *) reg [8:0] rx_frame_mem [0:4095];
+    reg [8:0] rx_frame_mem_dout_r;
+    assign rx_frame_mem_dout = rx_frame_mem_dout_r;
+
+    always @(posedge clk) begin
+        if (rx_mem_wr_en)
+            rx_frame_mem[rx_mem_wr_addr] <= rx_mem_wr_data;
+        if (rx_mem_rd_en)
+            rx_frame_mem_dout_r <= rx_frame_mem[rx_mem_rd_addr_reg];
+    end
+`endif
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rx_toggle_s1 <= 1'b0;
             rx_toggle_s2 <= 1'b0;
             rx_toggle_s3 <= 1'b0;
-            rx_avail_delay <= 8'd0;
+            rx_avail_wait_active <= 1'b0;
+            rx_avail_wait_cnt <= 12'd0;
             rx_frames_pending <= 4'd0;
         end else begin
             rx_toggle_s1 <= rx_frame_toggle;
             rx_toggle_s2 <= rx_toggle_s1;
             rx_toggle_s3 <= rx_toggle_s2;
-            rx_avail_delay <= {rx_avail_delay[6:0], rx_frame_avail};
+            if (rx_frame_avail && !rx_avail_wait_active) begin
+                rx_avail_wait_active <= 1'b1;
+                rx_avail_wait_cnt <= 12'd0;
+            end else if (rx_avail_wait_active) begin
+                if (rx_frame_avail_d) begin
+                    rx_avail_wait_active <= 1'b0;
+                    rx_avail_wait_cnt <= 12'd0;
+                end else begin
+                    rx_avail_wait_cnt <= rx_avail_wait_cnt + 1'b1;
+                end
+            end
 
             case ({rx_frame_avail_d, rx_frame_done_pulse})
                 2'b10: rx_frames_pending <= rx_frames_pending + 4'd1;
@@ -246,32 +378,87 @@ module mii_if (
             gmii_rx_dv          <= 1'b0;
             gmii_rx_er          <= 1'b0;
             rx_rd_en            <= 1'b0;
-            rx_reading          <= 1'b0;
+            rx_mem_wr_en        <= 1'b0;
+            rx_mem_wr_addr      <= 12'd0;
+            rx_mem_wr_data      <= 9'd0;
+            rx_replay_state     <= RX_REPLAY_IDLE;
+            rx_load_wait        <= 1'b0;
+            rx_load_count       <= 16'd0;
+            rx_replay_len       <= 16'd0;
+            rx_replay_index     <= 16'd0;
+            rx_mem_rd_addr      <= 16'd0;
+            rx_mem_rd_data      <= 9'd0;
             rx_frame_done_pulse <= 1'b0;
         end else begin
             rx_rd_en            <= 1'b0;
+            rx_mem_wr_en        <= 1'b0;
             gmii_rx_dv          <= 1'b0;
             gmii_rx_er          <= 1'b0;
             rx_frame_done_pulse <= 1'b0;
 
-            if (rx_reading) begin
-                if (!rx_rd_empty) begin
-                    if (rx_rd_data[9]) begin
-                        rx_rd_en            <= 1'b1;
-                        rx_reading          <= 1'b0;
-                        rx_frame_done_pulse <= 1'b1;
-                    end else begin
-                        gmii_rxd   <= rx_rd_data[7:0];
-                        gmii_rx_dv <= 1'b1;
-                        gmii_rx_er <= rx_rd_data[8];
-                        rx_rd_en   <= 1'b1;
-                    end
-                end else if (!rx_frame_ready) begin
-                    rx_reading <= 1'b0;
+            case (rx_replay_state)
+                RX_REPLAY_IDLE: begin
+                    rx_load_wait <= 1'b0;
+                    rx_load_count <= 16'd0;
+                    if (rx_frame_ready && rx_rd_word_valid)
+                        rx_replay_state <= RX_REPLAY_LOAD;
                 end
-            end else if (rx_frame_ready && !rx_rd_empty) begin
-                rx_reading <= 1'b1;
-            end
+
+                RX_REPLAY_LOAD: begin
+                    if (rx_load_wait) begin
+                        rx_load_wait <= 1'b0;
+                    end else if (rx_rd_word_valid) begin
+                        rx_rd_en <= 1'b1;
+                        rx_load_wait <= 1'b1;
+                        if (rx_rd_data[9]) begin
+                            rx_frame_done_pulse <= 1'b1;
+                            rx_replay_len <= rx_load_count;
+                            rx_mem_rd_addr <= 16'd0;
+                            rx_replay_index <= 16'd0;
+                            rx_replay_state <= (rx_load_count != 16'd0) ?
+                                               RX_REPLAY_PRIME : RX_REPLAY_IDLE;
+                        end else begin
+                            rx_mem_wr_en <= 1'b1;
+                            rx_mem_wr_addr <= rx_load_count[11:0];
+                            rx_mem_wr_data <= {rx_rd_data[8], rx_rd_data[7:0]};
+                            rx_load_count <= rx_load_count + 1'b1;
+                        end
+                    end else if (!rx_frame_ready) begin
+                        rx_replay_state <= RX_REPLAY_IDLE;
+                        rx_load_count <= 16'd0;
+                    end
+                end
+
+                RX_REPLAY_PRIME: begin
+                    rx_mem_rd_addr <= 16'd1;
+                    rx_replay_index <= 16'd0;
+                    rx_replay_state <= RX_REPLAY_WAIT;
+                end
+
+                RX_REPLAY_WAIT: begin
+                    rx_mem_rd_data <= rx_frame_mem_dout;
+                    if (rx_replay_len > 16'd1)
+                        rx_mem_rd_addr <= 16'd2;
+                    rx_replay_state <= RX_REPLAY_SEND;
+                end
+
+                RX_REPLAY_SEND: begin
+                    gmii_rxd   <= rx_mem_rd_data[7:0];
+                    gmii_rx_er <= rx_mem_rd_data[8];
+                    gmii_rx_dv <= 1'b1;
+
+                    if ((rx_replay_index + 1'b1) >= rx_replay_len) begin
+                        rx_replay_state <= RX_REPLAY_IDLE;
+                    end else begin
+                        rx_mem_rd_data <= rx_frame_mem_dout;
+                        if ((rx_replay_index + 16'd2) < rx_replay_len)
+                            rx_mem_rd_addr <= rx_mem_rd_addr + 1'b1;
+                        rx_replay_index <= rx_replay_index + 1'b1;
+                    end
+                end
+
+                default: rx_replay_state <= RX_REPLAY_IDLE;
+            endcase
         end
     end
 
@@ -427,7 +614,7 @@ module mii_if (
     assign dbg_tx_fifo_empty     = tx_rd_empty;
     assign dbg_rx_prog_empty     = rx_prog_empty;
     assign dbg_rx_rd_empty       = rx_rd_empty;
-    assign dbg_rx_reading        = rx_reading;
+    assign dbg_rx_reading        = (rx_replay_state != RX_REPLAY_IDLE);
     assign dbg_rx_frames_pending = rx_frames_pending[1:0];
 
 `ifdef SYNTHESIS
