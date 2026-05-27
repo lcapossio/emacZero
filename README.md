@@ -6,7 +6,7 @@ Open-source Ethernet MAC in Verilog 2001. Supports 10/100/1G operation through
 either MII (10/100 only) or RGMII (10/100/1G with runtime speed selection).
 Provides AXI4-Stream interfaces, AXI4-Lite register control, MDIO management,
 hardware statistics counters, jumbo-frame support, optional ICMP echo
-responder, and inline IPv4/UDP TX checksum offload.
+responder, and optional IPv4/UDP TX checksum offload.
 
 ## Index
 
@@ -29,7 +29,7 @@ responder, and inline IPv4/UDP TX checksum offload.
 - **MII PHY interface** - 10/100 Mbps with store-and-forward async FIFOs
 - **RGMII PHY interface** - 10/100/1G with **runtime speed selection** via `cfg_speed[1:0]` and parameterizable `RGMII_SPEEDS = "ALL" | "1G_ONLY" | "10_100"` for resource-conscious builds
 - **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`)
-- **TX checksum offload** - inline IPv4 header + UDP checksum patcher (`rtl/net/tx_csum_off.v`)
+- **TX checksum offload** - optional IPv4 header + UDP checksum patcher (`TX_CSUM_OFFLOAD=1`, `rtl/net/tx_csum_off.v`)
 - **CRC-32** - IEEE 802.3 FCS generation (TX) and validation (RX)
 - **MDIO master** - PHY register read/write, accessible through AXI4-Lite CSR
 - **Statistics counters** - TX/RX frame count, byte count, CRC error count (32-bit saturating)
@@ -85,6 +85,7 @@ module eth_mac_sys #(
     parameter PHY_INTERFACE     = "MII",  // "MII" or "RGMII"
     parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash
     parameter MAX_FRAME         = 9018,   // jumbo MTU + Ethernet headers
+    parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize checksum patcher
     parameter MII_DEBUG         = 0       // 0 = debug capture/counters off
 )(
     input  wire        clk,           // system clock (100 MHz)
@@ -284,7 +285,7 @@ self.add_interrupt("emaczero")
 ```
 
 Supports MII and RGMII, configurable `MAX_FRAME` and multicast hash, MDIO
-exposed as a `TSTriple`. See module docstring in
+exposed as a `TSTriple`, and optional `TX_CSUM_OFFLOAD`. See module docstring in
 [litex_emaczero/emaczero.py](litex_emaczero/emaczero.py) for the full pad contract.
 
 ### Bare-metal driver
@@ -328,18 +329,18 @@ every push and PR to `main`.
 
 Current measured numbers are from the routed Arty A7-100T reference build:
 Vivado 2025.2, `xc7a100tcsg324-1`, `PHY_INTERFACE="MII"`, `MII_DEBUG=0`,
-full demo logic enabled, generated on 2026-05-27 after the RX AXIS FIFO BRAM inference fix.
+`TX_CSUM_OFFLOAD=0`, full demo logic enabled, generated on 2026-05-27 after
+the RX AXIS FIFO BRAM inference fix.
 
 | Scope | LUTs | FFs | RAMB36 | RAMB18 | DSP | Notes |
 |-------|-----:|----:|-------:|-------:|----:|-------|
-| Full `arty_a7_top` | 12,571 | 20,022 | 4 | 1 | 0 | MAC + ARP/ICMP/UDP demo + UART/sequencer |
-| `u_mac_sys` hierarchy | 4,515 | 2,571 | 4 | 1 | 0 | CSR, stats, MAC, MII, MDIO, pause, TX checksum |
-| `gen_mii.u_mii_if` | 694 | 1,253 | 3 | 1 | 0 | MII CDC FIFOs, debug disabled |
-| `u_tx_csum` | 2,296 | 226 | 0 | 0 | 0 | Includes 1,692 LUTRAMs |
+| Full `arty_a7_top` | 10,279 | 19,799 | 4 | 1 | 0 | MAC + ARP/ICMP/UDP demo + UART/sequencer |
+| `u_mac_sys` hierarchy | 2,214 | 2,346 | 4 | 1 | 0 | CSR, stats, MAC, MII, MDIO, pause |
+| `gen_mii.u_mii_if` | 695 | 1,253 | 3 | 1 | 0 | MII CDC FIFOs, debug disabled |
 | `u_mac_rx` | 201 | 212 | 1 | 0 | 0 | Default synchronous RX AXIS FIFO inferred as BRAM |
-| `u_mac_tx` | 239 | 111 | 0 | 0 | 0 | TX preamble/FCS/IFG path |
+| `u_mac_tx` | 244 | 111 | 0 | 0 | 0 | TX preamble/FCS/IFG path |
 
-Post-route timing met with WNS `0.438 ns` on the full Arty top. The generated
+Post-route timing met with WNS `0.319 ns` on the full Arty top. The generated
 reports live under `build_arty/` (`utilization_route.rpt`,
 `utilization_hier_route.rpt`, `timing.rpt`) and are intentionally ignored by
 git as build artifacts.

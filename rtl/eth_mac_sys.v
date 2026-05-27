@@ -15,6 +15,7 @@ module eth_mac_sys #(
     parameter PHY_INTERFACE     = "MII",  // "MII" or "RGMII"
     parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash filter
     parameter MAX_FRAME         = 9018,   // jumbo MTU + headers; 1518 standard
+    parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize IPv4/UDP TX checksum patcher
     parameter MII_DEBUG         = 0
 )(
     input  wire        clk,           // system clock (100 MHz)
@@ -187,35 +188,49 @@ module eth_mac_sys #(
     wire       s_axis_tready_mac;
 
     // =========================================================================
-    // Optional TX checksum offload (cfg_tx_csum_off)
-    //   When enabled, frames pass through tx_csum_off which patches the IPv4
-    //   header checksum and zeroes the UDP checksum.
-    //   When disabled, the bus passes straight to the MAC TX (zero latency).
+    // Optional TX checksum offload.
+    // TX_CSUM_OFFLOAD=0 removes the frame-buffering checksum patcher from
+    // synthesis; CTRL[7] then reads/writes normally but has no datapath effect.
+    // TX_CSUM_OFFLOAD=1 lets CTRL[7] select the patcher at runtime.
     // =========================================================================
-    wire [7:0] csum_m_tdata;
-    wire       csum_m_tvalid;
-    wire       csum_m_tlast;
-    wire       csum_s_tready;
-
-    tx_csum_off #(.MAX_FRAME(MAX_FRAME)) u_tx_csum (
-        .clk           (clk),
-        .rst_n         (rst_n),
-        .enable        (cfg_tx_csum_off),
-        .s_axis_tdata  (s_axis_tdata),
-        .s_axis_tvalid (s_axis_tvalid_gated & cfg_tx_csum_off),
-        .s_axis_tready (csum_s_tready),
-        .s_axis_tlast  (s_axis_tlast),
-        .m_axis_tdata  (csum_m_tdata),
-        .m_axis_tvalid (csum_m_tvalid),
-        .m_axis_tready (s_axis_tready_mac & cfg_tx_csum_off),
-        .m_axis_tlast  (csum_m_tlast)
-    );
-
-    // User-path mux based on cfg_tx_csum_off
-    wire [7:0] user_tx_tdata  = cfg_tx_csum_off ? csum_m_tdata  : s_axis_tdata;
-    wire       user_tx_tvalid = cfg_tx_csum_off ? csum_m_tvalid : s_axis_tvalid_gated;
-    wire       user_tx_tlast  = cfg_tx_csum_off ? csum_m_tlast  : s_axis_tlast;
+    wire [7:0] user_tx_tdata;
+    wire       user_tx_tvalid;
+    wire       user_tx_tlast;
     wire       user_tx_tready;
+
+    generate
+        if (TX_CSUM_OFFLOAD != 0) begin : gen_tx_csum
+            wire [7:0] csum_m_tdata;
+            wire       csum_m_tvalid;
+            wire       csum_m_tlast;
+            wire       csum_s_tready;
+
+            tx_csum_off #(.MAX_FRAME(MAX_FRAME)) u_tx_csum (
+                .clk           (clk),
+                .rst_n         (rst_n),
+                .enable        (cfg_tx_csum_off),
+                .s_axis_tdata  (s_axis_tdata),
+                .s_axis_tvalid (s_axis_tvalid_gated & cfg_tx_csum_off),
+                .s_axis_tready (csum_s_tready),
+                .s_axis_tlast  (s_axis_tlast),
+                .m_axis_tdata  (csum_m_tdata),
+                .m_axis_tvalid (csum_m_tvalid),
+                .m_axis_tready (s_axis_tready_mac & cfg_tx_csum_off),
+                .m_axis_tlast  (csum_m_tlast)
+            );
+
+            assign user_tx_tdata  = cfg_tx_csum_off ? csum_m_tdata  : s_axis_tdata;
+            assign user_tx_tvalid = cfg_tx_csum_off ? csum_m_tvalid : s_axis_tvalid_gated;
+            assign user_tx_tlast  = cfg_tx_csum_off ? csum_m_tlast  : s_axis_tlast;
+            assign s_axis_tready  = cfg_tx_csum_off ? (csum_s_tready & cfg_tx_en)
+                                                    : (user_tx_tready & cfg_tx_en);
+        end else begin : gen_no_tx_csum
+            assign user_tx_tdata  = s_axis_tdata;
+            assign user_tx_tvalid = s_axis_tvalid_gated;
+            assign user_tx_tlast  = s_axis_tlast;
+            assign s_axis_tready  = user_tx_tready & cfg_tx_en;
+        end
+    endgenerate
 
     // PAUSE-priority mux: while a pause frame is being emitted, route
     // pause_* into eth_mac_tx and stall user_*. Pause frames are short and
@@ -225,9 +240,6 @@ module eth_mac_sys #(
     wire       mac_tx_in_tlast  = pause_tvalid ? pause_tlast  : user_tx_tlast;
     assign     pause_tready     = pause_tvalid &  s_axis_tready_mac;
     assign     user_tx_tready   = ~pause_tvalid & s_axis_tready_mac;
-
-    assign     s_axis_tready    = cfg_tx_csum_off ? (csum_s_tready & cfg_tx_en)
-                                                  : (user_tx_tready & cfg_tx_en);
 
     // RX gating: mask tvalid when rx disabled
     wire [7:0] m_axis_tdata_mac;

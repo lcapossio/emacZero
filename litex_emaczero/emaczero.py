@@ -128,12 +128,17 @@ class EmacZero(LiteXModule):
         64-bit multicast hash table; 1 enables it).
     max_frame : int
         Pass-through to ``MAX_FRAME``. Default 9018 covers jumbo.
+    tx_csum_offload : int
+        Pass-through to ``TX_CSUM_OFFLOAD``. Default 0 removes the frame-
+        buffering IPv4/UDP checksum patcher; set 1 if firmware will use
+        CTRL[7].
     """
 
     def __init__(self, platform, pads,
                  phy_interface="MII",
                  mcast_hash_filter=0,
-                 max_frame=9018):
+                 max_frame=9018,
+                 tx_csum_offload=0):
         if phy_interface not in ("MII", "RGMII"):
             raise ValueError(f"phy_interface must be 'MII' or 'RGMII', got {phy_interface!r}")
 
@@ -165,6 +170,7 @@ class EmacZero(LiteXModule):
             p_PHY_INTERFACE     = phy_interface,
             p_MCAST_HASH_FILTER = mcast_hash_filter,
             p_MAX_FRAME         = max_frame,
+            p_TX_CSUM_OFFLOAD   = tx_csum_offload,
 
             i_clk   = ClockSignal("sys"),
             i_rst_n = ~ResetSignal("sys"),

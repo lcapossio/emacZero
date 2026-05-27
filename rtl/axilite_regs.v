@@ -19,7 +19,8 @@
 //                              reflect the auto-negotiated mode here for
 //                              status, but the bit has no functional effect.
 //                         [6] jumbo_en  (allow >1518-byte frames)
-//                         [7] tx_csum_off (insert IP/UDP checksums in TX)
+//                         [7] tx_csum_off (runtime select when
+//                              TX_CSUM_OFFLOAD=1)
 //                         [8] passthrough (sniffer mode: bypass MAC filter and
 //                              deliver frames with FCS / size errors anyway,
 //                              still tagged via m_axis_terror)

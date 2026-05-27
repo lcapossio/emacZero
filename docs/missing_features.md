@@ -37,7 +37,8 @@ the corresponding parameter is set.
 - **IP fragmentation / reassembly** — none. Oversize datagrams are dropped.
 - **UDP / TCP offload** — partial UDP demo support exists (`udp_echo`,
   `udp_blast`, `udp_iperf_sink`, `udp_stats_reply`). TX checksum insertion
-  exists for IP/UDP via `tx_csum_off.v` (`CTRL[7]`). No TCP state machines.
+  exists for IP/UDP via `tx_csum_off.v` when `TX_CSUM_OFFLOAD=1`; the
+  default build removes it. No TCP state machines.
 - **DHCP / IGMP** — none.
 - **PTP / 1588** — no RX or TX timestamping path.
 

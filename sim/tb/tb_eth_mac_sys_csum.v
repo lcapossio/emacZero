@@ -47,7 +47,11 @@ module tb_eth_mac_sys_csum;
     wire        mdc, mdio_o, mdio_oe;
     wire        irq;
 
-    eth_mac_sys #(.PHY_INTERFACE("MII"), .MAX_FRAME(2048)) uut (
+    eth_mac_sys #(
+        .PHY_INTERFACE("MII"),
+        .MAX_FRAME(2048),
+        .TX_CSUM_OFFLOAD(1)
+    ) uut (
         .clk            (clk),
         .rst_n          (rst_n),
         .s_axi_awaddr   (awaddr),
