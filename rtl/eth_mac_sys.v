@@ -14,7 +14,8 @@
 module eth_mac_sys #(
     parameter PHY_INTERFACE     = "MII",  // "MII" or "RGMII"
     parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash filter
-    parameter MAX_FRAME         = 9018    // jumbo MTU + headers; 1518 standard
+    parameter MAX_FRAME         = 9018,   // jumbo MTU + headers; 1518 standard
+    parameter MII_DEBUG         = 0
 )(
     input  wire        clk,           // system clock (100 MHz)
     input  wire        rst_n,
@@ -322,7 +323,7 @@ module eth_mac_sys #(
     // =========================================================================
     generate
         if (PHY_INTERFACE == "MII") begin : gen_mii
-            mii_if u_mii_if (
+            mii_if #(.MII_DEBUG(MII_DEBUG)) u_mii_if (
                 .clk            (clk),
                 .rst_n          (rst_n),
                 .mii_rxd        (mii_rxd),
@@ -362,14 +363,59 @@ module eth_mac_sys #(
                 .dbg_mii_cap_word0     (),
                 .dbg_mii_cap_word1     (),
                 .dbg_mii_cap_word2     (),
-                .dbg_mii_cap_word3     ()
+                .dbg_mii_cap_word3     (),
+                .dbg_mii_cap_word4     (),
+                .dbg_mii_cap_word5     (),
+                .dbg_mii_cap_word6     (),
+                .dbg_mii_cap_word7     (),
+                .dbg_mii_cap_word8     (),
+                .dbg_mii_cap_word9     (),
+                .dbg_mii_cap_word10    (),
+                .dbg_mii_cap_word11    (),
+                .dbg_mii_cap_word12    (),
+                .dbg_mii_cap_word13    (),
+                .dbg_mii_cap_word14    (),
+                .dbg_mii_cap_word15    (),
+                .dbg_mii_txd_pre_iob   (),
+                .dbg_mii_tx_en_pre_iob (),
+                .dbg_rx_fifo_full_frames (),
+                .dbg_rx_fifo_full_writes (),
+                .dbg_rx_fifo_overflow_pulses (),
+                .dbg_rx_fifo_wr_level_max (),
+                .dbg_rx_replay_gap_frames (),
+                .dbg_rx_replay_gap_cycles (),
+                .dbg_rx_replay_gap_byte_max (),
+                .dbg_rx_mii_last_len (),
+                .dbg_rx_mii_word0 (),
+                .dbg_rx_mii_word1 (),
+                .dbg_rx_mii_word2 (),
+                .dbg_rx_mii_word3 (),
+                .dbg_rx_mii_word4 (),
+                .dbg_rx_mii_word5 (),
+                .dbg_rx_mii_word6 (),
+                .dbg_rx_mii_word7 (),
+                .dbg_rx_mii_word8 (),
+                .dbg_rx_mii_word9 (),
+                .dbg_rx_mii_word10 (),
+                .dbg_rx_mii_word11 (),
+                .dbg_rx_mii_word12 (),
+                .dbg_rx_mii_word13 (),
+                .dbg_rx_mii_word14 (),
+                .dbg_rx_mii_word15 (),
+                .dbg_rx_replay_last_len (),
+                .dbg_rx_replay_word0 (),
+                .dbg_rx_replay_word1 (),
+                .dbg_rx_replay_word2 (),
+                .dbg_rx_replay_word3 (),
+                .dbg_rx_replay_eof_count (),
+                .dbg_tx_er_pulses    (),
+                .dbg_tx_er_frames    ()
             );
 
             // Tie off RGMII outputs
             assign rgmii_txd   = 4'd0;
             assign rgmii_tx_ctl = 1'b0;
             assign rgmii_txc   = 1'b0;
-
         end else begin : gen_rgmii
             // GMII-level signals between CDC and RGMII interface
             wire [7:0] media_gmii_txd;

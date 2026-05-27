@@ -13,6 +13,7 @@
 module xpm_fifo_async #(
     parameter integer CDC_SYNC_STAGES      = 2,
     parameter         DOUT_RESET_VALUE     = "0",
+    parameter         FIFO_MEMORY_TYPE     = "auto",
     parameter integer FIFO_READ_LATENCY    = 0,
     parameter integer FIFO_WRITE_DEPTH     = 16,
     parameter integer FULL_RESET_VALUE     = 0,

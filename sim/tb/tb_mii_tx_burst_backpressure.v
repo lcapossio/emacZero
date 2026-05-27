@@ -34,7 +34,7 @@ module tb_mii_tx_burst_backpressure;
     wire [11:0] dbg_tx_frames_queued;
     wire [11:0] dbg_tx_frames_drained;
 
-    mii_if u_mii (
+    mii_if #(.MII_DEBUG(1)) u_mii (
         .clk(clk),
         .rst_n(rst_n),
         .mii_rxd(4'd0),

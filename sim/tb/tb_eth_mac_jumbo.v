@@ -34,7 +34,7 @@ module tb_eth_mac_jumbo;
     reg        tx_last  = 1'b0;
 
     // MAX_FRAME=9018 so 5000 bytes fits.
-    eth_mac #(.MAX_FRAME(9018)) u_mac (
+    eth_mac #(.MAX_FRAME(9018), .MII_DEBUG(1)) u_mac (
         .clk              (clk),
         .rst_n            (rst_n),
         .mii_txd          (mii_txd),

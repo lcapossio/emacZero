@@ -6,7 +6,9 @@
 // Verilog 2001
 // =============================================================================
 
-module mii_if (
+module mii_if #(
+    parameter MII_DEBUG = 0
+)(
     input  wire        clk,
     input  wire        rst_n,
 
@@ -45,13 +47,62 @@ module mii_if (
     output wire [11:0] dbg_tx_frames_queued,
     output wire [11:0] dbg_tx_frames_drained,
     output wire [11:0] dbg_last_tx_len_wr,
-    // MII TX byte capture (CDC'd to sys_clk)
+    // MII TX byte capture (CDC'd to sys_clk) - first 64 bytes per frame, latest
     output wire        dbg_mii_cap_done,
     output wire [11:0] dbg_mii_cap_frame_len,
     output wire [31:0] dbg_mii_cap_word0,
     output wire [31:0] dbg_mii_cap_word1,
     output wire [31:0] dbg_mii_cap_word2,
-    output wire [31:0] dbg_mii_cap_word3
+    output wire [31:0] dbg_mii_cap_word3,
+    output wire [31:0] dbg_mii_cap_word4,
+    output wire [31:0] dbg_mii_cap_word5,
+    output wire [31:0] dbg_mii_cap_word6,
+    output wire [31:0] dbg_mii_cap_word7,
+    output wire [31:0] dbg_mii_cap_word8,
+    output wire [31:0] dbg_mii_cap_word9,
+    output wire [31:0] dbg_mii_cap_word10,
+    output wire [31:0] dbg_mii_cap_word11,
+    output wire [31:0] dbg_mii_cap_word12,
+    output wire [31:0] dbg_mii_cap_word13,
+    output wire [31:0] dbg_mii_cap_word14,
+    output wire [31:0] dbg_mii_cap_word15,
+    output wire [3:0]  dbg_mii_txd_pre_iob,
+    output wire        dbg_mii_tx_en_pre_iob,
+    output wire [31:0] dbg_rx_fifo_full_frames,
+    output wire [31:0] dbg_rx_fifo_full_writes,
+    output wire [31:0] dbg_rx_fifo_overflow_pulses,
+    output wire [31:0] dbg_rx_fifo_wr_level_max,
+    output wire [31:0] dbg_rx_replay_gap_frames,
+    output wire [31:0] dbg_rx_replay_gap_cycles,
+    output wire [31:0] dbg_rx_replay_gap_byte_max,
+    output wire [31:0] dbg_rx_mii_last_len,
+    output wire [31:0] dbg_rx_mii_word0,
+    output wire [31:0] dbg_rx_mii_word1,
+    output wire [31:0] dbg_rx_mii_word2,
+    output wire [31:0] dbg_rx_mii_word3,
+    output wire [31:0] dbg_rx_mii_word4,
+    output wire [31:0] dbg_rx_mii_word5,
+    output wire [31:0] dbg_rx_mii_word6,
+    output wire [31:0] dbg_rx_mii_word7,
+    output wire [31:0] dbg_rx_mii_word8,
+    output wire [31:0] dbg_rx_mii_word9,
+    output wire [31:0] dbg_rx_mii_word10,
+    output wire [31:0] dbg_rx_mii_word11,
+    output wire [31:0] dbg_rx_mii_word12,
+    output wire [31:0] dbg_rx_mii_word13,
+    output wire [31:0] dbg_rx_mii_word14,
+    output wire [31:0] dbg_rx_mii_word15,
+    output wire [31:0] dbg_rx_replay_last_len,
+    output wire [31:0] dbg_rx_replay_word0,
+    output wire [31:0] dbg_rx_replay_word1,
+    output wire [31:0] dbg_rx_replay_word2,
+    output wire [31:0] dbg_rx_replay_word3,
+    output wire [31:0] dbg_rx_replay_eof_count,
+    // gmii_tx_er visibility (sys_clk domain). pulse count = rising-edge
+    // assertions of gmii_tx_er; frame count = frames during which gmii_tx_er
+    // was asserted at least once.
+    output wire [31:0] dbg_tx_er_pulses,
+    output wire [31:0] dbg_tx_er_frames
 );
 
     assign mii_tx_clk_out = mii_tx_clk;
@@ -89,9 +140,31 @@ module mii_if (
     wire       rx_wr_accept;
     wire       rx_full_write;
     wire       rx_fifo_overflow;
-    wire       rx_rd_valid;
     wire [12:0] rx_wr_data_count;
     reg        rx_fifo_full_seen;
+    reg        rx_fifo_full_frame_toggle;
+    reg        rx_fifo_full_write_toggle;
+    reg        rx_fifo_overflow_toggle;
+    reg [12:0] rx_fifo_wr_level_max_rxclk;
+    reg        rx_mii_frame_toggle;
+    reg [15:0] rx_mii_byte_count_rxclk;
+    reg [15:0] rx_mii_last_len_rxclk;
+    // 64-byte raw MII-RX byte capture (first 64 bytes of each frame, overwriting).
+    // Packed into 16 32-bit words for CDC + CSR exposure.
+    reg [7:0]  rx_mii_cap_rxclk [0:63];
+    integer    rxi;
+    wire [31:0] rx_mii_word_rxclk [0:15];
+    genvar rwi;
+    generate
+        for (rwi = 0; rwi < 16; rwi = rwi + 1) begin : g_rx_pack
+            assign rx_mii_word_rxclk[rwi] =
+                {rx_mii_cap_rxclk[rwi*4+0], rx_mii_cap_rxclk[rwi*4+1],
+                 rx_mii_cap_rxclk[rwi*4+2], rx_mii_cap_rxclk[rwi*4+3]};
+        end
+    endgenerate
+
+    assign rx_full_write = rx_wr_en && rx_wr_full;
+    assign rx_wr_accept = rx_wr_en && !rx_wr_full && !rx_wr_rst_busy;
 
     always @(posedge mii_rx_clk or negedge rx_rst_n_s2) begin
         if (!rx_rst_n_s2) begin
@@ -114,12 +187,30 @@ module mii_if (
             rx_wr_data <= 10'd0;
             rx_wr_en   <= 1'b0;
             rx_fifo_full_seen <= 1'b0;
+            if (MII_DEBUG != 0) begin
+                rx_fifo_full_frame_toggle <= 1'b0;
+                rx_fifo_full_write_toggle <= 1'b0;
+                rx_fifo_overflow_toggle <= 1'b0;
+                rx_fifo_wr_level_max_rxclk <= 13'd0;
+                rx_mii_frame_toggle <= 1'b0;
+                rx_mii_byte_count_rxclk <= 16'd0;
+                rx_mii_last_len_rxclk <= 16'd0;
+                for (rxi = 0; rxi < 64; rxi = rxi + 1)
+                    rx_mii_cap_rxclk[rxi] <= 8'd0;
+            end
         end else begin
             rx_wr_en <= 1'b0;
             rx_dv_d1 <= mii_rx_dv_iob;
+            if ((MII_DEBUG != 0) && (rx_wr_data_count > rx_fifo_wr_level_max_rxclk))
+                rx_fifo_wr_level_max_rxclk <= rx_wr_data_count;
 
-            if (rx_full_write || rx_fifo_overflow)
+            if (rx_full_write) begin
                 rx_fifo_full_seen <= 1'b1;
+                if (MII_DEBUG != 0)
+                    rx_fifo_full_write_toggle <= ~rx_fifo_full_write_toggle;
+            end
+            if ((MII_DEBUG != 0) && rx_fifo_overflow)
+                rx_fifo_overflow_toggle <= ~rx_fifo_overflow_toggle;
 
             if (mii_rx_dv_iob) begin
                 if (!rx_nib_sel) begin
@@ -127,42 +218,74 @@ module mii_if (
                     rx_er_low  <= mii_rx_er_iob;
                     rx_nib_sel <= 1'b1;
                 end else begin
-                    rx_wr_data <= {1'b0,
-                                   rx_er_low | mii_rx_er_iob |
+                    rx_wr_data <= {1'b0, rx_er_low | mii_rx_er_iob |
                                    rx_fifo_full_seen | rx_full_write,
                                    mii_rxd_iob, rx_nib_low};
                     rx_wr_en   <= 1'b1;
                     rx_nib_sel <= 1'b0;
+                    if (MII_DEBUG != 0) begin
+                        // First-64-byte capture (no wrap). byte_count is the
+                        // index of the byte we are committing this cycle.
+                        if (rx_mii_byte_count_rxclk[15:6] == 10'd0)
+                            rx_mii_cap_rxclk[rx_mii_byte_count_rxclk[5:0]]
+                                <= {mii_rxd_iob, rx_nib_low};
+                        rx_mii_byte_count_rxclk <= rx_mii_byte_count_rxclk + 1'b1;
+                    end
                 end
             end else begin
                 rx_nib_sel <= 1'b0;
                 if (rx_dv_d1) begin
                     rx_wr_data <= {1'b1, rx_fifo_full_seen, 8'h00};
                     rx_wr_en   <= 1'b1;
+                    if (MII_DEBUG != 0) begin
+                        rx_mii_last_len_rxclk <= rx_mii_byte_count_rxclk;
+                        rx_mii_frame_toggle <= ~rx_mii_frame_toggle;
+                        rx_mii_byte_count_rxclk <= 16'd0;
+                        if (rx_fifo_full_seen)
+                            rx_fifo_full_frame_toggle <= ~rx_fifo_full_frame_toggle;
+                    end
                     rx_fifo_full_seen <= 1'b0;
                 end
             end
         end
     end
 
-    (* keep = "true" *) reg rx_frame_toggle;
-    always @(posedge mii_rx_clk or negedge rx_rst_n_s2) begin
-        if (!rx_rst_n_s2)
-            rx_frame_toggle <= 1'b0;
-        else if (rx_wr_en && rx_wr_data[9])
-            rx_frame_toggle <= ~rx_frame_toggle;
-    end
-
     wire [9:0] rx_rd_data;
     wire       rx_rd_empty;
+    wire       rx_rd_valid;
     reg        rx_rd_en;
     wire       rx_wr_rst_busy;
     wire       rx_rd_rst_busy;
     wire       rx_prog_empty;
     wire       rx_rd_word_valid;
+    wire [12:0] rx_rd_data_count;
 
-    assign rx_full_write = rx_wr_en && rx_wr_full;
-    assign rx_wr_accept = rx_wr_en && !rx_wr_full && !rx_wr_rst_busy;
+    reg [15:0] rx_accept_byte_count_rxclk;
+    reg [15:0] rx_len_wr_data;
+    reg        rx_len_wr_en;
+    wire       rx_len_wr_full;
+    wire [15:0] rx_len_rd_data;
+    wire       rx_len_rd_empty;
+    reg        rx_len_rd_en;
+
+    always @(posedge mii_rx_clk or negedge rx_rst_n_s2) begin
+        if (!rx_rst_n_s2) begin
+            rx_accept_byte_count_rxclk <= 16'd0;
+            rx_len_wr_data <= 16'd0;
+            rx_len_wr_en <= 1'b0;
+        end else begin
+            rx_len_wr_en <= 1'b0;
+            if (rx_wr_accept) begin
+                if (rx_wr_data[9]) begin
+                    rx_len_wr_data <= rx_accept_byte_count_rxclk;
+                    rx_len_wr_en <= 1'b1;
+                    rx_accept_byte_count_rxclk <= 16'd0;
+                end else if (rx_accept_byte_count_rxclk != 16'hffff) begin
+                    rx_accept_byte_count_rxclk <= rx_accept_byte_count_rxclk + 1'b1;
+                end
+            end
+        end
+    end
 
 `ifdef SYNTHESIS
     xpm_fifo_async #(
@@ -178,7 +301,7 @@ module mii_if (
         .PROG_FULL_THRESH(10),
         .RD_DATA_COUNT_WIDTH(13),
         .WR_DATA_COUNT_WIDTH(13),
-        .USE_ADV_FEATURES("1200"),
+        .USE_ADV_FEATURES("1F1F"),
         .WAKEUP_TIME(0)
     ) u_rx_fifo (
         .wr_clk        (mii_rx_clk),
@@ -204,8 +327,53 @@ module mii_if (
         .almost_full   (),
         .almost_empty  (),
         .wr_data_count (rx_wr_data_count),
-        .rd_data_count (),
+        .rd_data_count (rx_rd_data_count),
         .data_valid    (rx_rd_valid),
+        .wr_ack        ()
+    );
+
+    xpm_fifo_async #(
+        .FIFO_MEMORY_TYPE("distributed"),
+        .FIFO_WRITE_DEPTH(128),
+        .WRITE_DATA_WIDTH(16),
+        .READ_DATA_WIDTH(16),
+        .READ_MODE("FWFT"),
+        .FIFO_READ_LATENCY(0),
+        .CDC_SYNC_STAGES(3),
+        .DOUT_RESET_VALUE("0"),
+        .FULL_RESET_VALUE(0),
+        .PROG_EMPTY_THRESH(5),
+        .PROG_FULL_THRESH(5),
+        .RD_DATA_COUNT_WIDTH(1),
+        .WR_DATA_COUNT_WIDTH(1),
+        .USE_ADV_FEATURES("0000"),
+        .WAKEUP_TIME(0)
+    ) u_rx_len_fifo (
+        .wr_clk        (mii_rx_clk),
+        .wr_en         (rx_len_wr_en && !rx_len_wr_full),
+        .din           (rx_len_wr_data),
+        .full          (rx_len_wr_full),
+        .wr_rst_busy   (),
+        .rd_clk        (clk),
+        .rd_en         (rx_len_rd_en),
+        .dout          (rx_len_rd_data),
+        .empty         (rx_len_rd_empty),
+        .rd_rst_busy   (),
+        .rst           (~rx_rst_n_s2),
+        .sleep         (1'b0),
+        .injectsbiterr (1'b0),
+        .injectdbiterr (1'b0),
+        .sbiterr       (),
+        .dbiterr       (),
+        .overflow      (),
+        .underflow     (),
+        .prog_full     (),
+        .prog_empty    (),
+        .almost_full   (),
+        .almost_empty  (),
+        .wr_data_count (),
+        .rd_data_count (),
+        .data_valid    (),
         .wr_ack        ()
     );
 `else
@@ -214,6 +382,7 @@ module mii_if (
     assign rx_rd_rst_busy = 1'b0;
     assign rx_fifo_overflow = rx_full_write;
     assign rx_wr_data_count = 13'd0;
+    assign rx_rd_data_count = rx_rd_empty ? 13'd0 : 13'h1fff;
     assign rx_rd_valid = !rx_rd_empty;
     async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(11)) u_rx_fifo (
         .wr_clk  (mii_rx_clk),
@@ -226,6 +395,19 @@ module mii_if (
         .rd_data (rx_rd_data),
         .rd_en   (rx_rd_en),
         .rd_empty(rx_rd_empty)
+    );
+
+    async_fifo #(.DATA_WIDTH(16), .ADDR_WIDTH(7)) u_rx_len_fifo (
+        .wr_clk  (mii_rx_clk),
+        .wr_rst_n(rx_rst_n_s2),
+        .wr_data (rx_len_wr_data),
+        .wr_en   (rx_len_wr_en && !rx_len_wr_full),
+        .wr_full (rx_len_wr_full),
+        .rd_clk  (clk),
+        .rd_rst_n(rst_n),
+        .rd_data (rx_len_rd_data),
+        .rd_en   (rx_len_rd_en),
+        .rd_empty(rx_len_rd_empty)
     );
 `endif
 
@@ -255,23 +437,69 @@ module mii_if (
     wire       rx_mem_rd_en;
     wire [11:0] rx_mem_rd_addr_reg;
     wire [8:0] rx_frame_mem_dout;
-    (* ASYNC_REG = "TRUE" *) reg rx_toggle_s1, rx_toggle_s2, rx_toggle_s3;
-    // Wait after the write-clock EOF toggle before replay. The async XPM FIFO
-    // can expose the EOF toggle to sys_clk before all recently-written data
-    // and the EOF marker are safely visible at the read port under burst load.
-    // 4095 cycles is about 41 us at 100 MHz, still below a 100 Mbps MTU frame
-    // time but large enough to prevent replay from catching the CDC tail.
-    localparam [11:0] RX_FRAME_VIS_DELAY = 12'd4095;
-
-    reg        rx_avail_wait_active;
-    reg [11:0] rx_avail_wait_cnt;
-    reg [3:0]  rx_frames_pending;
+    (* ASYNC_REG = "TRUE" *) reg rx_full_frame_s1, rx_full_frame_s2, rx_full_frame_s3;
+    (* ASYNC_REG = "TRUE" *) reg rx_full_write_s1, rx_full_write_s2, rx_full_write_s3;
+    (* ASYNC_REG = "TRUE" *) reg rx_overflow_s1, rx_overflow_s2, rx_overflow_s3;
+    (* ASYNC_REG = "TRUE" *) reg rx_mii_frame_s1, rx_mii_frame_s2, rx_mii_frame_s3;
+    (* ASYNC_REG = "TRUE" *) reg [12:0] rx_wr_level_max_s1, rx_wr_level_max_s2;
     reg        rx_frame_done_pulse;
+    reg [31:0] rx_fifo_full_frames_sys;
+    reg [31:0] rx_fifo_full_writes_sys;
+    reg [31:0] rx_fifo_overflow_pulses_sys;
+    reg [31:0] rx_fifo_wr_level_max_sys;
+    reg [31:0] rx_replay_gap_frames_sys;
+    reg [31:0] rx_replay_gap_cycles_sys;
+    reg [31:0] rx_replay_gap_byte_max_sys;
+    reg [15:0] rx_replay_byte_count;
+    reg        rx_replay_gap_seen;
+    reg [31:0] rx_mii_last_len_sys;
+    // 16 sysclk-domain capture words (64 bytes per frame, latched on frame-end)
+    reg [31:0] rx_mii_word_sys [0:15];
+    integer    rxsi;
+    reg [31:0] rx_replay_last_len_sys;
+    reg [31:0] rx_replay_word0_sys;
+    reg [31:0] rx_replay_word1_sys;
+    reg [31:0] rx_replay_word2_sys;
+    reg [31:0] rx_replay_word3_sys;
+    reg [31:0] rx_replay_eof_count_sys;
 
-    wire rx_frame_avail = (rx_toggle_s2 != rx_toggle_s3);
-    wire rx_frame_avail_d = rx_avail_wait_active &&
-                            (rx_avail_wait_cnt == RX_FRAME_VIS_DELAY);
-    wire rx_frame_ready = (rx_frames_pending > 0);
+    wire [12:0] rx_len_words_needed =
+        (|rx_len_rd_data[15:12]) ? 13'h1fff :
+                                   ({1'b0, rx_len_rd_data[11:0]} + 13'd1);
+    wire rx_frame_ready = !rx_len_rd_empty &&
+                          !rx_rd_rst_busy &&
+                          (rx_rd_data_count >= rx_len_words_needed);
+
+    assign dbg_rx_fifo_full_frames = (MII_DEBUG != 0) ? rx_fifo_full_frames_sys : 32'd0;
+    assign dbg_rx_fifo_full_writes = (MII_DEBUG != 0) ? rx_fifo_full_writes_sys : 32'd0;
+    assign dbg_rx_fifo_overflow_pulses = (MII_DEBUG != 0) ? rx_fifo_overflow_pulses_sys : 32'd0;
+    assign dbg_rx_fifo_wr_level_max = (MII_DEBUG != 0) ? rx_fifo_wr_level_max_sys : 32'd0;
+    assign dbg_rx_replay_gap_frames = (MII_DEBUG != 0) ? rx_replay_gap_frames_sys : 32'd0;
+    assign dbg_rx_replay_gap_cycles = (MII_DEBUG != 0) ? rx_replay_gap_cycles_sys : 32'd0;
+    assign dbg_rx_replay_gap_byte_max = (MII_DEBUG != 0) ? rx_replay_gap_byte_max_sys : 32'd0;
+    assign dbg_rx_mii_last_len = (MII_DEBUG != 0) ? rx_mii_last_len_sys : 32'd0;
+    assign dbg_rx_mii_word0  = (MII_DEBUG != 0) ? rx_mii_word_sys[ 0] : 32'd0;
+    assign dbg_rx_mii_word1  = (MII_DEBUG != 0) ? rx_mii_word_sys[ 1] : 32'd0;
+    assign dbg_rx_mii_word2  = (MII_DEBUG != 0) ? rx_mii_word_sys[ 2] : 32'd0;
+    assign dbg_rx_mii_word3  = (MII_DEBUG != 0) ? rx_mii_word_sys[ 3] : 32'd0;
+    assign dbg_rx_mii_word4  = (MII_DEBUG != 0) ? rx_mii_word_sys[ 4] : 32'd0;
+    assign dbg_rx_mii_word5  = (MII_DEBUG != 0) ? rx_mii_word_sys[ 5] : 32'd0;
+    assign dbg_rx_mii_word6  = (MII_DEBUG != 0) ? rx_mii_word_sys[ 6] : 32'd0;
+    assign dbg_rx_mii_word7  = (MII_DEBUG != 0) ? rx_mii_word_sys[ 7] : 32'd0;
+    assign dbg_rx_mii_word8  = (MII_DEBUG != 0) ? rx_mii_word_sys[ 8] : 32'd0;
+    assign dbg_rx_mii_word9  = (MII_DEBUG != 0) ? rx_mii_word_sys[ 9] : 32'd0;
+    assign dbg_rx_mii_word10 = (MII_DEBUG != 0) ? rx_mii_word_sys[10] : 32'd0;
+    assign dbg_rx_mii_word11 = (MII_DEBUG != 0) ? rx_mii_word_sys[11] : 32'd0;
+    assign dbg_rx_mii_word12 = (MII_DEBUG != 0) ? rx_mii_word_sys[12] : 32'd0;
+    assign dbg_rx_mii_word13 = (MII_DEBUG != 0) ? rx_mii_word_sys[13] : 32'd0;
+    assign dbg_rx_mii_word14 = (MII_DEBUG != 0) ? rx_mii_word_sys[14] : 32'd0;
+    assign dbg_rx_mii_word15 = (MII_DEBUG != 0) ? rx_mii_word_sys[15] : 32'd0;
+    assign dbg_rx_replay_last_len = (MII_DEBUG != 0) ? rx_replay_last_len_sys : 32'd0;
+    assign dbg_rx_replay_word0 = (MII_DEBUG != 0) ? rx_replay_word0_sys : 32'd0;
+    assign dbg_rx_replay_word1 = (MII_DEBUG != 0) ? rx_replay_word1_sys : 32'd0;
+    assign dbg_rx_replay_word2 = (MII_DEBUG != 0) ? rx_replay_word2_sys : 32'd0;
+    assign dbg_rx_replay_word3 = (MII_DEBUG != 0) ? rx_replay_word3_sys : 32'd0;
+    assign dbg_rx_replay_eof_count = (MII_DEBUG != 0) ? rx_replay_eof_count_sys : 32'd0;
 
     assign rx_mem_rd_en = (rx_replay_state == RX_REPLAY_PRIME) ||
                           ((rx_replay_state == RX_REPLAY_WAIT) &&
@@ -341,34 +569,60 @@ module mii_if (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rx_toggle_s1 <= 1'b0;
-            rx_toggle_s2 <= 1'b0;
-            rx_toggle_s3 <= 1'b0;
-            rx_avail_wait_active <= 1'b0;
-            rx_avail_wait_cnt <= 12'd0;
-            rx_frames_pending <= 4'd0;
+            if (MII_DEBUG != 0) begin
+                rx_full_frame_s1 <= 1'b0;
+                rx_full_frame_s2 <= 1'b0;
+                rx_full_frame_s3 <= 1'b0;
+                rx_full_write_s1 <= 1'b0;
+                rx_full_write_s2 <= 1'b0;
+                rx_full_write_s3 <= 1'b0;
+                rx_overflow_s1 <= 1'b0;
+                rx_overflow_s2 <= 1'b0;
+                rx_overflow_s3 <= 1'b0;
+                rx_mii_frame_s1 <= 1'b0;
+                rx_mii_frame_s2 <= 1'b0;
+                rx_mii_frame_s3 <= 1'b0;
+                rx_wr_level_max_s1 <= 13'd0;
+                rx_wr_level_max_s2 <= 13'd0;
+                rx_fifo_full_frames_sys <= 32'd0;
+                rx_fifo_full_writes_sys <= 32'd0;
+                rx_fifo_overflow_pulses_sys <= 32'd0;
+                rx_fifo_wr_level_max_sys <= 32'd0;
+                rx_mii_last_len_sys <= 32'd0;
+                for (rxsi = 0; rxsi < 16; rxsi = rxsi + 1)
+                    rx_mii_word_sys[rxsi] <= 32'd0;
+            end
         end else begin
-            rx_toggle_s1 <= rx_frame_toggle;
-            rx_toggle_s2 <= rx_toggle_s1;
-            rx_toggle_s3 <= rx_toggle_s2;
-            if (rx_frame_avail && !rx_avail_wait_active) begin
-                rx_avail_wait_active <= 1'b1;
-                rx_avail_wait_cnt <= 12'd0;
-            end else if (rx_avail_wait_active) begin
-                if (rx_frame_avail_d) begin
-                    rx_avail_wait_active <= 1'b0;
-                    rx_avail_wait_cnt <= 12'd0;
-                end else begin
-                    rx_avail_wait_cnt <= rx_avail_wait_cnt + 1'b1;
+            if (MII_DEBUG != 0) begin
+                rx_full_frame_s1 <= rx_fifo_full_frame_toggle;
+                rx_full_frame_s2 <= rx_full_frame_s1;
+                rx_full_frame_s3 <= rx_full_frame_s2;
+                rx_full_write_s1 <= rx_fifo_full_write_toggle;
+                rx_full_write_s2 <= rx_full_write_s1;
+                rx_full_write_s3 <= rx_full_write_s2;
+                rx_overflow_s1 <= rx_fifo_overflow_toggle;
+                rx_overflow_s2 <= rx_overflow_s1;
+                rx_overflow_s3 <= rx_overflow_s2;
+                rx_mii_frame_s1 <= rx_mii_frame_toggle;
+                rx_mii_frame_s2 <= rx_mii_frame_s1;
+                rx_mii_frame_s3 <= rx_mii_frame_s2;
+                rx_wr_level_max_s1 <= rx_fifo_wr_level_max_rxclk;
+                rx_wr_level_max_s2 <= rx_wr_level_max_s1;
+
+                if (rx_full_frame_s2 != rx_full_frame_s3)
+                    rx_fifo_full_frames_sys <= rx_fifo_full_frames_sys + 1'b1;
+                if (rx_full_write_s2 != rx_full_write_s3)
+                    rx_fifo_full_writes_sys <= rx_fifo_full_writes_sys + 1'b1;
+                if (rx_overflow_s2 != rx_overflow_s3)
+                    rx_fifo_overflow_pulses_sys <= rx_fifo_overflow_pulses_sys + 1'b1;
+                if (rx_wr_level_max_s2 > rx_fifo_wr_level_max_sys[12:0])
+                    rx_fifo_wr_level_max_sys <= {19'd0, rx_wr_level_max_s2};
+                if (rx_mii_frame_s2 != rx_mii_frame_s3) begin
+                    rx_mii_last_len_sys <= {16'd0, rx_mii_last_len_rxclk};
+                    for (rxsi = 0; rxsi < 16; rxsi = rxsi + 1)
+                        rx_mii_word_sys[rxsi] <= rx_mii_word_rxclk[rxsi];
                 end
             end
-
-            case ({rx_frame_avail_d, rx_frame_done_pulse})
-                2'b10: rx_frames_pending <= rx_frames_pending + 4'd1;
-                2'b01: if (rx_frames_pending != 4'd0)
-                           rx_frames_pending <= rx_frames_pending - 4'd1;
-                default: ;
-            endcase
         end
     end
 
@@ -378,6 +632,7 @@ module mii_if (
             gmii_rx_dv          <= 1'b0;
             gmii_rx_er          <= 1'b0;
             rx_rd_en            <= 1'b0;
+            rx_len_rd_en        <= 1'b0;
             rx_mem_wr_en        <= 1'b0;
             rx_mem_wr_addr      <= 12'd0;
             rx_mem_wr_data      <= 9'd0;
@@ -389,8 +644,22 @@ module mii_if (
             rx_mem_rd_addr      <= 16'd0;
             rx_mem_rd_data      <= 9'd0;
             rx_frame_done_pulse <= 1'b0;
+            if (MII_DEBUG != 0) begin
+                rx_replay_gap_frames_sys <= 32'd0;
+                rx_replay_gap_cycles_sys <= 32'd0;
+                rx_replay_gap_byte_max_sys <= 32'd0;
+                rx_replay_byte_count <= 16'd0;
+                rx_replay_gap_seen <= 1'b0;
+                rx_replay_last_len_sys <= 32'd0;
+                rx_replay_word0_sys <= 32'd0;
+                rx_replay_word1_sys <= 32'd0;
+                rx_replay_word2_sys <= 32'd0;
+                rx_replay_word3_sys <= 32'd0;
+                rx_replay_eof_count_sys <= 32'd0;
+            end
         end else begin
             rx_rd_en            <= 1'b0;
+            rx_len_rd_en        <= 1'b0;
             rx_mem_wr_en        <= 1'b0;
             gmii_rx_dv          <= 1'b0;
             gmii_rx_er          <= 1'b0;
@@ -400,8 +669,14 @@ module mii_if (
                 RX_REPLAY_IDLE: begin
                     rx_load_wait <= 1'b0;
                     rx_load_count <= 16'd0;
-                    if (rx_frame_ready && rx_rd_word_valid)
+                    if (MII_DEBUG != 0) begin
+                        rx_replay_byte_count <= 16'd0;
+                        rx_replay_gap_seen <= 1'b0;
+                    end
+                    if (rx_frame_ready && rx_rd_word_valid) begin
+                        rx_len_rd_en <= 1'b1;
                         rx_replay_state <= RX_REPLAY_LOAD;
+                    end
                 end
 
                 RX_REPLAY_LOAD: begin
@@ -413,6 +688,12 @@ module mii_if (
                         if (rx_rd_data[9]) begin
                             rx_frame_done_pulse <= 1'b1;
                             rx_replay_len <= rx_load_count;
+                            if (MII_DEBUG != 0) begin
+                                rx_replay_last_len_sys <= {16'd0, rx_load_count};
+                                rx_replay_eof_count_sys <= rx_replay_eof_count_sys + 1'b1;
+                                rx_replay_byte_count <= 16'd0;
+                                rx_replay_gap_seen <= 1'b0;
+                            end
                             rx_mem_rd_addr <= 16'd0;
                             rx_replay_index <= 16'd0;
                             rx_replay_state <= (rx_load_count != 16'd0) ?
@@ -423,9 +704,16 @@ module mii_if (
                             rx_mem_wr_data <= {rx_rd_data[8], rx_rd_data[7:0]};
                             rx_load_count <= rx_load_count + 1'b1;
                         end
-                    end else if (!rx_frame_ready) begin
-                        rx_replay_state <= RX_REPLAY_IDLE;
-                        rx_load_count <= 16'd0;
+                    end else begin
+                        if (MII_DEBUG != 0) begin
+                            rx_replay_gap_cycles_sys <= rx_replay_gap_cycles_sys + 1'b1;
+                            if (!rx_replay_gap_seen) begin
+                                rx_replay_gap_frames_sys <= rx_replay_gap_frames_sys + 1'b1;
+                                rx_replay_gap_seen <= 1'b1;
+                            end
+                            if ({16'd0, rx_load_count} > rx_replay_gap_byte_max_sys)
+                                rx_replay_gap_byte_max_sys <= {16'd0, rx_load_count};
+                        end
                     end
                 end
 
@@ -437,8 +725,9 @@ module mii_if (
 
                 RX_REPLAY_WAIT: begin
                     rx_mem_rd_data <= rx_frame_mem_dout;
-                    if (rx_replay_len > 16'd1)
+                    if (rx_replay_len > 16'd1) begin
                         rx_mem_rd_addr <= 16'd2;
+                    end
                     rx_replay_state <= RX_REPLAY_SEND;
                 end
 
@@ -446,13 +735,35 @@ module mii_if (
                     gmii_rxd   <= rx_mem_rd_data[7:0];
                     gmii_rx_er <= rx_mem_rd_data[8];
                     gmii_rx_dv <= 1'b1;
+                    if (MII_DEBUG != 0) begin
+                        case (rx_replay_byte_count[3:0])
+                            4'h0: rx_replay_word0_sys[31:24] <= rx_mem_rd_data[7:0];
+                            4'h1: rx_replay_word0_sys[23:16] <= rx_mem_rd_data[7:0];
+                            4'h2: rx_replay_word0_sys[15:8]  <= rx_mem_rd_data[7:0];
+                            4'h3: rx_replay_word0_sys[7:0]   <= rx_mem_rd_data[7:0];
+                            4'h4: rx_replay_word1_sys[31:24] <= rx_mem_rd_data[7:0];
+                            4'h5: rx_replay_word1_sys[23:16] <= rx_mem_rd_data[7:0];
+                            4'h6: rx_replay_word1_sys[15:8]  <= rx_mem_rd_data[7:0];
+                            4'h7: rx_replay_word1_sys[7:0]   <= rx_mem_rd_data[7:0];
+                            4'h8: rx_replay_word2_sys[31:24] <= rx_mem_rd_data[7:0];
+                            4'h9: rx_replay_word2_sys[23:16] <= rx_mem_rd_data[7:0];
+                            4'ha: rx_replay_word2_sys[15:8]  <= rx_mem_rd_data[7:0];
+                            4'hb: rx_replay_word2_sys[7:0]   <= rx_mem_rd_data[7:0];
+                            4'hc: rx_replay_word3_sys[31:24] <= rx_mem_rd_data[7:0];
+                            4'hd: rx_replay_word3_sys[23:16] <= rx_mem_rd_data[7:0];
+                            4'he: rx_replay_word3_sys[15:8]  <= rx_mem_rd_data[7:0];
+                            4'hf: rx_replay_word3_sys[7:0]   <= rx_mem_rd_data[7:0];
+                        endcase
+                        rx_replay_byte_count <= rx_replay_byte_count + 1'b1;
+                    end
 
                     if ((rx_replay_index + 1'b1) >= rx_replay_len) begin
                         rx_replay_state <= RX_REPLAY_IDLE;
                     end else begin
                         rx_mem_rd_data <= rx_frame_mem_dout;
-                        if ((rx_replay_index + 16'd2) < rx_replay_len)
+                        if ((rx_replay_index + 16'd2) < rx_replay_len) begin
                             rx_mem_rd_addr <= rx_mem_rd_addr + 1'b1;
+                        end
                         rx_replay_index <= rx_replay_index + 1'b1;
                     end
                 end
@@ -466,11 +777,49 @@ module mii_if (
     // TX path: GMII -> data FIFO + frame length FIFO -> MII
     // =========================================================================
     reg tx_en_d1;
+    reg tx_er_d1;
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) tx_en_d1 <= 1'b0;
-        else        tx_en_d1 <= gmii_tx_en;
+        if (!rst_n) begin
+            tx_en_d1 <= 1'b0;
+            tx_er_d1 <= 1'b0;
+        end else begin
+            tx_en_d1 <= gmii_tx_en;
+            tx_er_d1 <= gmii_tx_er;
+        end
     end
-    wire tx_en_fall = tx_en_d1 && !gmii_tx_en;
+    wire tx_en_fall  = tx_en_d1 && !gmii_tx_en;
+    wire tx_er_rise  = gmii_tx_er && !tx_er_d1;
+
+    // gmii_tx_er visibility. The MII output stage discards gmii_tx_er today -
+    // these counters surface that fact without changing TX semantics so a
+    // store-and-forward upstream (or a later mii_if-side discard) can be
+    // validated against hardware.
+    reg [31:0] tx_er_pulses_r;
+    reg [31:0] tx_er_frames_r;
+    reg        tx_er_seen_this_frame;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            if (MII_DEBUG != 0) begin
+                tx_er_pulses_r        <= 32'd0;
+                tx_er_frames_r        <= 32'd0;
+                tx_er_seen_this_frame <= 1'b0;
+            end
+        end else begin
+            if (MII_DEBUG != 0) begin
+                if (tx_er_rise && gmii_tx_en)
+                    tx_er_pulses_r <= tx_er_pulses_r + 32'd1;
+                if (gmii_tx_en && gmii_tx_er)
+                    tx_er_seen_this_frame <= 1'b1;
+                if (tx_en_fall) begin
+                    if (tx_er_seen_this_frame)
+                        tx_er_frames_r <= tx_er_frames_r + 32'd1;
+                    tx_er_seen_this_frame <= 1'b0;
+                end
+            end
+        end
+    end
+    assign dbg_tx_er_pulses = (MII_DEBUG != 0) ? tx_er_pulses_r : 32'd0;
+    assign dbg_tx_er_frames = (MII_DEBUG != 0) ? tx_er_frames_r : 32'd0;
 
     reg [11:0] tx_frame_len_wr;
     reg [11:0] tx_len_wr_data;
@@ -501,7 +850,7 @@ module mii_if (
     // Headroom must cover (frame_bytes_written - frame_bytes_drained) during
     // a single eth_mac_tx frame *plus* CDC slop on wr_data_count. With
     // sys_clk=100MHz writing at 1B/cycle and MII=12.5MB/s draining, a
-    // 1518-byte frame nets ~1340 bytes of growth — but mii_if also sits in
+    // 1518-byte frame nets ~1340 bytes of growth - but mii_if also sits in
     // a 40-cycle IFG between drained frames where no drain occurs, so the
     // worst-case growth approaches 1530. Reserve 3072 bytes of headroom to
     // absorb wr_data_count CDC latency and keep the FIFO out of drop
@@ -563,13 +912,13 @@ module mii_if (
 `endif
 
     // Debug output assigns
-    assign dbg_tx_wr_en          = tx_wr_en && !tx_wr_full;
-    assign dbg_tx_len_wr_en      = tx_len_wr_en;
-    assign dbg_tx_wr_full        = tx_wr_full;
-    assign dbg_tx_wr_rst_busy_out = tx_wr_rst_busy;
-    assign dbg_tx_rd_en          = tx_rd_en;
-    assign dbg_tx_frame_loaded   = tx_frame_loaded;
-    assign dbg_last_tx_len_wr    = tx_len_wr_data;
+    assign dbg_tx_wr_en           = (MII_DEBUG != 0) ? (tx_wr_en && !tx_wr_full) : 1'b0;
+    assign dbg_tx_len_wr_en       = (MII_DEBUG != 0) ? tx_len_wr_en : 1'b0;
+    assign dbg_tx_wr_full         = (MII_DEBUG != 0) ? tx_wr_full : 1'b0;
+    assign dbg_tx_wr_rst_busy_out = (MII_DEBUG != 0) ? tx_wr_rst_busy : 1'b0;
+    assign dbg_tx_rd_en           = (MII_DEBUG != 0) ? tx_rd_en : 1'b0;
+    assign dbg_tx_frame_loaded    = (MII_DEBUG != 0) ? tx_frame_loaded : 1'b0;
+    assign dbg_last_tx_len_wr     = (MII_DEBUG != 0) ? tx_len_wr_data : 12'd0;
 
     // Frame counters (sys_clk domain)
     reg [11:0] tx_frames_queued_r;
@@ -581,8 +930,8 @@ module mii_if (
     wire       drain_pulse = drain_sync2 ^ drain_sync3;
     wire       tx_len_write_ok = tx_len_wr_en && !tx_len_wr_full;
 
-    assign dbg_tx_frames_queued  = tx_frames_queued_r;
-    assign dbg_tx_frames_drained = tx_frames_drained_r;
+    assign dbg_tx_frames_queued  = (MII_DEBUG != 0) ? tx_frames_queued_r : 12'd0;
+    assign dbg_tx_frames_drained = (MII_DEBUG != 0) ? tx_frames_drained_r : 12'd0;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -611,11 +960,11 @@ module mii_if (
         end
     end
 
-    assign dbg_tx_fifo_empty     = tx_rd_empty;
-    assign dbg_rx_prog_empty     = rx_prog_empty;
-    assign dbg_rx_rd_empty       = rx_rd_empty;
-    assign dbg_rx_reading        = (rx_replay_state != RX_REPLAY_IDLE);
-    assign dbg_rx_frames_pending = rx_frames_pending[1:0];
+    assign dbg_tx_fifo_empty     = (MII_DEBUG != 0) ? tx_rd_empty : 1'b0;
+    assign dbg_rx_prog_empty     = (MII_DEBUG != 0) ? rx_prog_empty : 1'b0;
+    assign dbg_rx_rd_empty       = (MII_DEBUG != 0) ? rx_rd_empty : 1'b0;
+    assign dbg_rx_reading        = (MII_DEBUG != 0) ? (rx_replay_state != RX_REPLAY_IDLE) : 1'b0;
+    assign dbg_rx_frames_pending = (MII_DEBUG != 0) ? {1'b0, rx_frame_ready} : 2'd0;
 
 `ifdef SYNTHESIS
     xpm_fifo_async #(
@@ -663,6 +1012,7 @@ module mii_if (
     );
 
     xpm_fifo_async #(
+        .FIFO_MEMORY_TYPE("distributed"),
         .FIFO_WRITE_DEPTH(16),
         .WRITE_DATA_WIDTH(12),
         .READ_DATA_WIDTH(12),
@@ -749,12 +1099,14 @@ module mii_if (
     reg [3:0]  mii_txd_int;
     reg        mii_tx_en_int;
 
-    // Dedicated IOB output registers — fanout=1, drives pad only
+    // Dedicated IOB output registers - fanout=1, drives pad only
     (* IOB = "TRUE" *) reg [3:0] mii_txd_iob;
     (* IOB = "TRUE" *) reg       mii_tx_en_iob;
 
     assign mii_txd   = mii_txd_iob;
     assign mii_tx_en = mii_tx_en_iob;
+    assign dbg_mii_txd_pre_iob = (MII_DEBUG != 0) ? mii_txd_int : 4'd0;
+    assign dbg_mii_tx_en_pre_iob = (MII_DEBUG != 0) ? mii_tx_en_int : 1'b0;
 
     // IOB register stage: copies internal to pad on every mii_tx_clk
     always @(posedge mii_tx_clk) begin
@@ -845,53 +1197,60 @@ module mii_if (
 
     // =========================================================================
     // MII TX byte capture (mii_tx_clk domain)
-    // Captures first 32 bytes read from data FIFO for first frame with len>100.
-    // Also captures the frame length from the length FIFO.
+    // Captures the first 64 bytes of every transmitted frame, overwriting on
+    // each new frame so software always sees the most recent. Software should
+    // poll dbg_mii_cap_done and read while it stays high.
     // =========================================================================
-    reg [7:0]  mii_cap [0:31];      // captured bytes (from tx_rd_data)
-    reg [4:0]  mii_cap_idx;
+    reg [7:0]  mii_cap [0:63];      // captured bytes (from tx_rd_data)
+    reg [5:0]  mii_cap_idx;
     reg [11:0] mii_cap_frame_len;   // frame length from len FIFO
     reg        mii_cap_active;      // currently capturing
-    reg        mii_cap_done;        // capture complete (stays high)
+    reg        mii_cap_done;        // capture complete for the latest frame
     reg [11:0] mii_cap_total_len;   // frame len being tracked
 
     integer mi;
     always @(posedge mii_tx_clk) begin
         if (!tx_rst_n_s2) begin
-            mii_cap_idx       <= 5'd0;
-            mii_cap_frame_len <= 12'd0;
-            mii_cap_active    <= 1'b0;
-            mii_cap_done      <= 1'b0;
-            mii_cap_total_len <= 12'd0;
-            for (mi = 0; mi < 32; mi = mi + 1)
-                mii_cap[mi] <= 8'd0;
-        end else begin
-            // When a new frame is loaded from the length FIFO
-            if (!tx_frame_loaded && !tx_len_rd_empty && !mii_cap_done) begin
-                mii_cap_total_len <= tx_len_rd_data;
-                if (tx_len_rd_data > 12'd100) begin
-                    mii_cap_active    <= 1'b1;
-                    mii_cap_idx       <= 5'd0;
-                    mii_cap_frame_len <= tx_len_rd_data;
-                end
+            if (MII_DEBUG != 0) begin
+                mii_cap_idx       <= 6'd0;
+                mii_cap_frame_len <= 12'd0;
+                mii_cap_active    <= 1'b0;
+                mii_cap_done      <= 1'b0;
+                mii_cap_total_len <= 12'd0;
+                for (mi = 0; mi < 64; mi = mi + 1)
+                    mii_cap[mi] <= 8'd0;
             end
+        end else begin
+            if (MII_DEBUG != 0) begin
+                // Re-arm capture each time a new frame is loaded from the length
+                // FIFO (drop the "done" gate that froze the original capture).
+                if (!tx_frame_loaded && !tx_len_rd_empty) begin
+                    mii_cap_total_len <= tx_len_rd_data;
+                    if (tx_len_rd_data != 12'd0) begin
+                        mii_cap_active    <= 1'b1;
+                        mii_cap_done      <= 1'b0;
+                        mii_cap_idx       <= 6'd0;
+                        mii_cap_frame_len <= tx_len_rd_data;
+                    end
+                end
 
-            // Capture bytes as they're read from data FIFO
-            if (mii_cap_active && tx_rd_en) begin
-                if (mii_cap_idx < 5'd31) begin
-                    mii_cap[mii_cap_idx] <= tx_rd_data;
-                    mii_cap_idx <= mii_cap_idx + 5'd1;
-                end else begin
-                    mii_cap[31] <= tx_rd_data;
+                // Capture bytes as they're read from data FIFO.
+                if (mii_cap_active && tx_rd_en) begin
+                    if (mii_cap_idx < 6'd63) begin
+                        mii_cap[mii_cap_idx] <= tx_rd_data;
+                        mii_cap_idx <= mii_cap_idx + 6'd1;
+                    end else begin
+                        mii_cap[63] <= tx_rd_data;
+                        mii_cap_active <= 1'b0;
+                        mii_cap_done   <= 1'b1;
+                    end
+                end
+
+                // Also finish capture when frame ends short of 64 bytes.
+                if (mii_cap_active && tx_frame_bytes_left == 12'd0) begin
                     mii_cap_active <= 1'b0;
                     mii_cap_done   <= 1'b1;
                 end
-            end
-
-            // Also finish capture when frame ends
-            if (mii_cap_active && tx_frame_bytes_left == 12'd0) begin
-                mii_cap_active <= 1'b0;
-                mii_cap_done   <= 1'b1;
             end
         end
     end
@@ -900,20 +1259,36 @@ module mii_if (
     reg mii_cap_done_s1, mii_cap_done_s2;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            mii_cap_done_s1 <= 1'b0;
-            mii_cap_done_s2 <= 1'b0;
+            if (MII_DEBUG != 0) begin
+                mii_cap_done_s1 <= 1'b0;
+                mii_cap_done_s2 <= 1'b0;
+            end
         end else begin
-            mii_cap_done_s1 <= mii_cap_done;
-            mii_cap_done_s2 <= mii_cap_done_s1;
+            if (MII_DEBUG != 0) begin
+                mii_cap_done_s1 <= mii_cap_done;
+                mii_cap_done_s2 <= mii_cap_done_s1;
+            end
         end
     end
 
     // Debug assigns for MII capture (stable after mii_cap_done_s2)
-    assign dbg_mii_cap_done      = mii_cap_done_s2;
-    assign dbg_mii_cap_frame_len = mii_cap_frame_len;
-    assign dbg_mii_cap_word0     = {mii_cap[0],  mii_cap[1],  mii_cap[2],  mii_cap[3]};
-    assign dbg_mii_cap_word1     = {mii_cap[4],  mii_cap[5],  mii_cap[6],  mii_cap[7]};
-    assign dbg_mii_cap_word2     = {mii_cap[8],  mii_cap[9],  mii_cap[10], mii_cap[11]};
-    assign dbg_mii_cap_word3     = {mii_cap[12], mii_cap[13], mii_cap[14], mii_cap[15]};
+    assign dbg_mii_cap_done      = (MII_DEBUG != 0) ? mii_cap_done_s2 : 1'b0;
+    assign dbg_mii_cap_frame_len = (MII_DEBUG != 0) ? mii_cap_frame_len : 12'd0;
+    assign dbg_mii_cap_word0     = (MII_DEBUG != 0) ? {mii_cap[ 0], mii_cap[ 1], mii_cap[ 2], mii_cap[ 3]} : 32'd0;
+    assign dbg_mii_cap_word1     = (MII_DEBUG != 0) ? {mii_cap[ 4], mii_cap[ 5], mii_cap[ 6], mii_cap[ 7]} : 32'd0;
+    assign dbg_mii_cap_word2     = (MII_DEBUG != 0) ? {mii_cap[ 8], mii_cap[ 9], mii_cap[10], mii_cap[11]} : 32'd0;
+    assign dbg_mii_cap_word3     = (MII_DEBUG != 0) ? {mii_cap[12], mii_cap[13], mii_cap[14], mii_cap[15]} : 32'd0;
+    assign dbg_mii_cap_word4     = (MII_DEBUG != 0) ? {mii_cap[16], mii_cap[17], mii_cap[18], mii_cap[19]} : 32'd0;
+    assign dbg_mii_cap_word5     = (MII_DEBUG != 0) ? {mii_cap[20], mii_cap[21], mii_cap[22], mii_cap[23]} : 32'd0;
+    assign dbg_mii_cap_word6     = (MII_DEBUG != 0) ? {mii_cap[24], mii_cap[25], mii_cap[26], mii_cap[27]} : 32'd0;
+    assign dbg_mii_cap_word7     = (MII_DEBUG != 0) ? {mii_cap[28], mii_cap[29], mii_cap[30], mii_cap[31]} : 32'd0;
+    assign dbg_mii_cap_word8     = (MII_DEBUG != 0) ? {mii_cap[32], mii_cap[33], mii_cap[34], mii_cap[35]} : 32'd0;
+    assign dbg_mii_cap_word9     = (MII_DEBUG != 0) ? {mii_cap[36], mii_cap[37], mii_cap[38], mii_cap[39]} : 32'd0;
+    assign dbg_mii_cap_word10    = (MII_DEBUG != 0) ? {mii_cap[40], mii_cap[41], mii_cap[42], mii_cap[43]} : 32'd0;
+    assign dbg_mii_cap_word11    = (MII_DEBUG != 0) ? {mii_cap[44], mii_cap[45], mii_cap[46], mii_cap[47]} : 32'd0;
+    assign dbg_mii_cap_word12    = (MII_DEBUG != 0) ? {mii_cap[48], mii_cap[49], mii_cap[50], mii_cap[51]} : 32'd0;
+    assign dbg_mii_cap_word13    = (MII_DEBUG != 0) ? {mii_cap[52], mii_cap[53], mii_cap[54], mii_cap[55]} : 32'd0;
+    assign dbg_mii_cap_word14    = (MII_DEBUG != 0) ? {mii_cap[56], mii_cap[57], mii_cap[58], mii_cap[59]} : 32'd0;
+    assign dbg_mii_cap_word15    = (MII_DEBUG != 0) ? {mii_cap[60], mii_cap[61], mii_cap[62], mii_cap[63]} : 32'd0;
 
 endmodule

@@ -8,7 +8,8 @@
 // =============================================================================
 
 module eth_mac #(
-    parameter MAX_FRAME = 9018       // jumbo MTU + headers (1518 = standard)
+    parameter MAX_FRAME = 9018,      // jumbo MTU + headers (1518 = standard)
+    parameter MII_DEBUG = 0
 )(
     input  wire        clk,          // system clock (100 MHz)
     input  wire        rst_n,
@@ -77,17 +78,24 @@ module eth_mac #(
     output wire [31:0] dbg_mii_cap_word0,
     output wire [31:0] dbg_mii_cap_word1,
     output wire [31:0] dbg_mii_cap_word2,
-    output wire [31:0] dbg_mii_cap_word3
+    output wire [31:0] dbg_mii_cap_word3,
+    output wire [31:0] dbg_rx_fifo_full_frames,
+    output wire [31:0] dbg_rx_fifo_full_writes,
+    output wire [31:0] dbg_rx_fifo_overflow_pulses,
+    output wire [31:0] dbg_rx_fifo_wr_level_max,
+    output wire [31:0] dbg_rx_replay_gap_frames,
+    output wire [31:0] dbg_rx_replay_gap_cycles,
+    output wire [31:0] dbg_rx_replay_gap_byte_max
 );
 
     // =========================================================================
     // Internal GMII bus (sys_clk domain, hidden from external)
     // =========================================================================
     wire [7:0] gmii_txd;
-    assign dbg_gmii_txd  = gmii_txd;
-    assign dbg_gmii_tx_en = gmii_tx_en;
-    assign dbg_gmii_rxd  = gmii_rxd;
-    assign dbg_gmii_rx_dv = gmii_rx_dv;
+    assign dbg_gmii_txd  = (MII_DEBUG != 0) ? gmii_txd : 8'd0;
+    assign dbg_gmii_tx_en = (MII_DEBUG != 0) ? gmii_tx_en : 1'b0;
+    assign dbg_gmii_rxd  = (MII_DEBUG != 0) ? gmii_rxd : 8'd0;
+    assign dbg_gmii_rx_dv = (MII_DEBUG != 0) ? gmii_rx_dv : 1'b0;
     wire       gmii_tx_en;
     wire       gmii_tx_er;
     wire [7:0] gmii_rxd;
@@ -102,7 +110,7 @@ module eth_mac #(
     assign tx_fifo_busy_out  = tx_fifo_busy;
     assign tx_fifo_level_out = tx_fifo_level;
 
-    mii_if u_mii_if (
+    mii_if #(.MII_DEBUG(MII_DEBUG)) u_mii_if (
         .clk            (clk),
         .rst_n          (rst_n),
         // MII pins
@@ -144,7 +152,25 @@ module eth_mac #(
         .dbg_mii_cap_word0     (dbg_mii_cap_word0),
         .dbg_mii_cap_word1     (dbg_mii_cap_word1),
         .dbg_mii_cap_word2     (dbg_mii_cap_word2),
-        .dbg_mii_cap_word3     (dbg_mii_cap_word3)
+        .dbg_mii_cap_word3     (dbg_mii_cap_word3),
+        .dbg_rx_fifo_full_frames (dbg_rx_fifo_full_frames),
+        .dbg_rx_fifo_full_writes (dbg_rx_fifo_full_writes),
+        .dbg_rx_fifo_overflow_pulses (dbg_rx_fifo_overflow_pulses),
+        .dbg_rx_fifo_wr_level_max (dbg_rx_fifo_wr_level_max),
+        .dbg_rx_replay_gap_frames (dbg_rx_replay_gap_frames),
+        .dbg_rx_replay_gap_cycles (dbg_rx_replay_gap_cycles),
+        .dbg_rx_replay_gap_byte_max (dbg_rx_replay_gap_byte_max),
+        .dbg_rx_mii_last_len (),
+        .dbg_rx_mii_word0 (),
+        .dbg_rx_mii_word1 (),
+        .dbg_rx_mii_word2 (),
+        .dbg_rx_mii_word3 (),
+        .dbg_rx_replay_last_len (),
+        .dbg_rx_replay_word0 (),
+        .dbg_rx_replay_word1 (),
+        .dbg_rx_replay_word2 (),
+        .dbg_rx_replay_word3 (),
+        .dbg_rx_replay_eof_count ()
     );
 
     // =========================================================================
