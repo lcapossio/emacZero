@@ -264,13 +264,14 @@ rules are blocking UDP replies.
 
 Measured on Arty A7-100T, DP83848J MII at 100 Mbps full duplex, FPGA IP
 `192.168.137.200`, host on the same `192.168.137.0/24` subnet, 1472-byte UDP
-payloads.
+payloads. The bidirectional measurements below were refreshed on 2026-05-27
+after the MII EOF-sideband FIFO cleanup.
 
 | Test | Conditions | Result |
 |------|------------|--------|
 | UART/CSR/ARP/ICMP smoke | `serial_monitor.py`, default ICMP count | PASS, `VER=0001454D`, ICMP `20/20` |
-| Bidirectional smoke | 5 s, host target 70 Mbps, FPGA IFG 8000 cycles | FPGA->host 95.16 Mbps, host->FPGA 70.00 Mbps |
-| Bidirectional long | 60 s, host target 99 Mbps, FPGA IFG 8000 cycles | FPGA->host 95.15 Mbps, host->FPGA 95.78 Mbps |
+| Bidirectional smoke | 5 s, host target 70 Mbps, FPGA IFG 8000 cycles | PASS, FPGA->host 95.16 Mbps, host->FPGA 70.00 Mbps, 0 gaps |
+| Bidirectional long | 60 s, host target 99 Mbps, FPGA IFG 8000 cycles | PASS, FPGA->host 95.15 Mbps, host->FPGA 95.71 Mbps, 3 FPGA->host gaps |
 
 The FPGA-to-host numbers are UDP payload Mbps, not raw wire Mbps. Near 95 Mbps
 payload is expected on a 100 Mbps Ethernet link with 1472-byte UDP payloads.
