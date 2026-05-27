@@ -19,6 +19,15 @@ No clock generation, no PHY reset sequencing, no UART, no test sequencer,
 no ARP responder, no ICMP echo. That's deliberate — this template is the
 MAC alone, ready to be wired into your existing infrastructure.
 
+There is also no external AXI-Stream store-forward wrapper here. The MII PHY
+path inside `eth_mac_sys` already uses frame-aware CDC buffering. Add a parent
+`axis_store_forward`-style block only if your upstream DMA or packet producer
+can begin a TX frame and then underrun before `tlast`.
+
+`MII_DEBUG` is an `eth_mac_sys` parameter and defaults to `0`. Leave it off
+for normal builds; set it only when you deliberately want the lower-level MII
+debug capture/counters preserved for bring-up.
+
 ## File list to compile
 
 Use one of:

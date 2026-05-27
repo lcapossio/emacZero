@@ -15,6 +15,11 @@ Exposes the MAC as a LiteX `LiteXModule` with:
   * MDIO tristate signals (`mdio_o` / `mdio_oe` / `mdio_i`).
   * `irq` line for the SoC interrupt controller.
 
+The wrapper does not add an external AXI-Stream store-forward block. The
+standalone MAC already contains the MII-side frame buffering it needs; add
+upstream store-forward buffering in your parent SoC only if your AXI-Stream TX
+producer can underrun after starting a frame.
+
 Typical use (MII, Arty A7-style, 100 MHz `sys` clock domain)::
 
     from litex.gen import LiteXModule

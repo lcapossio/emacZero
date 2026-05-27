@@ -50,7 +50,7 @@ the corresponding parameter is set.
 
 ## Verification
 
-- **Cocotb / UVM** — current regression is 35 directed Icarus tests.
+- **Cocotb / UVM** — current regression is 36 directed Icarus tests.
 - **Formal** properties on AXIS and FSM stalls — none (e.g. `assume`/`assert`
   for tvalid stability).
 - **Verilator lint** — CI runs `verilator --lint-only -Wall` on
@@ -63,6 +63,10 @@ the corresponding parameter is set.
 
 ## Build / portability
 
+- No bundled external **AXI-Stream store-forward** integration block. This is
+  intentional for the standalone MAC: the MII path already has internal
+  frame-aware CDC buffering. Add an upstream store-forward block in a parent
+  SoC only when the packet producer can underrun mid-frame.
 - Only **Vivado** has been exercised. **Yosys + nextpnr** (ECP5 / iCE40)
   not tried.
 - No project templates for **Quartus**, **Gowin**, or **Efinix**.

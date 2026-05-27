@@ -82,7 +82,10 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 
 ```verilog
 module eth_mac_sys #(
-    parameter PHY_INTERFACE = "MII"   // "MII" or "RGMII"
+    parameter PHY_INTERFACE     = "MII",  // "MII" or "RGMII"
+    parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash
+    parameter MAX_FRAME         = 9018,   // jumbo MTU + Ethernet headers
+    parameter MII_DEBUG         = 0       // 0 = debug capture/counters off
 )(
     input  wire        clk,           // system clock (100 MHz)
     input  wire        rst_n,
@@ -131,6 +134,10 @@ module eth_mac_sys #(
     output wire        irq
 );
 ```
+
+`MII_DEBUG` defaults off. When enabled it keeps low-level MII capture counters
+alive inside `mii_if` / `eth_mac` for testbench or bring-up probes; the
+system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 
 ## Register Map
 
@@ -196,6 +203,7 @@ python build_and_test.py
 | MII-TX-BURST-BACKPRESSURE | MII TX burst pacing under downstream stalls | 4 |
 | MII-STORE-FORWARD | Store-and-forward CDC, frame toggle | 7 |
 | MII-LOOPBACK | Full TX-to-RX loopback through MII | 1 |
+| MII-RX-REPLAY-STRESS | RX frame-ready accounting under replay stalls | 7 |
 | ETH-STATS | Statistics counters: increment, saturation, clear | 19 |
 | AXILITE-REGS | AXI4-Lite CSR: all register behaviors | 32 |
 | GMII-CDC | GMII CDC bridge: loopback, data integrity, back-to-back | 7 |
@@ -292,6 +300,24 @@ copy-paste wrapper that exposes every host-side port (AXI-Lite, AXI-Stream
 TX/RX, MII / RGMII, MDIO, IRQ) with no demo logic — useful as a starting
 point when wiring the MAC into your own SoC.
 
+### AXI-Stream store-forward boundary
+
+`emacZero` exposes byte-wide AXI4-Stream TX/RX ports, but this repository does
+not include a separate `axis_store_forward` block. That block is useful in a
+larger SoC when a DMA or packet producer can start a TX frame and then starve
+before `tlast`; it belongs at that parent-system AXI-Stream boundary.
+
+Inside this IP, the MII path already has its own frame-aware CDC buffering:
+MII RX stores a complete frame before replaying it into the system clock
+domain, and MII TX uses data plus frame-length FIFOs before driving the PHY.
+For normal standalone `eth_mac_sys` integration, do not add an external
+`axis_store_forward` dependency unless your upstream producer cannot meet the
+AXI-Stream frame contract under backpressure.
+
+The checked-in Arty A7 design also has no Xilinx MIG/DDR controller. It uses
+the board 100 MHz clock as `sys_clk`, the onboard DP83848J MII PHY, and local
+clock generation only for the MAC/PHY logic.
+
 ### Continuous integration
 
 [.github/workflows/sim.yml](.github/workflows/sim.yml) runs
@@ -310,8 +336,9 @@ Estimated on Xilinx Artix-7 (xc7a100t), 100 MHz system clock:
 | DDR cells | 0 | 0 | 24 (8 TX + 16 RX, all speeds) |
 | Fmax | > 100 MHz | > 100 MHz | > 125 MHz (RGMII media) |
 
-Test conditions: Vivado 2025.2 synthesis, default
-parameters, all simulations passing. RGMII column reflects `RGMII_SPEEDS="ALL"`;
+Test conditions: Vivado 2025.2 synthesis, default parameters
+(`MII_DEBUG=0`), all simulations passing. RGMII column reflects
+`RGMII_SPEEDS="ALL"`;
 selecting `"1G_ONLY"` or `"10_100"` saves roughly 8–10 DDR cells and ~50 LUTs.
 
 The MAC RX path uses an internal AXIS FIFO (`AXIS_FIFO_ADDR_WIDTH=11`, default

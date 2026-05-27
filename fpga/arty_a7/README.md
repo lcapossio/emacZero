@@ -24,6 +24,10 @@ not run them. CI covers simulation and lint only.
 The board design is full duplex. The hardware sequencer enables PHY
 autonegotiation.
 
+This design does not instantiate a Xilinx MIG/DDR controller. The Arty
+`CLK100MHZ` input is the system clock source, and the Ethernet path targets the
+onboard 10/100 MII PHY rather than a DDR-backed packet buffer.
+
 ## Build and Program
 
 Run from the repository root.
