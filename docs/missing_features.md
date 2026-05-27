@@ -75,13 +75,13 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 ## Verification
 
 - [x] Directed Icarus regression (`python build_and_test.py --sim-only`)
-- [x] 36 directed simulation tests
+- [x] 37 directed simulation tests
 - [x] Verilator lint in CI for `rtl/eth_mac_sys.f` with style waivers
 - [x] Arty A7 UDP throughput tests
 - [x] Recent 100 Mbps MII measurements:
       95.14 Mbps FPGA-to-host UDP payload with 0 loss;
       94.2 Mbit/s host-to-FPGA iperf2 traffic with FPGA-side counters;
-      95.13/95.74 Mbps simultaneous bidirectional payload over 60 s
+      95.15/95.78 Mbps simultaneous bidirectional payload over 60 s
 - [ ] Cocotb packet-level harness
 - [ ] UVM environment
 - [ ] Formal AXIS/FSM stall properties

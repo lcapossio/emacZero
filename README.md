@@ -225,7 +225,8 @@ python build_and_test.py
 | ARTY-TX-ARBITER | Arty six-source TX arbitration and blast holdoff | 9 |
 | UDP-BLAST-PATH | UDP trigger frame through `net_rx` into `udp_blast` TX | 9 |
 | UDP-STATS-REPLY | binary stats query/clear responder packet generation | 19 |
-| ETH-MAC-SYS-CSUM | Integrated TX checksum-offload path | 7 |
+| ETH-MAC-SYS-CSUM | Integrated TX checksum-offload path with `TX_CSUM_OFFLOAD=1` | 7 |
+| ETH-MAC-SYS-CSUM-BYPASS | Default `TX_CSUM_OFFLOAD=0` path ignores `CTRL[7]` and preserves checksums | 6 |
 | ETH-MAC-SYS-JUMBO | Integrated jumbo-frame system path | 3 |
 | GMII-CDC-100M | 100M rate adaptation pacing in gmii_cdc | 4 |
 | GMII-CDC-10M | 10M rate adaptation pacing in gmii_cdc | 4 |

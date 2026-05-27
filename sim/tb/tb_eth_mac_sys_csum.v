@@ -20,6 +20,12 @@
 
 module tb_eth_mac_sys_csum;
 
+`ifdef TB_TX_CSUM_OFFLOAD
+    localparam TX_CSUM_PARAM = 1;
+`else
+    localparam TX_CSUM_PARAM = 0;
+`endif
+
     reg clk;        // 100 MHz
     reg mii_clk;    // 25 MHz
     reg rst_n;
@@ -50,7 +56,7 @@ module tb_eth_mac_sys_csum;
     eth_mac_sys #(
         .PHY_INTERFACE("MII"),
         .MAX_FRAME(2048),
-        .TX_CSUM_OFFLOAD(1)
+        .TX_CSUM_OFFLOAD(TX_CSUM_PARAM)
     ) uut (
         .clk            (clk),
         .rst_n          (rst_n),
@@ -221,6 +227,11 @@ module tb_eth_mac_sys_csum;
         rst_n = 1;
         #100;
 
+        if (TX_CSUM_PARAM)
+            $display("INFO: TX_CSUM_OFFLOAD=1, CTRL[7] should patch checksums");
+        else
+            $display("INFO: TX_CSUM_OFFLOAD=0, CTRL[7] should be a no-op");
+
         // CTRL: tx_en=1, rx_en=1, promisc=1, full_duplex=1, tx_csum_off=1
         // = 0b1010_0111 = 0xA7
         axi_write(8'h04, 32'h0000_00A7);
@@ -271,7 +282,7 @@ module tb_eth_mac_sys_csum;
             pass_cnt = pass_cnt + 1;
         end
 
-        // ---- Verify IP checksum was patched ----
+        // ---- Verify IP / UDP checksum behavior ----
         expected_ip_csum = ip_csum_compute(
             base + 14,
             gmii_buf[base+14], gmii_buf[base+15], gmii_buf[base+16], gmii_buf[base+17],
@@ -280,32 +291,51 @@ module tb_eth_mac_sys_csum;
             gmii_buf[base+26], gmii_buf[base+27], gmii_buf[base+28], gmii_buf[base+29],
             gmii_buf[base+30], gmii_buf[base+31], gmii_buf[base+32], gmii_buf[base+33]);
 
-        if ({gmii_buf[base+24], gmii_buf[base+25]} === expected_ip_csum) begin
-            $display("PASS: IP checksum patched = 0x%04x",
-                     {gmii_buf[base+24], gmii_buf[base+25]});
-            pass_cnt = pass_cnt + 1;
-        end else begin
-            $display("FAIL: IP checksum = 0x%04x, expected 0x%04x",
-                     {gmii_buf[base+24], gmii_buf[base+25]}, expected_ip_csum);
-            fail_cnt = fail_cnt + 1;
-        end
+        if (TX_CSUM_PARAM) begin
+            if ({gmii_buf[base+24], gmii_buf[base+25]} === expected_ip_csum) begin
+                $display("PASS: IP checksum patched = 0x%04x",
+                         {gmii_buf[base+24], gmii_buf[base+25]});
+                pass_cnt = pass_cnt + 1;
+            end else begin
+                $display("FAIL: IP checksum = 0x%04x, expected 0x%04x",
+                         {gmii_buf[base+24], gmii_buf[base+25]}, expected_ip_csum);
+                fail_cnt = fail_cnt + 1;
+            end
 
-        if ({gmii_buf[base+24], gmii_buf[base+25]} !== 16'hDEAD) begin
-            $display("PASS: IP checksum overwritten (not still 0xDEAD)");
-            pass_cnt = pass_cnt + 1;
-        end else begin
-            $display("FAIL: IP checksum still 0xDEAD (csum_off not effective)");
-            fail_cnt = fail_cnt + 1;
-        end
+            if ({gmii_buf[base+24], gmii_buf[base+25]} !== 16'hDEAD) begin
+                $display("PASS: IP checksum overwritten (not still 0xDEAD)");
+                pass_cnt = pass_cnt + 1;
+            end else begin
+                $display("FAIL: IP checksum still 0xDEAD (csum_off not effective)");
+                fail_cnt = fail_cnt + 1;
+            end
 
-        // ---- Verify UDP checksum zeroed ----
-        if (gmii_buf[base+40] === 8'h00 && gmii_buf[base+41] === 8'h00) begin
-            $display("PASS: UDP checksum zeroed");
-            pass_cnt = pass_cnt + 1;
+            if (gmii_buf[base+40] === 8'h00 && gmii_buf[base+41] === 8'h00) begin
+                $display("PASS: UDP checksum zeroed");
+                pass_cnt = pass_cnt + 1;
+            end else begin
+                $display("FAIL: UDP checksum = 0x%02x%02x, expected 0x0000",
+                         gmii_buf[base+40], gmii_buf[base+41]);
+                fail_cnt = fail_cnt + 1;
+            end
         end else begin
-            $display("FAIL: UDP checksum = 0x%02x%02x, expected 0x0000",
-                     gmii_buf[base+40], gmii_buf[base+41]);
-            fail_cnt = fail_cnt + 1;
+            if ({gmii_buf[base+24], gmii_buf[base+25]} === 16'hDEAD) begin
+                $display("PASS: IP checksum preserved with TX_CSUM_OFFLOAD=0");
+                pass_cnt = pass_cnt + 1;
+            end else begin
+                $display("FAIL: IP checksum changed to 0x%04x with TX_CSUM_OFFLOAD=0",
+                         {gmii_buf[base+24], gmii_buf[base+25]});
+                fail_cnt = fail_cnt + 1;
+            end
+
+            if ({gmii_buf[base+40], gmii_buf[base+41]} === 16'hBEEF) begin
+                $display("PASS: UDP checksum preserved with TX_CSUM_OFFLOAD=0");
+                pass_cnt = pass_cnt + 1;
+            end else begin
+                $display("FAIL: UDP checksum changed to 0x%04x with TX_CSUM_OFFLOAD=0",
+                         {gmii_buf[base+40], gmii_buf[base+41]});
+                fail_cnt = fail_cnt + 1;
+            end
         end
 
         // ---- Spot checks for unmodified bytes ----

@@ -269,8 +269,8 @@ payloads.
 | Test | Conditions | Result |
 |------|------------|--------|
 | UART/CSR/ARP/ICMP smoke | `serial_monitor.py`, default ICMP count | PASS, `VER=0001454D`, ICMP `20/20` |
-| Bidirectional smoke | 5 s, host target 70 Mbps, FPGA IFG 8000 cycles | FPGA->host 95.16 Mbps, host->FPGA 69.85 Mbps |
-| Bidirectional long | 60 s, host target 99 Mbps, FPGA IFG 8000 cycles | FPGA->host 95.15 Mbps, host->FPGA 95.72 Mbps |
+| Bidirectional smoke | 5 s, host target 70 Mbps, FPGA IFG 8000 cycles | FPGA->host 95.16 Mbps, host->FPGA 70.00 Mbps |
+| Bidirectional long | 60 s, host target 99 Mbps, FPGA IFG 8000 cycles | FPGA->host 95.15 Mbps, host->FPGA 95.78 Mbps |
 
 The FPGA-to-host numbers are UDP payload Mbps, not raw wire Mbps. Near 95 Mbps
 payload is expected on a 100 Mbps Ethernet link with 1472-byte UDP payloads.
