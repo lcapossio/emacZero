@@ -58,23 +58,30 @@ module sync_fifo #(
     // freed this cycle by issue_read.
     wire push_ok = wr_en && (!full || issue_read);
 
+    always @(posedge clk) begin
+        if (push_ok)
+            mem[wr_ptr[ADDR_WIDTH-1:0]] <= wr_data;
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             wr_ptr <= {ADDR_WIDTH+1{1'b0}};
         end else if (push_ok) begin
-            mem[wr_ptr[ADDR_WIDTH-1:0]] <= wr_data;
             wr_ptr <= wr_ptr + 1'b1;
         end
+    end
+
+    always @(posedge clk) begin
+        if (issue_read)
+            dout_r <= mem[rd_ptr[ADDR_WIDTH-1:0]];
     end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rd_ptr       <= {ADDR_WIDTH+1{1'b0}};
-            dout_r       <= {DATA_WIDTH{1'b0}};
             dout_valid_r <= 1'b0;
         end else begin
             if (issue_read) begin
-                dout_r       <= mem[rd_ptr[ADDR_WIDTH-1:0]];
                 rd_ptr       <= rd_ptr + 1'b1;
                 dout_valid_r <= 1'b1;
             end else if (pop) begin
