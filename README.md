@@ -326,24 +326,28 @@ every push and PR to `main`.
 
 ## Resource Usage
 
-Estimated on Xilinx Artix-7 (xc7a100t), 100 MHz system clock:
+Current measured numbers are from the routed Arty A7-100T reference build:
+Vivado 2025.2, `xc7a100tcsg324-1`, `PHY_INTERFACE="MII"`, `MII_DEBUG=0`,
+full demo logic enabled, generated on 2026-05-27 after the RX AXIS FIFO BRAM inference fix.
 
-| Resource | Usage (eth_mac, MII) | Usage (eth_mac_sys, MII) | Usage (eth_mac_sys, RGMII ALL) |
-|----------|----------------------|--------------------------|---------------------------------|
-| Slice LUTs | ~1,200 | ~2,000 | ~2,400 |
-| Slice Registers | ~800 | ~1,400 | ~1,800 |
-| Block RAM | 3 | 3 | 4 |
-| DDR cells | 0 | 0 | 24 (8 TX + 16 RX, all speeds) |
-| Fmax | > 100 MHz | > 100 MHz | > 125 MHz (RGMII media) |
+| Scope | LUTs | FFs | RAMB36 | RAMB18 | DSP | Notes |
+|-------|-----:|----:|-------:|-------:|----:|-------|
+| Full `arty_a7_top` | 12,571 | 20,022 | 4 | 1 | 0 | MAC + ARP/ICMP/UDP demo + UART/sequencer |
+| `u_mac_sys` hierarchy | 4,515 | 2,571 | 4 | 1 | 0 | CSR, stats, MAC, MII, MDIO, pause, TX checksum |
+| `gen_mii.u_mii_if` | 694 | 1,253 | 3 | 1 | 0 | MII CDC FIFOs, debug disabled |
+| `u_tx_csum` | 2,296 | 226 | 0 | 0 | 0 | Includes 1,692 LUTRAMs |
+| `u_mac_rx` | 201 | 212 | 1 | 0 | 0 | Default synchronous RX AXIS FIFO inferred as BRAM |
+| `u_mac_tx` | 239 | 111 | 0 | 0 | 0 | TX preamble/FCS/IFG path |
 
-Test conditions: Vivado 2025.2 synthesis, default parameters
-(`MII_DEBUG=0`), all simulations passing. RGMII column reflects
-`RGMII_SPEEDS="ALL"`;
-selecting `"1G_ONLY"` or `"10_100"` saves roughly 8–10 DDR cells and ~50 LUTs.
+Post-route timing met with WNS `0.438 ns` on the full Arty top. The generated
+reports live under `build_arty/` (`utilization_route.rpt`,
+`utilization_hier_route.rpt`, `timing.rpt`) and are intentionally ignored by
+git as build artifacts.
 
-The MAC RX path uses an internal AXIS FIFO (`AXIS_FIFO_ADDR_WIDTH=11`, default
-2 KB) for downstream backpressure. The TX-side `gmii_cdc` uses a 16 KB
-async FIFO sized for jumbo frames up to 9018 bytes.
+The table above is not a standalone IP resource matrix. Exact standalone
+`eth_mac`, `eth_mac_sys` MII, and `eth_mac_sys` RGMII reports need dedicated
+synthesis harnesses; until those exist, use the Arty hierarchy numbers as the
+checked measurement and treat old standalone estimates as superseded.
 
 ## Versioning
 
