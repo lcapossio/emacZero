@@ -315,7 +315,8 @@ before `tlast`; it belongs at that parent-system AXI-Stream boundary.
 
 Inside this IP, the MII path already has its own frame-aware CDC buffering:
 MII RX stores a complete frame before replaying it into the system clock
-domain, and MII TX uses data plus frame-length FIFOs before driving the PHY.
+domain, and MII TX carries the frame boundary as an EOF sideband bit in its
+CDC data FIFO before driving the PHY.
 For normal standalone `eth_mac_sys` integration, do not add an external
 `axis_store_forward` dependency unless your upstream producer cannot meet the
 AXI-Stream frame contract under backpressure.
@@ -335,20 +336,20 @@ every push and PR to `main`.
 Current measured numbers are from the routed Arty A7-100T reference build:
 Vivado 2025.2, `xc7a100tcsg324-1`, `PHY_INTERFACE="MII"`, `MII_DEBUG=0`,
 `TX_CSUM_OFFLOAD=0`, full demo logic enabled, generated on 2026-05-27 after
-the RX AXIS FIFO BRAM inference fix.
+the RX AXIS FIFO BRAM inference fix and MII EOF-sideband FIFO cleanup.
 
 | Scope | LUTs | FFs | RAMB36 | RAMB18 | DSP | Notes |
 |-------|-----:|----:|-------:|-------:|----:|-------|
-| Full `arty_a7_top` | 10,279 | 19,799 | 4 | 1 | 0 | MAC + ARP/ICMP/UDP demo + UART/sequencer |
-| `u_mac_sys` hierarchy | 2,214 | 2,346 | 4 | 1 | 0 | CSR, stats, MAC, MII, MDIO, pause |
-| `gen_mii.u_mii_if` | 695 | 1,253 | 3 | 1 | 0 | MII CDC FIFOs, debug disabled |
+| Full `arty_a7_top` | 9,894 | 19,267 | 4 | 1 | 0 | MAC + ARP/ICMP/UDP demo + UART/sequencer |
+| `u_mac_sys` hierarchy | 1,846 | 1,815 | 4 | 1 | 0 | CSR, stats, MAC, MII, MDIO, pause |
+| `gen_mii.u_mii_if` | 328 | 722 | 3 | 1 | 0 | MII CDC FIFOs with EOF sideband, debug disabled |
 | `u_mac_rx` | 201 | 212 | 1 | 0 | 0 | Default synchronous RX AXIS FIFO inferred as BRAM |
-| `u_mac_tx` | 244 | 111 | 0 | 0 | 0 | TX preamble/FCS/IFG path |
+| `u_mac_tx` | 246 | 111 | 0 | 0 | 0 | TX preamble/FCS/IFG path |
 
-Post-route timing met with WNS `0.319 ns` on the full Arty top. The generated
+Post-route timing met with WNS `0.268 ns` on the full Arty top. The generated
 reports live under `build_arty/` (`utilization_route.rpt`,
-`utilization_hier_route.rpt`, `timing.rpt`) and are intentionally ignored by
-git as build artifacts.
+`utilization_hier_route.rpt`, `timing.rpt`, `timing_summary_route.rpt`) and
+are intentionally ignored by git as build artifacts.
 
 The table above is not a standalone IP resource matrix. Exact standalone
 `eth_mac`, `eth_mac_sys` MII, and `eth_mac_sys` RGMII reports need dedicated
