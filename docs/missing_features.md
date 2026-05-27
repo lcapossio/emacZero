@@ -76,7 +76,8 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 
 - [x] Directed Icarus regression (`python build_and_test.py --sim-only`)
 - [x] 37 directed simulation tests
-- [x] Verilator lint in CI for `rtl/eth_mac_sys.f` with style waivers
+- [x] Verilator lint in `build_and_test.py` and CI for `rtl/eth_mac_sys.f`
+      with style waivers
 - [x] Arty A7 UDP throughput tests
 - [x] Recent 100 Mbps MII measurements:
       95.14 Mbps FPGA-to-host UDP payload with 0 loss;

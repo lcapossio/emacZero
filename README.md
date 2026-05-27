@@ -185,7 +185,11 @@ Default MAC: 02:00:00:00:00:01 (locally administered).
 
 ## Simulation
 
-Requires [Icarus Verilog](http://iverilog.icarus.com/) (`iverilog` + `vvp` in PATH) and Python 3.
+Requires [Icarus Verilog](http://iverilog.icarus.com/) (`iverilog` + `vvp` in
+PATH), Verilator (`verilator` in PATH, or WSL `verilator` on Windows), and
+Python 3. The normal test command runs Icarus lint, Verilator lint, and the full
+directed simulation regression; Verilator runs before simulation so interface
+drift such as missing module pins is caught early.
 
 ```bash
 python build_and_test.py

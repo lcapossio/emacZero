@@ -3,24 +3,26 @@
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 #
 """
-build_and_test.py — emacZero: Simulate Ethernet MAC
-====================================================
-Runs all testbenches via Icarus Verilog.
+build_and_test.py — emacZero: lint and simulate Ethernet MAC
+============================================================
+Runs version checks, Icarus lint, Verilator lint, and all Icarus testbenches.
 
 Usage:
   python build_and_test.py              # run all tests
-  python build_and_test.py --sim-only   # same (only sim available)
+  python build_and_test.py --sim-only   # same (kept for compatibility)
 """
 
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 IVERILOG_BIN = "iverilog"
 VVP_BIN = "vvp"
+VERILATOR_BIN = "verilator"
 
 # rtl/ holds version.vh (single source of truth, included by axilite_regs.v).
 IVERILOG_INCDIRS = ["rtl"]
@@ -228,9 +230,62 @@ LINT_SUPPRESS = [
     "timescale",
 ]
 
+VERILATOR_LINT_ARGS = [
+    "--lint-only",
+    "-Wall",
+    "--top-module", "eth_mac_sys",
+    "-Irtl",
+    "-Wno-DECLFILENAME",
+    "-Wno-UNUSEDSIGNAL",
+    "-Wno-UNUSEDPARAM",
+    "-Wno-PINCONNECTEMPTY",
+    "-Wno-TIMESCALEMOD",
+    "-Wno-WIDTH",
+    "-Wno-BLKSEQ",
+    "-Wno-SYNCASYNCNET",
+    "-f", "rtl/eth_mac_sys.f",
+]
+
 
 def _incdir_args():
     return " ".join(f'-I"{os.path.join(PROJECT_DIR, d)}"' for d in IVERILOG_INCDIRS)
+
+
+def _windows_to_wsl_path(path):
+    drive, rest = os.path.splitdrive(path)
+    if not drive:
+        return path.replace("\\", "/")
+    drive_letter = drive[0].lower()
+    rest = rest.replace("\\", "/")
+    return f"/mnt/{drive_letter}{rest}"
+
+
+def run_verilator_lint():
+    header("PHASE 0b: Verilator lint")
+    cmd = " ".join([VERILATOR_BIN, *VERILATOR_LINT_ARGS])
+
+    if shutil.which(VERILATOR_BIN):
+        rc, stdout, stderr = run_cmd(cmd, cwd=PROJECT_DIR, timeout=120)
+    elif os.name == "nt" and shutil.which("wsl"):
+        wsl_project_dir = _windows_to_wsl_path(PROJECT_DIR)
+        wsl_cmd = f'cd "{wsl_project_dir}" && {cmd}'
+        rc, stdout, stderr = run_cmd(
+            f'wsl -e bash -lc "{wsl_cmd}"',
+            cwd=PROJECT_DIR, timeout=120
+        )
+    else:
+        fail("Verilator lint: verilator not found in PATH")
+        return False
+
+    if rc != 0:
+        fail("Verilator lint failed")
+        output = "\n".join(x for x in [stdout.strip(), stderr.strip()] if x)
+        for line in output.splitlines()[:40]:
+            print(f"    {line}")
+        return False
+
+    ok("Verilator lint: clean")
+    return True
 
 
 def run_lint():
@@ -588,9 +643,10 @@ def main():
 
     version_ok = run_version_check()
     lint_ok = run_lint()
+    verilator_ok = run_verilator_lint()
     sim_ok = run_simulation()
 
-    if version_ok and lint_ok and sim_ok:
+    if version_ok and lint_ok and verilator_ok and sim_ok:
         print(f"\n{C.GREEN}{C.BOLD}All tests passed.{C.END}")
         sys.exit(0)
     else:

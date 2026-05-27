@@ -34,12 +34,3 @@ jobs:
 
       - name: Run lint + simulation
         run: python build_and_test.py
-
-      - name: Run Verilator lint
-        run: >
-          verilator --lint-only -Wall --top-module eth_mac_sys
-          -Irtl
-          -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM
-          -Wno-PINCONNECTEMPTY -Wno-TIMESCALEMOD -Wno-WIDTH
-          -Wno-BLKSEQ -Wno-SYNCASYNCNET
-          -f rtl/eth_mac_sys.f
