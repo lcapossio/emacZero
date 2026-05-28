@@ -969,7 +969,7 @@ module mii_if #(
         .PROG_FULL_THRESH(10),
         .RD_DATA_COUNT_WIDTH(1),
         .WR_DATA_COUNT_WIDTH(12),
-        .USE_ADV_FEATURES("0400"),
+        .USE_ADV_FEATURES("0004"),
         .WAKEUP_TIME(0)
     ) u_tx_fifo (
         .wr_clk        (clk),
