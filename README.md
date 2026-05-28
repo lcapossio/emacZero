@@ -251,7 +251,7 @@ DP83848J MII PHY at 100 Mbps full duplex and 1472-byte UDP payloads:
 | Test | Result |
 |------|--------|
 | 5 s bidirectional smoke | PASS, FPGA->host 95.16 Mbps, host->FPGA 70.00 Mbps, 0 gaps |
-| 60 s bidirectional stress | PASS, FPGA->host 95.15 Mbps, host->FPGA 95.71 Mbps, 0 gaps |
+| 60 s bidirectional stress | PASS, FPGA->host 95.14 Mbps, host->FPGA 95.73 Mbps, 29 FPGA->host gaps, 0 host->FPGA gaps |
 
 These are UDP payload Mbps, not raw wire Mbps. Around 95 Mbps payload is
 expected on a 100 Mbps Ethernet link once preamble, IFG, headers, and FCS are
@@ -348,18 +348,18 @@ every push and PR to `main`.
 Current measured numbers are from the routed Arty A7-100T reference build:
 Vivado 2025.2, `xc7a100tcsg324-1`, `PHY_INTERFACE="MII"`, `MII_DEBUG=0`,
 `TX_CSUM_OFFLOAD=0`, full demo logic enabled, generated on 2026-05-28 after
-the RX AXIS FIFO BRAM inference fix, MII EOF-sideband FIFO cleanup, and XPM
-FIFO advanced-feature trim.
+the RX AXIS FIFO BRAM inference fix, MII EOF-sideband FIFO cleanup, XPM FIFO
+advanced-feature trim, and 13-bit TX FIFO count fix.
 
 | Scope | LUTs | FFs | RAMB36 | RAMB18 | DSP | Notes |
 |-------|-----:|----:|-------:|-------:|----:|-------|
-| Full `arty_a7_top` | 9,912 | 19,252 | 4 | 1 | 0 | MAC + ARP/ICMP/UDP demo + UART/sequencer |
-| `u_mac_sys` hierarchy | 1,859 | 1,800 | 4 | 1 | 0 | CSR, stats, MAC, MII, MDIO, pause |
-| `gen_mii.u_mii_if` | 342 | 707 | 3 | 1 | 0 | MII CDC FIFOs with EOF sideband, debug disabled |
-| `u_mac_rx` | 201 | 212 | 1 | 0 | 0 | Default synchronous RX AXIS FIFO inferred as BRAM |
-| `u_mac_tx` | 246 | 111 | 0 | 0 | 0 | TX preamble/FCS/IFG path |
+| Full `arty_a7_top` | 9,959 | 19,254 | 4 | 1 | 0 | MAC + ARP/ICMP/UDP demo + UART/sequencer |
+| `u_mac_sys` hierarchy | 1,858 | 1,801 | 4 | 1 | 0 | CSR, stats, MAC, MII, MDIO, pause |
+| `gen_mii.u_mii_if` | 344 | 708 | 3 | 1 | 0 | MII CDC FIFOs with EOF sideband, debug disabled |
+| `u_mac_rx` | 200 | 212 | 1 | 0 | 0 | Default synchronous RX AXIS FIFO inferred as BRAM |
+| `u_mac_tx` | 229 | 111 | 0 | 0 | 0 | TX preamble/FCS/IFG path |
 
-Post-route timing met with WNS `0.236 ns` on the full Arty top. The generated
+Post-route timing met with WNS `0.305 ns` on the full Arty top. The generated
 reports live under `build_arty/` (`utilization_route.rpt`,
 `utilization_hier_route.rpt`, `timing.rpt`, `timing_summary_route.rpt`) and
 are intentionally ignored by git as build artifacts.

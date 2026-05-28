@@ -47,7 +47,7 @@ module eth_mac #(
     // ---- Status ----
     output wire        tx_active,
     output wire        tx_fifo_busy_out,   // insufficient room for a max-sized frame
-    output wire [11:0] tx_fifo_level_out,  // queued TX symbols in GMII->MII FIFO
+    output wire [12:0] tx_fifo_level_out,  // queued TX symbols in GMII->MII FIFO
     // ---- Debug ----
     output wire        dbg_tx_fifo_empty,
     output wire        dbg_rx_prog_empty,
@@ -106,7 +106,7 @@ module eth_mac #(
     // MII PHY Interface (clock-domain crossing)
     // =========================================================================
     wire tx_fifo_busy;
-    wire [11:0] tx_fifo_level;
+    wire [12:0] tx_fifo_level;
     assign tx_fifo_busy_out  = tx_fifo_busy;
     assign tx_fifo_level_out = tx_fifo_level;
 

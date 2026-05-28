@@ -31,7 +31,7 @@ module mii_if #(
     output reg         gmii_rx_er,
     output wire        mii_tx_clk_out,
     output wire        tx_busy,
-    output wire [11:0] tx_fifo_level,
+    output wire [12:0] tx_fifo_level,
     output wire        dbg_tx_fifo_empty,
     output wire        dbg_rx_prog_empty,
     output wire        dbg_rx_rd_empty,
@@ -797,10 +797,10 @@ module mii_if #(
     reg        tx_rd_en;
     wire       tx_wr_rst_busy;
     wire       tx_rd_rst_busy;
-    wire [11:0] tx_wr_data_count;
+    wire [12:0] tx_wr_data_count;
     wire        tx_wr_full;
 
-    reg [11:0] tx_fifo_count;
+    reg [12:0] tx_fifo_count;
 `ifndef SYNTHESIS
     reg tx_rd_toggle;
     reg tx_rd_sync1, tx_rd_sync2, tx_rd_sync3;
@@ -815,8 +815,8 @@ module mii_if #(
     // worst-case growth approaches 1530. Reserve 3072 bytes of headroom to
     // absorb wr_data_count CDC latency and keep the FIFO out of drop
     // territory during sustained line-rate bursts.
-    localparam [11:0] TX_MAX_FRAME_BYTES = 12'd3072;
-    localparam [11:0] TX_START_LIMIT     = TX_FIFO_DEPTH - TX_MAX_FRAME_BYTES;
+    localparam [12:0] TX_MAX_FRAME_BYTES = 13'd3072;
+    localparam [12:0] TX_START_LIMIT     = TX_FIFO_DEPTH - TX_MAX_FRAME_BYTES;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -825,7 +825,7 @@ module mii_if #(
             tx_len_wr_en    <= 1'b0;
             tx_data_d1      <= 8'd0;
             tx_wr_valid_d1  <= 1'b0;
-            tx_fifo_count   <= 12'd0;
+            tx_fifo_count   <= 13'd0;
 `ifndef SYNTHESIS
             tx_rd_sync1     <= 1'b0;
             tx_rd_sync2     <= 1'b0;
@@ -853,9 +853,9 @@ module mii_if #(
 `ifndef SYNTHESIS
             case ({tx_wr_accept, tx_rd_pulse_sys})
                 2'b10: if (tx_fifo_count < TX_FIFO_DEPTH)
-                           tx_fifo_count <= tx_fifo_count + 12'd1;
-                2'b01: if (tx_fifo_count > 12'd0)
-                           tx_fifo_count <= tx_fifo_count - 12'd1;
+                           tx_fifo_count <= tx_fifo_count + 13'd1;
+                2'b01: if (tx_fifo_count > 13'd0)
+                           tx_fifo_count <= tx_fifo_count - 13'd1;
                 2'b11: ;
                 default: ;
             endcase
@@ -968,7 +968,7 @@ module mii_if #(
         .PROG_EMPTY_THRESH(10),
         .PROG_FULL_THRESH(10),
         .RD_DATA_COUNT_WIDTH(1),
-        .WR_DATA_COUNT_WIDTH(12),
+        .WR_DATA_COUNT_WIDTH(13),
         .USE_ADV_FEATURES("0004"),
         .WAKEUP_TIME(0)
     ) u_tx_fifo (

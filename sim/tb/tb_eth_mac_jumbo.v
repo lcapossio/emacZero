@@ -111,7 +111,9 @@ module tb_eth_mac_jumbo;
             tx_last  = (i == JUMBO_LEN - 1);
             @(negedge clk);
             // Wait for tx_ready if asserted low (FIFO full)
-            while (!tx_ready) @(negedge clk);
+            if (i != JUMBO_LEN - 1) begin
+                while (!tx_ready) @(negedge clk);
+            end
         end
         tx_valid = 1'b0;
         tx_last  = 1'b0;

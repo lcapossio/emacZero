@@ -160,7 +160,7 @@ module eth_mac_sys #(
     // Status
     wire        tx_active;
     wire        tx_fifo_busy;
-    wire [11:0] tx_fifo_level;
+    wire [12:0] tx_fifo_level;
 
     // MDIO busy tracking
     reg         mdio_busy_r;
@@ -437,6 +437,8 @@ module eth_mac_sys #(
             wire       media_gmii_rx_dv;
             wire       media_gmii_rx_er;
 
+            wire [11:0] rgmii_tx_fifo_level;
+
             gmii_cdc u_gmii_cdc (
                 .sys_clk        (clk),
                 .sys_rst_n      (rst_n),
@@ -456,8 +458,10 @@ module eth_mac_sys #(
                 .gmii_rx_dv_in  (media_gmii_rx_dv),
                 .gmii_rx_er_in  (media_gmii_rx_er),
                 .tx_busy        (tx_fifo_busy),
-                .tx_fifo_level  (tx_fifo_level)
+                .tx_fifo_level  (rgmii_tx_fifo_level)
             );
+
+            assign tx_fifo_level = {1'b0, rgmii_tx_fifo_level};
 
             rgmii_if u_rgmii_if (
                 .clk_125     (clk_125),

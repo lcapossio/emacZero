@@ -26,7 +26,7 @@ module tb_mii_tx_burst_backpressure;
     wire       gmii_tx_en;
     wire       gmii_tx_er;
     wire       tx_busy;
-    wire [11:0] tx_fifo_level;
+    wire [12:0] tx_fifo_level;
     wire        dbg_tx_wr_full;
     wire        dbg_tx_len_wr_en;
     wire        dbg_tx_rd_en;

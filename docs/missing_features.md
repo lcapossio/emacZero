@@ -84,8 +84,9 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] Recent 100 Mbps MII measurements:
       95.14 Mbps FPGA-to-host UDP payload with 0 loss;
       94.2 Mbit/s host-to-FPGA iperf2 traffic with FPGA-side counters;
-      95.15/95.71 Mbps simultaneous bidirectional payload over 60 s after
-      the MII EOF-sideband FIFO cleanup and XPM FIFO advanced-feature trim
+      95.14/95.73 Mbps simultaneous bidirectional payload over 60 s after
+      the MII EOF-sideband FIFO cleanup, XPM FIFO advanced-feature trim, and
+      13-bit TX FIFO count fix
 - [ ] Cocotb packet-level harness
 - [ ] UVM environment
 - [ ] Formal AXIS/FSM stall properties
