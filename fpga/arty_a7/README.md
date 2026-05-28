@@ -264,14 +264,18 @@ rules are blocking UDP replies.
 
 Measured on Arty A7-100T, DP83848J MII at 100 Mbps full duplex, FPGA IP
 `192.168.137.200`, host on the same `192.168.137.0/24` subnet, 1472-byte UDP
-payloads. The bidirectional measurements below were refreshed on 2026-05-28
-after the MII EOF-sideband FIFO cleanup and XPM FIFO advanced-feature trim.
+payloads. The measurements below were refreshed on 2026-05-28 after the MII
+EOF-sideband FIFO cleanup and XPM FIFO advanced-feature trim.
 
 | Test | Conditions | Result |
 |------|------------|--------|
 | UART/CSR/ARP/ICMP smoke | `serial_monitor.py`, default ICMP count | PASS, `VER=0001454D`, ICMP `20/20` |
+| UDP echo | 10 s, host target 50 Mbps on UDP/9999 | PASS, 40636/40636 echoes, 47.85 Mbps, 0.00% loss |
+| UDP blast | 3 s, FPGA-to-host on UDP/5002 | PASS, 95.16 Mbps, 0 dropped, 0 out-of-order |
+| UDP iperf stats | clear then query UDP/9996 | PASS, counters cleared to zero |
+| UDP RX ingest | `udp_throughput.py`, 10 s, host target 50 Mbps | PASS, 40644/40644 frames, 47.86 Mbps host TX, no overflow |
 | Bidirectional smoke | 5 s, host target 70 Mbps, FPGA IFG 8000 cycles | PASS, FPGA->host 95.16 Mbps, host->FPGA 70.00 Mbps, 0 gaps |
-| Bidirectional long | 60 s, host target 99 Mbps, FPGA IFG 8000 cycles | PASS, FPGA->host 95.15 Mbps, host->FPGA 95.76 Mbps, 0 gaps |
+| Bidirectional long | 60 s, host target 99 Mbps, FPGA IFG 8000 cycles | PASS, FPGA->host 95.15 Mbps, host->FPGA 95.71 Mbps, 0 gaps |
 
 The FPGA-to-host numbers are UDP payload Mbps, not raw wire Mbps. Near 95 Mbps
 payload is expected on a 100 Mbps Ethernet link with 1472-byte UDP payloads.

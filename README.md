@@ -251,7 +251,7 @@ DP83848J MII PHY at 100 Mbps full duplex and 1472-byte UDP payloads:
 | Test | Result |
 |------|--------|
 | 5 s bidirectional smoke | PASS, FPGA->host 95.16 Mbps, host->FPGA 70.00 Mbps, 0 gaps |
-| 60 s bidirectional stress | PASS, FPGA->host 95.15 Mbps, host->FPGA 95.76 Mbps, 0 gaps |
+| 60 s bidirectional stress | PASS, FPGA->host 95.15 Mbps, host->FPGA 95.71 Mbps, 0 gaps |
 
 These are UDP payload Mbps, not raw wire Mbps. Around 95 Mbps payload is
 expected on a 100 Mbps Ethernet link once preamble, IFG, headers, and FCS are
