@@ -30,7 +30,21 @@ onboard 10/100 MII PHY rather than a DDR-backed packet buffer.
 
 ## Build and Program
 
-Run from the repository root.
+The Python orchestrator `hw_build_test.py` runs the full hardware flow — build,
+program, UART smoke test, and the bidirectional UDP regression — and is the
+recommended entry point. It looks up Vivado in `PATH`, caps Vivado threads at
+half the host CPU count, and can run any subset of phases. The smoke phase
+reprograms the board so the one-time UART startup banner is captured live.
+
+```bash
+python fpga/arty_a7/scripts/hw_build_test.py                    # all phases
+python fpga/arty_a7/scripts/hw_build_test.py --build            # one or more phases
+python fpga/arty_a7/scripts/hw_build_test.py --program --smoke
+python fpga/arty_a7/scripts/hw_build_test.py --regression --profiles bidirectional-long
+```
+
+The orchestrator wraps the Vivado batch scripts, which can also be invoked
+directly from the repository root:
 
 ```bash
 vivado -mode batch -source fpga/arty_a7/scripts/build_arty.tcl
@@ -57,6 +71,7 @@ not part of normal CI because they require a connected board and host NIC.
 
 | Script | Purpose |
 |--------|---------|
+| `hw_build_test.py` | Orchestrates the full flow: build, program, smoke test, and bidirectional regression. |
 | `serial_monitor.py` | UART hardware smoke test plus ARP/ICMP checks. |
 | `udp_echo_test.py` | Host-driven UDP echo throughput and latency test on UDP/9999. |
 | `udp_blast_test.py` | FPGA-to-host UDP payload throughput test using the FPGA blast generator. |
