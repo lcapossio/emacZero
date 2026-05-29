@@ -260,21 +260,45 @@ def _windows_to_wsl_path(path):
     return f"/mnt/{drive_letter}{rest}"
 
 
+def _find_wsl():
+    """Locate wsl.exe even when launched from a shell (e.g. git-bash) whose
+    MSYS-format PATH defeats shutil.which for Windows executables."""
+    if os.name != "nt":
+        return None
+    for cand in ("wsl", "wsl.exe"):
+        found = shutil.which(cand)
+        if found:
+            return found
+    fallback = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                            "System32", "wsl.exe")
+    return fallback if os.path.exists(fallback) else None
+
+
 def run_verilator_lint():
     header("PHASE 0b: Verilator lint")
     cmd = " ".join([VERILATOR_BIN, *VERILATOR_LINT_ARGS])
+    wsl = _find_wsl()
 
     if shutil.which(VERILATOR_BIN):
         rc, stdout, stderr = run_cmd(cmd, cwd=PROJECT_DIR, timeout=120)
-    elif os.name == "nt" and shutil.which("wsl"):
+    elif wsl:
+        # Run the Linux verilator under WSL. Use an argument list (no shell) so
+        # cmd.exe quoting can't mangle the nested "bash -lc" script.
         wsl_project_dir = _windows_to_wsl_path(PROJECT_DIR)
-        wsl_cmd = f'cd "{wsl_project_dir}" && {cmd}'
-        rc, stdout, stderr = run_cmd(
-            f'wsl -e bash -lc "{wsl_cmd}"',
-            cwd=PROJECT_DIR, timeout=120
-        )
+        wsl_cmd = f"cd '{wsl_project_dir}' && {cmd}"
+        try:
+            r = subprocess.run(
+                [wsl, "-e", "bash", "-lc", wsl_cmd],
+                cwd=PROJECT_DIR, timeout=120,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+            )
+            rc, stdout, stderr = r.returncode, r.stdout, r.stderr
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            fail(f"Verilator lint via WSL failed to launch: {exc}")
+            return False
     else:
-        fail("Verilator lint: verilator not found in PATH")
+        fail("Verilator lint: verilator not found (native PATH or WSL)")
         return False
 
     if rc != 0:
