@@ -137,6 +137,7 @@ module mii_if #(
     reg [9:0]  rx_wr_data;
     reg        rx_wr_en;
     wire       rx_wr_full;
+    wire       rx_wr_rst_busy;
     wire       rx_wr_accept;
     wire       rx_full_write;
     wire       rx_fifo_overflow;
@@ -254,7 +255,6 @@ module mii_if #(
     wire       rx_rd_empty;
     wire       rx_rd_valid;
     reg        rx_rd_en;
-    wire       rx_wr_rst_busy;
     wire       rx_rd_rst_busy;
     wire       rx_prog_empty;
     wire       rx_rd_word_valid;
@@ -266,6 +266,7 @@ module mii_if #(
     (* ASYNC_REG = "TRUE" *) reg [3:0] rx_frame_wr_count_s2;
     (* ASYNC_REG = "TRUE" *) reg [3:0] rx_frame_wr_count_s3;
     reg [3:0]  rx_frame_rd_count_bin;
+    reg        rx_frame_done_pulse;   // pulse from RX replay FSM, consumed in sys clk
 
     always @(posedge mii_rx_clk or negedge rx_rst_n_s2) begin
         if (!rx_rst_n_s2) begin
@@ -409,7 +410,6 @@ module mii_if #(
     (* ASYNC_REG = "TRUE" *) reg rx_overflow_s1, rx_overflow_s2, rx_overflow_s3;
     (* ASYNC_REG = "TRUE" *) reg rx_mii_frame_s1, rx_mii_frame_s2, rx_mii_frame_s3;
     (* ASYNC_REG = "TRUE" *) reg [12:0] rx_wr_level_max_s1, rx_wr_level_max_s2;
-    reg        rx_frame_done_pulse;
     reg [31:0] rx_fifo_full_frames_sys;
     reg [31:0] rx_fifo_full_writes_sys;
     reg [31:0] rx_fifo_overflow_pulses_sys;
@@ -786,10 +786,6 @@ module mii_if #(
     reg [7:0]  tx_data_d1;
     reg        tx_wr_valid_d1;
 
-    wire [8:0] tx_wr_data = {tx_en_fall, tx_data_d1};
-    wire       tx_wr_en   = tx_wr_valid_d1;
-    wire       tx_wr_accept = tx_wr_en && !tx_wr_rst_busy && !tx_wr_full;
-    wire       tx_eof_wr_accept = tx_wr_accept && tx_wr_data[8];
     wire [8:0] tx_rd_data;
     wire       tx_rd_empty;
     wire       tx_rd_valid;
@@ -799,6 +795,11 @@ module mii_if #(
     wire       tx_rd_rst_busy;
     wire [12:0] tx_wr_data_count;
     wire        tx_wr_full;
+
+    wire [8:0] tx_wr_data = {tx_en_fall, tx_data_d1};
+    wire       tx_wr_en   = tx_wr_valid_d1;
+    wire       tx_wr_accept = tx_wr_en && !tx_wr_rst_busy && !tx_wr_full;
+    wire       tx_eof_wr_accept = tx_wr_accept && tx_wr_data[8];
 
     reg [12:0] tx_fifo_count;
 `ifndef XILINX_7SERIES
@@ -863,6 +864,10 @@ module mii_if #(
         end
     end
 
+    // Declared ahead of the tx_busy / debug assigns below that reference them.
+    reg [2:0]  tx_frames_pending_r;
+    reg        tx_frame_loaded;
+
 `ifdef XILINX_7SERIES
     assign tx_fifo_level = tx_wr_data_count;
     assign tx_busy       = (tx_frames_pending_r >= 3'd2) ||
@@ -885,7 +890,6 @@ module mii_if #(
     // Frame counters (sys_clk domain)
     reg [11:0] tx_frames_queued_r;
     reg [11:0] tx_frames_drained_r;
-    reg [2:0]  tx_frames_pending_r;
     reg [3:0]  tx_frame_wr_count_bin;
     reg [3:0]  tx_frame_wr_count_gray;
     (* ASYNC_REG = "TRUE" *) reg [3:0] tx_frame_wr_count_s1;
@@ -1053,7 +1057,6 @@ module mii_if #(
         end
     end
     reg [5:0]  tx_start_delay;
-    reg        tx_frame_loaded;
 
     always @(posedge mii_tx_clk) begin
         if (!tx_rst_n_s2) begin

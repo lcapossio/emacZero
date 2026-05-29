@@ -92,15 +92,15 @@ module eth_mac #(
     // Internal GMII bus (sys_clk domain, hidden from external)
     // =========================================================================
     wire [7:0] gmii_txd;
-    assign dbg_gmii_txd  = (MII_DEBUG != 0) ? gmii_txd : 8'd0;
-    assign dbg_gmii_tx_en = (MII_DEBUG != 0) ? gmii_tx_en : 1'b0;
-    assign dbg_gmii_rxd  = (MII_DEBUG != 0) ? gmii_rxd : 8'd0;
-    assign dbg_gmii_rx_dv = (MII_DEBUG != 0) ? gmii_rx_dv : 1'b0;
     wire       gmii_tx_en;
     wire       gmii_tx_er;
     wire [7:0] gmii_rxd;
     wire       gmii_rx_dv;
     wire       gmii_rx_er;
+    assign dbg_gmii_txd   = (MII_DEBUG != 0) ? gmii_txd : 8'd0;
+    assign dbg_gmii_tx_en = (MII_DEBUG != 0) ? gmii_tx_en : 1'b0;
+    assign dbg_gmii_rxd   = (MII_DEBUG != 0) ? gmii_rxd : 8'd0;
+    assign dbg_gmii_rx_dv = (MII_DEBUG != 0) ? gmii_rx_dv : 1'b0;
 
     // =========================================================================
     // MII PHY Interface (clock-domain crossing)

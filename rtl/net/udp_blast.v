@@ -110,6 +110,14 @@ module udp_blast #(
     reg [31:0] ts_sec_lat;
     reg [31:0] ts_usec_lat;
 
+    // 1-deep AXIS register-slice signals + combinational mux, declared ahead of
+    // the TX FSM that references src_ready and tx_data_mux (logic is below).
+    reg [7:0] r_data;
+    reg       r_valid;
+    reg       r_last;
+    reg [7:0] tx_data_mux;
+    wire      src_ready = !r_valid || tx_ready;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             tx_state    <= TX_IDLE;
@@ -265,14 +273,9 @@ module udp_blast #(
     end
 
     // ============================================================
-    // 1-deep AXIS register slice
+    // 1-deep AXIS register slice. r_data/r_valid/r_last and src_ready are
+    // declared above (ahead of the FSM that references them).
     // ============================================================
-    reg [7:0] r_data;
-    reg       r_valid;
-    reg       r_last;
-
-    wire src_ready = !r_valid || tx_ready;
-
     assign tx_data  = r_data;
     assign tx_valid = r_valid;
     assign tx_last  = r_last;
@@ -290,10 +293,8 @@ module udp_blast #(
     end
 
     // ============================================================
-    // Combinational byte mux
+    // Combinational byte mux. tx_data_mux is declared above.
     // ============================================================
-    reg [7:0] tx_data_mux;
-
     always @* begin
         tx_data_mux = 8'h00;
         case (tx_state)

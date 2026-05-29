@@ -36,9 +36,6 @@ module eth_mac_tx #(
     output wire [3:0]  dbg_stall_cnt
 );
 
-    assign dbg_state     = state;
-    assign dbg_stall_cnt = stall_cnt;
-
     localparam [3:0]
         S_IDLE     = 4'd0,
         S_PREAMBLE = 4'd1,
@@ -56,6 +53,9 @@ module eth_mac_tx #(
     reg [3:0]  count;
     reg [13:0] data_cnt;
     reg [3:0]  stall_cnt;
+
+    assign dbg_state     = state;
+    assign dbg_stall_cnt = stall_cnt;
 
     wire [31:0] crc_out;
     wire [31:0] crc_raw;

@@ -183,6 +183,14 @@ module udp_stats_reply (
     wire [15:0] ip_checksum = ~ip_fold2;
     assign reply_take = (tx_state == TX_IDLE) && pkt_ready && !reply_active;
 
+    // 1-deep AXIS register-slice signals + combinational mux, declared ahead of
+    // the TX FSM that references src_ready and tx_data_mux (logic is below).
+    reg [7:0] r_data;
+    reg       r_valid;
+    reg       r_last;
+    reg [7:0] tx_data_mux;
+    wire      src_ready = !r_valid || tx_ready;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             tx_state     <= TX_IDLE;
@@ -261,12 +269,7 @@ module udp_stats_reply (
         end
     end
 
-    reg [7:0] r_data;
-    reg       r_valid;
-    reg       r_last;
-
-    wire src_ready = !r_valid || tx_ready;
-
+    // r_data/r_valid/r_last and src_ready are declared above (ahead of the FSM).
     assign tx_data  = r_data;
     assign tx_valid = r_valid;
     assign tx_last  = r_last;
@@ -283,8 +286,7 @@ module udp_stats_reply (
         end
     end
 
-    reg [7:0] tx_data_mux;
-
+    // tx_data_mux is declared above.
     always @(*) begin
         tx_data_mux = 8'h00;
         case (tx_state)

@@ -58,6 +58,7 @@ module udp_echo #(
     // FSM-side AXIS handshake (gated by the 1-deep register slice below).
     reg src_valid;
     reg src_last;
+    reg reply_active;   // TX reply in progress; read by the RX block to drop input
 
     // =========================================================================
     // RX: buffer incoming UDP payload
@@ -140,7 +141,6 @@ module udp_echo #(
     reg [2:0]            tx_state;
     reg [5:0]            tx_cnt;
     reg [ADDR_W:0]       payload_tx_cnt;
-    reg                  reply_active;
 
     // IP totals: 20 (IP header) + 8 (UDP header) + payload
     wire [15:0] ip_total_len  = 16'd28 + {6'd0, payload_len[ADDR_W:0]};
@@ -152,6 +152,14 @@ module udp_echo #(
     wire [16:0] ip_fold1   = ip_csum_acc[15:0] + ip_csum_acc[31:16];
     wire [15:0] ip_fold2   = ip_fold1[15:0] + {15'd0, ip_fold1[16]};
     wire [15:0] ip_checksum = ~ip_fold2;
+
+    // 1-deep AXIS register-slice signals + combinational mux, declared ahead of
+    // the TX FSM that references src_ready and tx_data_mux (logic is below).
+    reg [7:0] r_data;
+    reg       r_valid;
+    reg       r_last;
+    reg [7:0] tx_data_mux;
+    wire      src_ready = !r_valid || tx_ready;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -252,14 +260,9 @@ module udp_echo #(
 
     // =========================================================================
     // 1-deep AXIS register slice — same pattern as icmp_echo.v to keep the
-    // wide tx_data_mux off the eth_mac_tx CRC critical path.
+    // wide tx_data_mux off the eth_mac_tx CRC critical path. r_data/r_valid/
+    // r_last and src_ready are declared above (ahead of the FSM).
     // =========================================================================
-    reg [7:0] r_data;
-    reg       r_valid;
-    reg       r_last;
-
-    wire src_ready = !r_valid || tx_ready;
-
     assign tx_data  = r_data;
     assign tx_valid = r_valid;
     assign tx_last  = r_last;
@@ -277,10 +280,8 @@ module udp_echo #(
     end
 
     // =========================================================================
-    // TX data mux (combinational)
+    // TX data mux (combinational). tx_data_mux is declared above.
     // =========================================================================
-    reg [7:0] tx_data_mux;
-
     always @(*) begin
         tx_data_mux = 8'h00;
         case (tx_state)

@@ -130,6 +130,15 @@ module icmp_echo (
     wire [16:0] new_csum_raw = {1'b0, orig_csum} + 17'h0800;
     wire [15:0] new_csum = new_csum_raw[15:0] + {15'd0, new_csum_raw[16]};
 
+    // AXIS register-slice signals (1-deep), declared ahead of the TX FSM that
+    // references them. src_ready is the slice "can accept" handshake; the slice
+    // registers and the combinational tx_data_mux are driven further below.
+    reg [7:0]  r_data;
+    reg        r_valid;
+    reg        r_last;
+    reg [7:0]  tx_data_mux;
+    wire       src_ready = !r_valid || tx_ready;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             tx_state     <= TX_IDLE;
@@ -216,14 +225,9 @@ module icmp_echo (
     // =========================================================================
     // AXIS register slice (1-deep). Breaks the long combinational path from
     // tx_data_mux into eth_mac_tx's CRC pipeline. The FSM produces src_*;
-    // tx_* are registered outputs driven by r_*.
+    // tx_* are registered outputs driven by r_*. r_data/r_valid/r_last and
+    // src_ready are declared above (ahead of the FSM that references them).
     // =========================================================================
-    reg [7:0] r_data;
-    reg       r_valid;
-    reg       r_last;
-
-    wire src_ready = !r_valid || tx_ready;
-
     assign tx_data  = r_data;
     assign tx_valid = r_valid;
     assign tx_last  = r_last;
@@ -241,10 +245,8 @@ module icmp_echo (
     end
 
     // =========================================================================
-    // TX data mux (combinational)
+    // TX data mux (combinational). tx_data_mux is declared above.
     // =========================================================================
-    reg [7:0] tx_data_mux;
-
     always @(*) begin
         tx_data_mux = 8'h00;
         case (tx_state)
