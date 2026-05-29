@@ -387,10 +387,11 @@ TESTS = [
     },
     {
         "name": "MII-RX-REPLAY-STRESS",
-        "srcs": ["sim/tb/xpm_fifo_async_model.v", "rtl/async_fifo.v", "rtl/mii_if.v",
+        "srcs": ["sim/tb/xpm_fifo_async_model.v", "sim/tb/xpm_memory_sdpram_model.v",
+                 "rtl/mii_if.v",
                  "sim/tb/tb_mii_rx_replay_stress.v"],
         "out": "sim/tb_mii_rx_replay_stress.vvp",
-        "iverilog_args": "-DSYNTHESIS",
+        "iverilog_args": "-DXILINX_7SERIES",
         "sim_timeout": 120,
     },
     {

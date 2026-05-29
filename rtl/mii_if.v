@@ -310,7 +310,7 @@ module mii_if #(
     wire       rx_frame_pending_sys = (rx_frame_wr_count_sys != rx_frame_rd_count_bin);
     localparam [31:0] RX_FIFO_ADV_FEATURES = (MII_DEBUG != 0) ? "1F1F" : "1000";
 
-`ifdef SYNTHESIS
+`ifdef XILINX_7SERIES
     xpm_fifo_async #(
         .FIFO_WRITE_DEPTH(4096),
         .WRITE_DATA_WIDTH(10),
@@ -801,7 +801,7 @@ module mii_if #(
     wire        tx_wr_full;
 
     reg [12:0] tx_fifo_count;
-`ifndef SYNTHESIS
+`ifndef XILINX_7SERIES
     reg tx_rd_toggle;
     reg tx_rd_sync1, tx_rd_sync2, tx_rd_sync3;
     wire tx_rd_pulse_sys = tx_rd_sync2 ^ tx_rd_sync3;
@@ -826,7 +826,7 @@ module mii_if #(
             tx_data_d1      <= 8'd0;
             tx_wr_valid_d1  <= 1'b0;
             tx_fifo_count   <= 13'd0;
-`ifndef SYNTHESIS
+`ifndef XILINX_7SERIES
             tx_rd_sync1     <= 1'b0;
             tx_rd_sync2     <= 1'b0;
             tx_rd_sync3     <= 1'b0;
@@ -835,7 +835,7 @@ module mii_if #(
             tx_len_wr_en <= 1'b0;
             tx_data_d1 <= gmii_txd;
             tx_wr_valid_d1 <= gmii_tx_en;
-`ifndef SYNTHESIS
+`ifndef XILINX_7SERIES
             tx_rd_sync1 <= tx_rd_toggle;
             tx_rd_sync2 <= tx_rd_sync1;
             tx_rd_sync3 <= tx_rd_sync2;
@@ -850,7 +850,7 @@ module mii_if #(
                 tx_frame_len_wr <= 12'd0;
             end
 
-`ifndef SYNTHESIS
+`ifndef XILINX_7SERIES
             case ({tx_wr_accept, tx_rd_pulse_sys})
                 2'b10: if (tx_fifo_count < TX_FIFO_DEPTH)
                            tx_fifo_count <= tx_fifo_count + 13'd1;
@@ -863,7 +863,7 @@ module mii_if #(
         end
     end
 
-`ifdef SYNTHESIS
+`ifdef XILINX_7SERIES
     assign tx_fifo_level = tx_wr_data_count;
     assign tx_busy       = (tx_frames_pending_r >= 3'd2) ||
                            (tx_wr_data_count > TX_START_LIMIT);
@@ -955,7 +955,7 @@ module mii_if #(
     assign dbg_rx_reading        = (MII_DEBUG != 0) ? (rx_replay_state != RX_REPLAY_IDLE) : 1'b0;
     assign dbg_rx_frames_pending = (MII_DEBUG != 0) ? {1'b0, rx_frame_ready} : 2'd0;
 
-`ifdef SYNTHESIS
+`ifdef XILINX_7SERIES
     xpm_fifo_async #(
         .FIFO_WRITE_DEPTH(4096),
         .WRITE_DATA_WIDTH(9),
@@ -1067,7 +1067,7 @@ module mii_if #(
             tx_frame_loaded     <= 1'b0;
             tx_frame_rd_count_bin <= 4'd0;
             drain_toggle        <= 1'b0;
-`ifndef SYNTHESIS
+`ifndef XILINX_7SERIES
             tx_rd_toggle        <= 1'b0;
 `endif
         end else begin
@@ -1088,7 +1088,7 @@ module mii_if #(
                             tx_byte_last        <= tx_rd_data[8];
                             tx_rd_en            <= 1'b1;
                             tx_st               <= TX_LOW;
-`ifndef SYNTHESIS
+`ifndef XILINX_7SERIES
                             tx_rd_toggle        <= ~tx_rd_toggle;
 `endif
                         end
@@ -1114,7 +1114,7 @@ module mii_if #(
                         tx_byte_last        <= tx_rd_data[8];
                         tx_rd_en            <= 1'b1;
                         tx_st               <= TX_LOW;
-`ifndef SYNTHESIS
+`ifndef XILINX_7SERIES
                         tx_rd_toggle        <= ~tx_rd_toggle;
 `endif
                     end

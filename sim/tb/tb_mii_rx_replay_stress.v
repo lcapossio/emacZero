@@ -4,9 +4,9 @@
 // tb_mii_rx_replay_stress.v - MII RX CDC/replay stress regression
 //
 // Drives raw MII RX nibbles directly into mii_if and checks the reconstructed
-// GMII byte stream. The test is intended to run with -DSYNTHESIS and the local
-// xpm_fifo_async_model so it covers the FWFT data_valid behavior that the plain
-// behavioral async_fifo does not model.
+// GMII byte stream. The test is intended to run with -DXILINX_7SERIES and the
+// local xpm_fifo_async_model / xpm_memory_sdpram_model so it covers the FWFT
+// data_valid behavior that the plain behavioral async_fifo does not model.
 // =============================================================================
 `timescale 1ns / 1ps
 
