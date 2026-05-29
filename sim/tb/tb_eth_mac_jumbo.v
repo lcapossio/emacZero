@@ -109,11 +109,13 @@ module tb_eth_mac_jumbo;
             tx_data  = i[7:0];
             tx_valid = 1'b1;
             tx_last  = (i == JUMBO_LEN - 1);
+            // Hold the beat until tx_ready is sampled high at a negedge; the
+            // following rising edge then consumes it. This honors the
+            // handshake for every beat including the last, and never waits for
+            // tx_ready to re-assert afterward - which would hang on the final
+            // beat while the store-and-forward FIFO drains over slow MII.
+            while (!tx_ready) @(negedge clk);
             @(negedge clk);
-            // Wait for tx_ready if asserted low (FIFO full)
-            if (i != JUMBO_LEN - 1) begin
-                while (!tx_ready) @(negedge clk);
-            end
         end
         tx_valid = 1'b0;
         tx_last  = 1'b0;
