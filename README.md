@@ -18,6 +18,7 @@ responder, and optional IPv4/UDP TX checksum offload.
 - [Simulation](#simulation)
 - [Hardware Test (Arty A7-100T)](#hardware-test-arty-a7-100t)
 - [Integration](#integration)
+- [Security and CRA Readiness](#security-and-cra-readiness)
 - [Resource Usage](#resource-usage)
 - [License](#license)
 - [Author](#author)
@@ -342,6 +343,15 @@ clock generation only for the MAC/PHY logic.
 [.github/workflows/sim.yml](.github/workflows/sim.yml) runs
 `python build_and_test.py` (lint + the full Icarus Verilog regression) on
 every push and PR to `main`.
+
+## Security and CRA Readiness
+
+Security reporting, threat assumptions, and EU Cyber Resilience Act preparation
+notes are tracked in:
+
+- [SECURITY.md](SECURITY.md) - vulnerability reporting policy and hardening guidance
+- [docs/security_model.md](docs/security_model.md) - intended use, trust boundaries, assumptions, and residual risks
+- [docs/cra-readiness.md](docs/cra-readiness.md) - CRA-oriented evidence map and release checklist
 
 ## Resource Usage
 
