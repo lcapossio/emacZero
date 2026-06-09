@@ -121,8 +121,8 @@ Run:
 python build_and_test.py
 ```
 
-On Windows without a WSL Verilator installation, Icarus simulations can pass
-while the Verilator lint phase reports an environment failure. Product evidence
+On Windows, PHASE 0b requires either a native Verilator install or a WSL
+Verilator install, which `build_and_test.py` auto-detects. Product evidence
 should record whether Verilator lint, synthesis, timing, and hardware tests were
 run for the exact commit and target.
 
@@ -132,7 +132,7 @@ Before using emacZero in a product, integrators should close or explicitly
 accept these gaps:
 
 - No machine-readable SBOM is checked in yet.
-- No formal vulnerability advisory process or signed release process exists yet.
+- No signed release process exists yet, and no GHSA has been published yet.
 - No fuzzing or formal verification harness is currently checked in.
 - Standalone resource/timing matrices are not yet maintained for every target
   FPGA, PHY mode, and parameter set.

@@ -29,12 +29,12 @@ handling, and release traceability.
 |------|--------|----------|
 | Intended use | Partial | README, `docs/security_model.md` |
 | Security assumptions | Partial | `docs/security_model.md` |
-| Vulnerability reporting | Partial | `SECURITY.md` |
+| Vulnerability reporting | Partial | `SECURITY.md`, `.github/SECURITY.md`; GitHub private vulnerability reporting must still be enabled in repo settings |
 | Regression evidence | Good | `build_and_test.py`, README test matrix |
 | Hardware evidence | Partial | Arty A7 README and checked logs, but not release-packaged |
-| Dependency inventory | Gap | No SPDX/CycloneDX SBOM checked in |
-| Release support policy | Gap | No tagged support lifecycle yet |
-| Advisory/changelog process | Gap | No structured security advisory template yet |
+| Dependency inventory | Partial | `docs/sbom.md`; no generated SPDX/CycloneDX SBOM checked in yet |
+| Release support policy | Partial | `v0.1.0` tag exists; no long-lived support lifecycle yet |
+| Advisory/changelog process | Partial | `CHANGELOG.md`, `.github/ISSUE_TEMPLATE/security_advisory.md`; no published GHSA yet |
 | Fuzzing/formal evidence | Gap | Directed tests only |
 | Product documentation | Integrator task | Depends on downstream product |
 
@@ -43,8 +43,8 @@ handling, and release traceability.
 | CRA preparation need | emacZero action |
 |----------------------|-----------------|
 | Secure-by-design assumptions | Maintain `docs/security_model.md` with assets, trust boundaries, non-goals, and hardening guidance. |
-| Known-vulnerability handling | Keep `SECURITY.md` current and use private reporting before public disclosure. |
-| Component identification | Generate and publish an SBOM for RTL, scripts, simulation models, examples, and optional submodules. |
+| Known-vulnerability handling | Keep `SECURITY.md` current, use private reporting before public disclosure, and enable GitHub private vulnerability reporting for GHSA tracking. |
+| Component identification | Maintain `docs/sbom.md`, then generate and publish an SBOM for RTL, scripts, simulation models, examples, and optional submodules. |
 | Security update traceability | Tag releases, record fixed vulnerabilities, and document supported branches. |
 | Risk reduction by default | Keep promiscuous mode, jumbo mode, checksum offload, debug capture, and optional L3 helpers opt-in or controlled by documented configuration. |
 | Evidence of testing | Preserve simulation, lint, synthesis, timing, and hardware-test results for each release. |
@@ -74,7 +74,7 @@ Before declaring a commit suitable for downstream product integration:
 - Run `python build_and_test.py` and record the full output.
 - Run synthesis, implementation, and timing for the supported target matrix.
 - Run hardware smoke/regression tests for supported boards.
-- Regenerate the SBOM.
+- Regenerate the SBOM using `docs/sbom.md` as the component-inventory guide.
 - Review open security issues and document known residual risks.
 - Update `README.md`, `docs/security_model.md`, and this file if behavior or
   support scope changed.
@@ -84,10 +84,10 @@ Before declaring a commit suitable for downstream product integration:
 
 Recommended next steps:
 
-- Add `docs/sbom.md` describing the chosen SBOM format and component naming.
 - Generate an SPDX or CycloneDX SBOM as a release artifact.
-- Add a security advisory template under `.github/`.
-- Add a `CHANGELOG.md` with a security section for each release.
+- Enable GitHub private vulnerability reporting in repository Settings >
+  Security so GHSA draft advisories can be created.
+- Publish the first GHSA if a confirmed vulnerability is fixed.
 - Define a support policy for release branches and end-of-support dates.
 - Add malformed-frame fuzz tests or a bounded formal harness for selected
   parser/FIFO properties.

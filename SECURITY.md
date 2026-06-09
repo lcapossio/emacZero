@@ -7,25 +7,32 @@ in downstream FPGA or ASIC products.
 
 ## Supported Versions
 
-The `main` branch is the active development branch. Tagged releases, once
-published, should be treated as the supported integration points for downstream
-products. Until a formal release train exists, integrators should pin a tested
-commit and record the simulation, lint, synthesis, and hardware evidence used
-for their product.
+The `main` branch is the active development branch. Tagged releases should be
+treated as the supported integration points for downstream products. Until a
+formal release train exists, integrators should pin a tested commit or release
+tag and record the simulation, lint, synthesis, and hardware evidence used for
+their product.
 
 ## Reporting a Vulnerability
 
 Please report suspected vulnerabilities privately before opening a public issue.
 
 - Email: hello@bard0.com
+- GitHub private vulnerability reporting:
+  https://github.com/lcapossio/emacZero/security/advisories/new
 - Include: affected commit or tag, configuration parameters, toolchain, target
   FPGA or integration context, reproduction steps, and expected impact.
 - Helpful artifacts: minimal testbench, waveform, packet capture, CSR trace, or
   synthesis/timing log.
 
-Reports will be acknowledged as soon as practical. Fixes should be developed on
-a private branch when disclosure before remediation would create avoidable risk
-for downstream users.
+Reports should be acknowledged within 7 calendar days. Confirmed issues should
+receive a remediation plan or status update within 30 calendar days. When a fix
+is available, a changelog entry or advisory should be published within 90 days
+unless coordinated disclosure with affected downstream integrators requires a
+different schedule.
+
+Fixes should be developed on a private branch when disclosure before remediation
+would create avoidable risk for downstream users.
 
 ## Disclosure Expectations
 
