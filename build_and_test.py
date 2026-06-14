@@ -233,6 +233,7 @@ LINT_SUPPRESS = [
 VERILATOR_LINT_ARGS = [
     "--lint-only",
     "-Wall",
+    "-DSIM",  # select the simulation-only behavioral DDR models
     "--top-module", "eth_mac_sys",
     "-Irtl",
     "-Wno-DECLFILENAME",
@@ -319,7 +320,7 @@ def run_lint():
     os.makedirs(os.path.join(PROJECT_DIR, "sim"), exist_ok=True)
 
     rc, stdout, stderr = run_cmd(
-        f'{IVERILOG_BIN} -g2001 -Wall {_incdir_args()} -o "{null_out}" {srcs}',
+        f'{IVERILOG_BIN} -g2001 -Wall -DSIM {_incdir_args()} -o "{null_out}" {srcs}',
         cwd=PROJECT_DIR, timeout=30
     )
 
@@ -614,7 +615,7 @@ def run_simulation():
 
         extra_args = t.get("iverilog_args", "")
         rc, stdout, stderr = run_cmd(
-            f'{IVERILOG_BIN} -g2001 {extra_args} {_incdir_args()} -o "{out}" {srcs}',
+            f'{IVERILOG_BIN} -g2001 -DSIM {extra_args} {_incdir_args()} -o "{out}" {srcs}',
             cwd=PROJECT_DIR, timeout=30
         )
         if rc != 0:

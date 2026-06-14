@@ -9,6 +9,9 @@
 
 module eth_mac #(
     parameter MAX_FRAME = 9018,      // jumbo MTU + headers (1518 = standard)
+    // RX AXIS buffer depth (address width). Scales with MAX_FRAME so a jumbo
+    // frame can be absorbed under backpressure; 2048-byte floor for standard.
+    parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
     parameter MII_DEBUG = 0
 )(
     input  wire        clk,          // system clock (100 MHz)
@@ -204,7 +207,7 @@ module eth_mac #(
     // =========================================================================
     // MAC RX ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â strips preamble/SFD, validates CRC
     // =========================================================================
-    eth_mac_rx u_mac_rx (
+    eth_mac_rx #(.AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH)) u_mac_rx (
         .clk              (clk),
         .rst_n            (rst_n),
         .gmii_rxd         (gmii_rxd),

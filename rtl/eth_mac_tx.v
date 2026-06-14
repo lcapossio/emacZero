@@ -57,11 +57,6 @@ module eth_mac_tx #(
     assign dbg_state     = state;
     assign dbg_stall_cnt = stall_cnt;
 
-    wire [31:0] crc_out;
-    wire [31:0] crc_raw;
-    reg         crc_init;
-    reg         crc_data_valid;
-    reg  [7:0]  crc_data_in;
     reg  [31:0] crc_saved;
     reg  [31:0] crc_accum;
     reg  [7:0]  first_data;
@@ -85,15 +80,9 @@ module eth_mac_tx #(
         end
     endfunction
 
-    crc32 u_crc (
-        .clk       (clk),
-        .rst_n     (rst_n),
-        .data_in   (crc_data_in),
-        .data_valid(crc_data_valid),
-        .crc_init  (crc_init),
-        .crc_out   (crc_out),
-        .crc_raw   (crc_raw)
-    );
+    // CRC is tracked combinationally via crc_step_byte/crc_accum below so the
+    // final FCS (crc_saved) can be precomputed one cycle ahead of the last data
+    // byte; no separate crc32 instance is needed on the TX path.
 
     reg frame_ended;
 
@@ -107,9 +96,6 @@ module eth_mac_tx #(
             gmii_tx_er     <= 1'b0;
             s_axis_tready  <= 1'b0;
             tx_active      <= 1'b0;
-            crc_init       <= 1'b0;
-            crc_data_valid <= 1'b0;
-            crc_data_in    <= 8'd0;
             crc_saved      <= 32'd0;
             crc_accum      <= 32'hFFFFFFFF;
             frame_ended    <= 1'b0;
@@ -118,8 +104,6 @@ module eth_mac_tx #(
             first_last     <= 1'b0;
             have_first     <= 1'b0;
         end else begin
-            crc_init       <= 1'b0;
-            crc_data_valid <= 1'b0;
             s_axis_tready  <= 1'b0;
             gmii_tx_er     <= 1'b0;
 
@@ -138,7 +122,6 @@ module eth_mac_tx #(
                         s_axis_tready <= 1'b0;
                         state     <= S_PREAMBLE;
                         count     <= 4'd0;
-                        crc_init  <= 1'b1;
                         crc_accum <= 32'hFFFFFFFF;
                         tx_active <= 1'b1;
                     end
@@ -166,8 +149,6 @@ module eth_mac_tx #(
                         if (data_cnt < MIN_FRAME) begin
                             state          <= S_PAD;
                             gmii_txd       <= 8'h00;
-                            crc_data_valid <= 1'b1;
-                            crc_data_in    <= 8'h00;
                             crc_accum      <= crc_step_byte(crc_accum, 8'h00);
                             data_cnt       <= data_cnt + 14'd1;
                         end else begin
@@ -180,8 +161,6 @@ module eth_mac_tx #(
                     end else if (have_first) begin
                         stall_cnt      <= 4'd0;
                         gmii_txd       <= first_data;
-                        crc_data_valid <= 1'b1;
-                        crc_data_in    <= first_data;
                         crc_accum      <= crc_step_byte(crc_accum, first_data);
                         data_cnt       <= data_cnt + 14'd1;
                         have_first     <= 1'b0;
@@ -198,8 +177,6 @@ module eth_mac_tx #(
                     end else if (s_axis_tvalid) begin
                         stall_cnt      <= 4'd0;
                         gmii_txd       <= s_axis_tdata;
-                        crc_data_valid <= 1'b1;
-                        crc_data_in    <= s_axis_tdata;
                         crc_accum      <= crc_step_byte(crc_accum, s_axis_tdata);
                         data_cnt       <= data_cnt + 14'd1;
                         if (s_axis_tlast) begin
@@ -228,8 +205,6 @@ module eth_mac_tx #(
                 S_PAD: begin
                     stall_cnt      <= 4'd0;
                     gmii_txd       <= 8'h00;
-                    crc_data_valid <= 1'b1;
-                    crc_data_in    <= 8'h00;
                     crc_accum      <= crc_step_byte(crc_accum, 8'h00);
                     data_cnt       <= data_cnt + 14'd1;
                     if (data_cnt >= MIN_FRAME - 1) begin

@@ -108,7 +108,8 @@ module gmii_cdc (
         .rd_rst_n(sys_rst_n),
         .rd_data (rx_rd_data),
         .rd_en   (rx_rd_en),
-        .rd_empty(rx_rd_empty)
+        .rd_empty(rx_rd_empty),
+        .wr_data_count()
     );
 
     // Frame availability tracking (sys_clk domain)
@@ -208,33 +209,23 @@ module gmii_cdc (
     wire        tx_len_rd_empty;
     reg         tx_len_rd_en;
 
-    // FIFO level tracking (sys_clk domain, for tx_busy). 14-bit covers
-    // up to 16383-byte queue.
-    reg [13:0] tx_fifo_count;
-    reg        tx_rd_toggle;
-    (* ASYNC_REG = "TRUE" *) reg tx_rd_sync1, tx_rd_sync2, tx_rd_sync3;
-    wire       tx_rd_pulse_sys = tx_rd_sync2 ^ tx_rd_sync3;
+    // FIFO occupancy (sys_clk / write domain), taken directly from the async
+    // FIFO's exact write-side data count (wr_ptr - synced rd_ptr). This never
+    // loses events, unlike a per-byte read toggle pulse which can drop counts
+    // when media_clk (125 MHz) outruns sys_clk (100 MHz) at 1G.
+    wire [14:0] tx_fifo_count;
 
-    // 14-bit count covers up to 16383 entries; the underlying async FIFO
-    // is sized for 2^14 but we never let the count wrap.
-    localparam [13:0] TX_FIFO_DEPTH      = 14'd16383;
-    localparam [13:0] TX_MAX_FRAME_BYTES = 14'd9018;   // jumbo MTU + headers
-    localparam [13:0] TX_START_LIMIT     = TX_FIFO_DEPTH - TX_MAX_FRAME_BYTES;
+    localparam [14:0] TX_FIFO_DEPTH      = 15'd16383;
+    localparam [14:0] TX_MAX_FRAME_BYTES = 15'd9018;   // jumbo MTU + headers
+    localparam [14:0] TX_START_LIMIT     = TX_FIFO_DEPTH - TX_MAX_FRAME_BYTES;
 
     always @(posedge sys_clk or negedge sys_rst_n) begin
         if (!sys_rst_n) begin
             tx_frame_len_wr <= 14'd0;
             tx_len_wr_data  <= 14'd0;
             tx_len_wr_en    <= 1'b0;
-            tx_fifo_count   <= 14'd0;
-            tx_rd_sync1     <= 1'b0;
-            tx_rd_sync2     <= 1'b0;
-            tx_rd_sync3     <= 1'b0;
         end else begin
             tx_len_wr_en <= 1'b0;
-            tx_rd_sync1  <= tx_rd_toggle;
-            tx_rd_sync2  <= tx_rd_sync1;
-            tx_rd_sync3  <= tx_rd_sync2;
 
             if (gmii_tx_en_in && !tx_wr_full)
                 tx_frame_len_wr <= tx_frame_len_wr + 14'd1;
@@ -244,20 +235,12 @@ module gmii_cdc (
                 tx_len_wr_en    <= 1'b1;
                 tx_frame_len_wr <= 14'd0;
             end
-
-            case ({tx_wr_en && !tx_wr_full, tx_rd_pulse_sys})
-                2'b10: if (tx_fifo_count < TX_FIFO_DEPTH)
-                           tx_fifo_count <= tx_fifo_count + 14'd1;
-                2'b01: if (tx_fifo_count > 14'd0)
-                           tx_fifo_count <= tx_fifo_count - 14'd1;
-                default: ;
-            endcase
         end
     end
 
-    // Saturate external level to 12 bits — the real count is 14-bit but
-    // most consumers only care about coarse fill state.
-    assign tx_fifo_level = (tx_fifo_count > 14'd4095) ? 12'hFFF
+    // Saturate external level to 12 bits — most consumers only care about
+    // coarse fill state.
+    assign tx_fifo_level = (tx_fifo_count > 15'd4095) ? 12'hFFF
                                                      : tx_fifo_count[11:0];
     assign tx_busy       = (tx_fifo_count > TX_START_LIMIT);
 
@@ -272,7 +255,8 @@ module gmii_cdc (
         .rd_rst_n(media_rst_n_s2),
         .rd_data (tx_rd_data),
         .rd_en   (tx_rd_en),
-        .rd_empty(tx_rd_empty)
+        .rd_empty(tx_rd_empty),
+        .wr_data_count(tx_fifo_count)
     );
 
     // TX frame length FIFO: sys_clk -> media_clk (14-bit lengths)
@@ -286,7 +270,8 @@ module gmii_cdc (
         .rd_rst_n(media_rst_n_s2),
         .rd_data (tx_len_rd_data),
         .rd_en   (tx_len_rd_en),
-        .rd_empty(tx_len_rd_empty)
+        .rd_empty(tx_len_rd_empty),
+        .wr_data_count()
     );
 
     // =========================================================================
@@ -339,7 +324,6 @@ module gmii_cdc (
             tx_frame_loaded     <= 1'b0;
             tx_frame_bytes_left <= 14'd0;
             tx_start_delay      <= 6'd0;
-            tx_rd_toggle        <= 1'b0;
             pace_cnt            <= 10'd0;
         end else begin
             tx_rd_en     <= 1'b0;
@@ -374,7 +358,6 @@ module gmii_cdc (
                         gmii_tx_en_out      <= 1'b1;
                         gmii_tx_er_out      <= 1'b0;
                         tx_frame_bytes_left <= tx_frame_bytes_left - 14'd1;
-                        tx_rd_toggle        <= ~tx_rd_toggle;
                     end
                     // Pulse rd_en the cycle before the NEXT pace_tick so the
                     // FIFO advance is visible exactly at that capture edge.

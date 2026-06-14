@@ -25,6 +25,9 @@
 //                              deliver frames with FCS / size errors anyway,
 //                              still tagged via m_axis_terror)
 //   0x08 STATUS     RO    [0] tx_active  [1] tx_fifo_busy  [2] mdio_busy
+//                         [3] mdio_cmd_dropped (sticky: an MDIO GO was written
+//                              while the master was busy and was ignored;
+//                              cleared by the next successfully-issued GO)
 //   0x0C MAC_LO     RW    our_mac[31:0]
 //   0x10 MAC_HI     RW    our_mac[47:32]  (upper 16 bits read as 0)
 //   0x14 MDIO_CMD   RW    [4:0] reg  [9:5] phy  [10] write  [11] go (self-clear)
@@ -232,6 +235,7 @@ module axilite_regs #(
     reg  [14:0] reg_mdio_cmd;   // [4:0] reg/devad, [9:5] phy, [10] write,
                                 // [11] reads-as-0, [12] c45_en, [14:13] c45_op
     reg  [15:0] reg_mdio_wdata;
+    reg         mdio_cmd_dropped;  // sticky: an MDIO GO arrived while busy
     reg  [2:0]  reg_irq_en;
     reg  [2:0]  reg_irq_status;
     reg  [31:0] reg_scratch;
@@ -328,6 +332,7 @@ module axilite_regs #(
             reg_mcast_lo   <= 32'd0;
             reg_mcast_hi   <= 32'd0;
             mdio_go        <= 1'b0;
+            mdio_cmd_dropped <= 1'b0;
             stat_clr_tx    <= 1'b0;
             stat_clr_rx    <= 1'b0;
             stat_clr_pause <= 1'b0;
@@ -376,8 +381,17 @@ module axilite_regs #(
                         // Mask bit 11 (go) to 0 so it never persists in storage
                         reg_mdio_cmd <= strb_merge({17'd0, reg_mdio_cmd}, w_data, w_strb)
                                         & 15'h77FF;
-                        if (w_strb[1] && w_data[11] && !mdio_busy)
-                            mdio_go <= 1'b1;
+                        // GO while the master is busy cannot start a transaction.
+                        // Surface that via a sticky STATUS bit instead of failing
+                        // silently; the next successfully-issued GO clears it.
+                        if (w_strb[1] && w_data[11]) begin
+                            if (!mdio_busy) begin
+                                mdio_go          <= 1'b1;
+                                mdio_cmd_dropped <= 1'b0;
+                            end else begin
+                                mdio_cmd_dropped <= 1'b1;
+                            end
+                        end
                     end
                     A_MDIO_WDATA: reg_mdio_wdata <= strb_merge({16'd0, reg_mdio_wdata}, w_data, w_strb);
                     A_IRQ_EN:     reg_irq_en     <= strb_merge({29'd0, reg_irq_en}, w_data, w_strb);
@@ -448,7 +462,8 @@ module axilite_regs #(
 
                 case (s_axi_araddr[ADDR_WIDTH-1:2])  // ADDR_WIDTH-2 bit index
                     A_CTRL:       s_axi_rdata <= {23'd0, reg_ctrl};
-                    A_STATUS:     s_axi_rdata <= {29'd0, mdio_busy, sts_tx_fifo_busy, sts_tx_active};
+                    A_STATUS:     s_axi_rdata <= {28'd0, mdio_cmd_dropped, mdio_busy,
+                                                  sts_tx_fifo_busy, sts_tx_active};
                     A_MAC_LO:     s_axi_rdata <= reg_mac_lo;
                     A_MAC_HI:     s_axi_rdata <= {16'd0, reg_mac_hi};
                     A_MDIO_CMD:   s_axi_rdata <= {17'd0, reg_mdio_cmd}; // bit 11 (go) reads 0 by storage

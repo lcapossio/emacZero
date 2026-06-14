@@ -28,8 +28,12 @@ responder, and optional IPv4/UDP TX checksum offload.
 - **AXI4-Stream TX/RX** - standard streaming interface for packet data with buffered RX backpressure
 - **AXI4-Lite CSR** - control/status block with runtime MAC address, TX/RX enable, promiscuous mode, **runtime speed select (10/100/1G)**, full-duplex, jumbo-enable, TX-csum-offload
 - **MII PHY interface** - 10/100 Mbps with store-and-forward async FIFOs
+  (standard MTU only; jumbo frames require the RGMII path)
 - **RGMII PHY interface** - 10/100/1G with **runtime speed selection** via `cfg_speed[1:0]` and parameterizable `RGMII_SPEEDS = "ALL" | "1G_ONLY" | "10_100"` for resource-conscious builds
-- **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`)
+- **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`) on the
+  **RGMII** path. The MII 10/100 path is standard-MTU only: its 4096-byte TX
+  FIFO and RX replay buffer cannot buffer a jumbo frame while the slow MII side
+  drains it, so set `MAX_FRAME=1518` for MII builds.
 - **TX checksum offload** - optional IPv4 header + UDP checksum patcher (`TX_CSUM_OFFLOAD=1`, `rtl/net/tx_csum_off.v`)
 - **CRC-32** - IEEE 802.3 FCS generation (TX) and validation (RX)
 - **MDIO master** - PHY register read/write, accessible through AXI4-Lite CSR
@@ -86,6 +90,10 @@ module eth_mac_sys #(
     parameter PHY_INTERFACE     = "MII",  // "MII" or "RGMII"
     parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash
     parameter MAX_FRAME         = 9018,   // jumbo MTU + Ethernet headers
+    // RX AXIS buffer depth (address width). Defaults to one full MAX_FRAME
+    // frame (2048-byte floor) so a jumbo frame survives downstream
+    // backpressure; lower to save BRAM on standard-MTU builds.
+    parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
     parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize checksum patcher
     parameter MII_DEBUG         = 0       // 0 = debug capture/counters off
 )(
@@ -147,7 +155,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 |--------|------|-----|-------------|
 | 0x00 | VERSION | RO | 0x0001454D: [31:24] major [23:16] minor [15:0] ID `"EM"` |
 | 0x04 | CTRL | RW | [0] tx_en [1] rx_en [2] promisc [4:3] speed (00=1G,01=100M,10=10M) [5] full_duplex (informational; FD-only MAC) [6] jumbo_en [7] tx_csum_off [8] passthrough |
-| 0x08 | STATUS | RO | [0] tx_active [1] tx_fifo_busy [2] mdio_busy |
+| 0x08 | STATUS | RO | [0] tx_active [1] tx_fifo_busy [2] mdio_busy [3] mdio_cmd_dropped (sticky: a GO was written while busy and ignored; cleared by the next successful GO) |
 | 0x0C | MAC_LO | RW | MAC address [31:0] |
 | 0x10 | MAC_HI | RW | MAC address [47:32] |
 | 0x14 | MDIO_CMD | RW | [4:0] reg/devad [9:5] phy [10] write [11] go [12] c45_en [14:13] c45_op |
@@ -195,6 +203,12 @@ drift such as missing module pins is caught early.
 ```bash
 python build_and_test.py
 ```
+
+`build_and_test.py` compiles with `-DSIM` so the behavioral DDR I/O models in
+`ddr_input.v` / `ddr_output.v` are selected. For **synthesis** you must define a
+target instead (`XILINX_7SERIES` for 7-series `IDDR`/`ODDR`, or supply a real
+vendor DDR atom); the `SIM` models are not synthesizable and the `INTEL_CYCLONE`
+branch is a flagged stub, not a real Altera DDIO instance.
 
 ### Test Suite
 
@@ -366,8 +380,15 @@ advanced-feature trim, and 13-bit TX FIFO count fix.
 | Full `arty_a7_top` | 9,959 | 19,254 | 4 | 1 | 0 | MAC + ARP/ICMP/UDP demo + UART/sequencer |
 | `u_mac_sys` hierarchy | 1,858 | 1,801 | 4 | 1 | 0 | CSR, stats, MAC, MII, MDIO, pause |
 | `gen_mii.u_mii_if` | 344 | 708 | 3 | 1 | 0 | MII CDC FIFOs with EOF sideband, debug disabled |
-| `u_mac_rx` | 200 | 212 | 1 | 0 | 0 | Default synchronous RX AXIS FIFO inferred as BRAM |
+| `u_mac_rx` | 200 | 212 | 1 | 0 | 0 | RX AXIS FIFO inferred as BRAM (2048 B, `MAX_FRAME=1518`) |
 | `u_mac_tx` | 229 | 111 | 0 | 0 | 0 | TX preamble/FCS/IFG path |
+
+The Arty demo pins `MAX_FRAME=1518`, so its RX AXIS buffer stays at the
+2048-byte default (one BRAM). A jumbo-capable build (`MAX_FRAME > 2048`)
+allocates a larger RX buffer because `RX_AXIS_ADDR_WIDTH` scales with
+`MAX_FRAME` (e.g. `MAX_FRAME=9018` -> 16384-byte buffer) so a full jumbo frame
+can be absorbed under sustained downstream backpressure; override
+`RX_AXIS_ADDR_WIDTH` to trade that buffering back for BRAM.
 
 Post-route timing met with WNS `0.305 ns` on the full Arty top. The generated
 reports live under `build_arty/` (`utilization_route.rpt`,

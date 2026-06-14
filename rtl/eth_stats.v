@@ -8,7 +8,14 @@
 // Verilog 2001
 // =============================================================================
 
-module eth_stats (
+module eth_stats #(
+    // Counter width. 32 bits suits line-rate byte/frame/size-bucket counters:
+    // a narrower counter would saturate in well under a second at line rate.
+    // Lower only for resource-constrained builds that do not need the full
+    // range; the eth_mac_sys CSR readback wiring assumes 32-bit and must be
+    // narrowed to match if this is reduced.
+    parameter STAT_CNT_W = 32
+)(
     input  wire        clk,
     input  wire        rst_n,
 
@@ -32,48 +39,50 @@ module eth_stats (
     input  wire        rx_stat_is_mcast,
 
     // ---- Counter outputs ----
-    output reg  [31:0] tx_frame_cnt,
-    output reg  [31:0] tx_byte_cnt,
-    output reg  [31:0] rx_frame_cnt,
-    output reg  [31:0] rx_byte_cnt,
-    output reg  [31:0] rx_crc_err_cnt,        // legacy alias = rx_err_fcs_cnt
+    output reg  [STAT_CNT_W-1:0] tx_frame_cnt,
+    output reg  [STAT_CNT_W-1:0] tx_byte_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_frame_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_byte_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_crc_err_cnt,        // legacy alias = rx_err_fcs_cnt
 
     // RX error breakdown
-    output reg  [31:0] rx_err_align_cnt,
-    output reg  [31:0] rx_err_overflow_cnt,
-    output reg  [31:0] rx_err_oversize_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_err_align_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_err_overflow_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_err_oversize_cnt,
 
     // RX bcast/mcast
-    output reg  [31:0] rx_bcast_cnt,
-    output reg  [31:0] rx_mcast_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_bcast_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_mcast_cnt,
 
     // RX size buckets (by total wire bytes incl. FCS)
-    output reg  [31:0] rx_size_64_cnt,        // ==64
-    output reg  [31:0] rx_size_65_127_cnt,
-    output reg  [31:0] rx_size_128_255_cnt,
-    output reg  [31:0] rx_size_256_511_cnt,
-    output reg  [31:0] rx_size_512_1023_cnt,
-    output reg  [31:0] rx_size_1024_1518_cnt,
-    output reg  [31:0] rx_size_jumbo_cnt,     // >1518
+    output reg  [STAT_CNT_W-1:0] rx_size_64_cnt,        // ==64
+    output reg  [STAT_CNT_W-1:0] rx_size_65_127_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_size_128_255_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_size_256_511_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_size_512_1023_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_size_1024_1518_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_size_jumbo_cnt,     // >1518
 
     // ---- Clear (active-high pulse) ----
     input  wire        clr_tx,
     input  wire        clr_rx
 );
 
-    // Saturating increment: returns current value + 1, or holds at max
-    `define SAT_INC(cnt) ((cnt) == 32'hFFFFFFFF ? 32'hFFFFFFFF : (cnt) + 32'd1)
+    // Saturating increment: returns current value + 1, or holds at all-ones.
+    // The all-ones detect (&cnt) replaces a full-width equality comparator and
+    // is width-agnostic, so it tracks STAT_CNT_W automatically.
+    `define SAT_INC(cnt) ((&(cnt)) ? (cnt) : (cnt) + 1'b1)
 
     // =====================================================================
     // TX counters
     // =====================================================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            tx_frame_cnt <= 32'd0;
-            tx_byte_cnt  <= 32'd0;
+            tx_frame_cnt <= {STAT_CNT_W{1'b0}};
+            tx_byte_cnt  <= {STAT_CNT_W{1'b0}};
         end else if (clr_tx) begin
-            tx_frame_cnt <= 32'd0;
-            tx_byte_cnt  <= 32'd0;
+            tx_frame_cnt <= {STAT_CNT_W{1'b0}};
+            tx_byte_cnt  <= {STAT_CNT_W{1'b0}};
         end else begin
             if (tx_frame_done)
                 tx_frame_cnt <= `SAT_INC(tx_frame_cnt);
@@ -88,13 +97,13 @@ module eth_stats (
     // =====================================================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rx_frame_cnt   <= 32'd0;
-            rx_byte_cnt    <= 32'd0;
-            rx_crc_err_cnt <= 32'd0;
+            rx_frame_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_byte_cnt    <= {STAT_CNT_W{1'b0}};
+            rx_crc_err_cnt <= {STAT_CNT_W{1'b0}};
         end else if (clr_rx) begin
-            rx_frame_cnt   <= 32'd0;
-            rx_byte_cnt    <= 32'd0;
-            rx_crc_err_cnt <= 32'd0;
+            rx_frame_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_byte_cnt    <= {STAT_CNT_W{1'b0}};
+            rx_crc_err_cnt <= {STAT_CNT_W{1'b0}};
         end else begin
             if (rx_frame_good || rx_frame_bad)
                 rx_frame_cnt <= `SAT_INC(rx_frame_cnt);
@@ -121,31 +130,31 @@ module eth_stats (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rx_err_align_cnt      <= 32'd0;
-            rx_err_overflow_cnt   <= 32'd0;
-            rx_err_oversize_cnt   <= 32'd0;
-            rx_bcast_cnt          <= 32'd0;
-            rx_mcast_cnt          <= 32'd0;
-            rx_size_64_cnt        <= 32'd0;
-            rx_size_65_127_cnt    <= 32'd0;
-            rx_size_128_255_cnt   <= 32'd0;
-            rx_size_256_511_cnt   <= 32'd0;
-            rx_size_512_1023_cnt  <= 32'd0;
-            rx_size_1024_1518_cnt <= 32'd0;
-            rx_size_jumbo_cnt     <= 32'd0;
+            rx_err_align_cnt      <= {STAT_CNT_W{1'b0}};
+            rx_err_overflow_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_err_oversize_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_bcast_cnt          <= {STAT_CNT_W{1'b0}};
+            rx_mcast_cnt          <= {STAT_CNT_W{1'b0}};
+            rx_size_64_cnt        <= {STAT_CNT_W{1'b0}};
+            rx_size_65_127_cnt    <= {STAT_CNT_W{1'b0}};
+            rx_size_128_255_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_size_256_511_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_size_512_1023_cnt  <= {STAT_CNT_W{1'b0}};
+            rx_size_1024_1518_cnt <= {STAT_CNT_W{1'b0}};
+            rx_size_jumbo_cnt     <= {STAT_CNT_W{1'b0}};
         end else if (clr_rx) begin
-            rx_err_align_cnt      <= 32'd0;
-            rx_err_overflow_cnt   <= 32'd0;
-            rx_err_oversize_cnt   <= 32'd0;
-            rx_bcast_cnt          <= 32'd0;
-            rx_mcast_cnt          <= 32'd0;
-            rx_size_64_cnt        <= 32'd0;
-            rx_size_65_127_cnt    <= 32'd0;
-            rx_size_128_255_cnt   <= 32'd0;
-            rx_size_256_511_cnt   <= 32'd0;
-            rx_size_512_1023_cnt  <= 32'd0;
-            rx_size_1024_1518_cnt <= 32'd0;
-            rx_size_jumbo_cnt     <= 32'd0;
+            rx_err_align_cnt      <= {STAT_CNT_W{1'b0}};
+            rx_err_overflow_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_err_oversize_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_bcast_cnt          <= {STAT_CNT_W{1'b0}};
+            rx_mcast_cnt          <= {STAT_CNT_W{1'b0}};
+            rx_size_64_cnt        <= {STAT_CNT_W{1'b0}};
+            rx_size_65_127_cnt    <= {STAT_CNT_W{1'b0}};
+            rx_size_128_255_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_size_256_511_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_size_512_1023_cnt  <= {STAT_CNT_W{1'b0}};
+            rx_size_1024_1518_cnt <= {STAT_CNT_W{1'b0}};
+            rx_size_jumbo_cnt     <= {STAT_CNT_W{1'b0}};
         end else if (rx_stat_done) begin
             if (rx_stat_err_align)    rx_err_align_cnt    <= `SAT_INC(rx_err_align_cnt);
             if (rx_stat_err_overflow) rx_err_overflow_cnt <= `SAT_INC(rx_err_overflow_cnt);

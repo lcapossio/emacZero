@@ -20,7 +20,13 @@ module async_fifo #(
     input  wire                  rd_rst_n,
     output wire [DATA_WIDTH-1:0] rd_data,
     input  wire                  rd_en,
-    output wire                  rd_empty
+    output wire                  rd_empty,
+
+    // Exact write-side occupancy (wr_ptr - synced rd_ptr), in the wr_clk
+    // domain. Lags true occupancy by the pointer-sync latency, so it never
+    // under-reports fullness - safe for fill-level / "busy" decisions. Leave
+    // unconnected if not needed.
+    output wire [ADDR_WIDTH:0]   wr_data_count
 );
 
     localparam DEPTH = 1 << ADDR_WIDTH;
@@ -73,6 +79,20 @@ module async_fifo #(
 
     assign wr_full = (wr_ptr_gray == {~rd_ptr_gray_sync2[ADDR_WIDTH:ADDR_WIDTH-1],
                                       rd_ptr_gray_sync2[ADDR_WIDTH-2:0]});
+
+    // Write-side occupancy from the already-synchronized read Gray pointer.
+    function [ADDR_WIDTH:0] gray2bin;
+        input [ADDR_WIDTH:0] gray;
+        integer i;
+        reg [ADDR_WIDTH:0] b;
+        begin
+            b = gray;
+            for (i = 1; i <= ADDR_WIDTH; i = i + 1)
+                b = b ^ (gray >> i);
+            gray2bin = b;
+        end
+    endfunction
+    assign wr_data_count = wr_ptr_bin - gray2bin(rd_ptr_gray_sync2);
 
     assign rd_data = mem[rd_ptr_bin[ADDR_WIDTH-1:0]];
 

@@ -31,6 +31,12 @@ module ddr_input (
         .S  (1'b0)
     );
 `elsif INTEL_CYCLONE
+    // -------------------------------------------------------------------------
+    // STUB - NOT a real Intel DDR input. ALTDDIO_IN / DDIO atoms are NOT
+    // instantiated here; this is only a behavioral model so an Intel-target
+    // elaboration completes. It will NOT meet DDR input setup/hold on real
+    // silicon. Replace with a true ALTDDIO_IN instance before targeting Intel.
+    // -------------------------------------------------------------------------
     reg q1_pipe, q1_r, q2_pipe, q2_r;
     always @(posedge clk) begin
         q1_pipe <= d;
@@ -40,10 +46,10 @@ module ddr_input (
     always @(negedge clk) q2_pipe <= d;
     assign q1 = q1_r;
     assign q2 = q2_r;
-`else
-    // Behavioral model for simulation (SAME_EDGE_PIPELINED equivalent)
-    // Xilinx IDDR SAME_EDGE_PIPELINED: at posedge N+1, q1 = data from
-    // posedge N, q2 = data from negedge N. Both from the same DDR cycle.
+`elsif SIM
+    // Simulation-only behavioral model (SAME_EDGE_PIPELINED equivalent, not for
+    // synthesis). Xilinx IDDR SAME_EDGE_PIPELINED: at posedge N+1, q1 = data
+    // from posedge N, q2 = data from negedge N. Both from the same DDR cycle.
     reg q1_pipe, q1_r, q2_pipe, q2_r;
     always @(posedge clk) begin
         q1_pipe <= d;        // capture rising-edge data
@@ -53,6 +59,11 @@ module ddr_input (
     always @(negedge clk) q2_pipe <= d;  // capture falling-edge data
     assign q1 = q1_r;
     assign q2 = q2_r;
+`else
+    // No DDR primitive selected. Define XILINX_7SERIES (or INTEL_CYCLONE) for
+    // synthesis, or SIM for simulation. q1/q2 are intentionally left undriven so
+    // an accidental synthesis of this file fails loudly instead of silently
+    // inferring a soft model.
 `endif
 
 endmodule

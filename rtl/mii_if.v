@@ -374,7 +374,8 @@ module mii_if #(
         .rd_rst_n(rst_n),
         .rd_data (rx_rd_data),
         .rd_en   (rx_rd_en),
-        .rd_empty(rx_rd_empty)
+        .rd_empty(rx_rd_empty),
+        .wr_data_count()
     );
 
 `endif
@@ -1020,7 +1021,8 @@ module mii_if #(
         .rd_rst_n(tx_rst_n_s2),
         .rd_data (tx_rd_data),
         .rd_en   (tx_rd_en),
-        .rd_empty(tx_rd_empty)
+        .rd_empty(tx_rd_empty),
+        .wr_data_count()
     );
 `endif
 

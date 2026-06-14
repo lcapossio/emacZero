@@ -15,6 +15,12 @@ module eth_mac_sys #(
     parameter PHY_INTERFACE     = "MII",  // "MII" or "RGMII"
     parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash filter
     parameter MAX_FRAME         = 9018,   // jumbo MTU + headers; 1518 standard
+    // RX AXIS buffer depth (address width). Defaults to hold one full
+    // MAX_FRAME frame so a jumbo frame can be absorbed under sustained
+    // downstream backpressure, with a 2048-byte (addr-width 11) floor for
+    // standard frames. Override smaller to save BRAM when the downstream sink
+    // never stalls for a full frame.
+    parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
     parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize IPv4/UDP TX checksum patcher
     parameter MII_DEBUG         = 0
 )(
@@ -281,7 +287,10 @@ module eth_mac_sys #(
     // =========================================================================
     // MAC RX - strips preamble/SFD, validates CRC
     // =========================================================================
-    eth_mac_rx #(.MCAST_HASH_FILTER(MCAST_HASH_FILTER)) u_mac_rx (
+    eth_mac_rx #(
+        .MCAST_HASH_FILTER   (MCAST_HASH_FILTER),
+        .AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH)
+    ) u_mac_rx (
         .clk              (clk),
         .rst_n            (rst_n),
         .gmii_rxd         (gmii_rxd),
@@ -335,6 +344,10 @@ module eth_mac_sys #(
     // =========================================================================
     generate
         if (PHY_INTERFACE == "MII") begin : gen_mii
+            // NOTE: the MII path is standard-MTU only. mii_if's TX FIFO and RX
+            // replay buffer are 4096 bytes, which cannot hold a jumbo frame
+            // while the 12.5 MB/s MII side drains the 100 MB/s write side. Use
+            // MAX_FRAME=1518 for MII; jumbo requires PHY_INTERFACE="RGMII".
             mii_if #(.MII_DEBUG(MII_DEBUG)) u_mii_if (
                 .clk            (clk),
                 .rst_n          (rst_n),

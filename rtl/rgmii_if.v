@@ -171,14 +171,24 @@ module rgmii_if #(
     // =========================================================================
     // 10/100 nibble pairing (only used when !is_1g)
     // =========================================================================
+    // Synchronize the system reset into the RGMII RX clock domain. rst_n is
+    // asynchronous to rgmii_rxc (a PHY-sourced clock); using it directly risks
+    // metastable reset release of the pairing state. Async assert, 2-FF sync
+    // deassert, matching the gmii_cdc / mii_if reset-synchronizer style.
+    reg rx_rst_n_s1, rx_rst_n_s2;
+    always @(posedge rgmii_rxc or negedge rst_n) begin
+        if (!rst_n) {rx_rst_n_s2, rx_rst_n_s1} <= 2'b00;
+        else        {rx_rst_n_s2, rx_rst_n_s1} <= {rx_rst_n_s1, 1'b1};
+    end
+
     reg [3:0] nibble_lo;
     reg       have_lo;
     reg [7:0] rxd_lo_pair;
     reg       rx_dv_lo_pair;
     reg       rx_er_lo_pair;
 
-    always @(posedge rgmii_rxc) begin
-        if (!rst_n) begin
+    always @(posedge rgmii_rxc or negedge rx_rst_n_s2) begin
+        if (!rx_rst_n_s2) begin
             nibble_lo     <= 4'd0;
             have_lo       <= 1'b0;
             rxd_lo_pair   <= 8'd0;

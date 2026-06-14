@@ -13,7 +13,9 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] Ethernet FCS generation on TX
 - [x] Ethernet FCS validation on RX with `m_axis_terror`
 - [x] RX error tagging for FCS, receive error, FIFO overflow, and oversize
-- [x] Jumbo-frame gate up to `MAX_FRAME`
+- [x] Jumbo-frame gate up to `MAX_FRAME` (RGMII path only; the MII 10/100
+      path is standard-MTU only — its TX FIFO and RX replay buffer are 4096
+      bytes and cannot hold a jumbo frame, so jumbo TX/RX requires RGMII)
 - [x] 802.3x PAUSE frame parse and TX gating
 - [x] Firmware-triggered PAUSE frame transmit through `PAUSE_CTRL`
 - [x] Single primary unicast MAC address filter
@@ -31,7 +33,7 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 
 ## PHY / Line Side
 
-- [x] MII 10/100 path
+- [x] MII 10/100 path (standard MTU only; jumbo requires the RGMII path)
 - [x] MII store-and-forward CDC uses EOF-sideband frame markers without
       separate MII length FIFOs
 - [x] RGMII 10/100/1G path with runtime speed selection

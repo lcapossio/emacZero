@@ -30,18 +30,28 @@ module ddr_output (
         .S  (1'b0)
     );
 `elsif INTEL_CYCLONE
-    // Intel/Altera DDR output using ALTDDIO_OUT
-    // Directly instantiate the atom or use altddio_out megafunction
-    reg q_r;
-    always @(posedge clk) q_r <= d1;
-    always @(negedge clk) q_r <= d2;
-    assign q = q_r;
+    // -------------------------------------------------------------------------
+    // STUB - NOT a real Intel DDR output. ALTDDIO_OUT / DDIO atoms are NOT
+    // instantiated here; this is only a behavioral mux so an Intel-target
+    // elaboration completes. It will NOT meet DDR output timing on real
+    // silicon. Replace with a true ALTDDIO_OUT instance before targeting Intel.
+    // -------------------------------------------------------------------------
+    reg q1_r, q2_r;
+    always @(posedge clk) q1_r <= d1;
+    always @(negedge clk) q2_r <= d2;
+    assign q = clk ? q1_r : q2_r;
+`elsif SIM
+    // Simulation-only behavioral DDR model (not for synthesis). Two single-edge
+    // registers muxed by clk - never drives one register from two clock edges.
+    reg q1_r, q2_r;
+    always @(posedge clk) q1_r <= d1;
+    always @(negedge clk) q2_r <= d2;
+    assign q = clk ? q1_r : q2_r;
 `else
-    // Behavioral model for simulation
-    reg q_r;
-    always @(posedge clk) q_r <= d1;
-    always @(negedge clk) q_r <= d2;
-    assign q = q_r;
+    // No DDR primitive selected. Define XILINX_7SERIES (or INTEL_CYCLONE) for
+    // synthesis, or SIM for simulation. `q` is intentionally left undriven so an
+    // accidental synthesis of this file fails loudly instead of silently
+    // inferring a non-DDR soft register.
 `endif
 
 endmodule
