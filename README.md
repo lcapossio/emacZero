@@ -260,13 +260,14 @@ UDP blast, host-to-FPGA iperf sink, bidirectional UDP, regression profile, and
 troubleshooting details are canonical in
 [fpga/arty_a7/README.md](fpga/arty_a7/README.md).
 
-Current Arty A7-100T hardware throughput, measured on 2026-05-28 with the
-DP83848J MII PHY at 100 Mbps full duplex and 1472-byte UDP payloads:
+Current Arty A7-100T hardware throughput, re-validated on 2026-06-14 (after the
+RTL review fixes) with the DP83848J MII PHY at 100 Mbps full duplex and
+1472-byte UDP payloads:
 
 | Test | Result |
 |------|--------|
 | 5 s bidirectional smoke | PASS, FPGA->host 95.16 Mbps, host->FPGA 70.00 Mbps, 0 gaps |
-| 60 s bidirectional stress | PASS, FPGA->host 95.14 Mbps, host->FPGA 95.73 Mbps, 29 FPGA->host gaps, 0 host->FPGA gaps |
+| 60 s bidirectional stress | PASS, FPGA->host 95.14 Mbps, host->FPGA 95.72 Mbps, 31 FPGA->host gaps, 0 host->FPGA gaps |
 
 These are UDP payload Mbps, not raw wire Mbps. Around 95 Mbps payload is
 expected on a 100 Mbps Ethernet link once preamble, IFG, headers, and FCS are
@@ -371,9 +372,10 @@ notes are tracked in:
 
 Current measured numbers are from the routed Arty A7-100T reference build:
 Vivado 2025.2, `xc7a100tcsg324-1`, `PHY_INTERFACE="MII"`, `MII_DEBUG=0`,
-`TX_CSUM_OFFLOAD=0`, full demo logic enabled, generated on 2026-05-28 after
-the RX AXIS FIFO BRAM inference fix, MII EOF-sideband FIFO cleanup, XPM FIFO
-advanced-feature trim, and 13-bit TX FIFO count fix.
+`TX_CSUM_OFFLOAD=0`, full demo logic enabled, re-validated on 2026-06-14 after
+the RTL review fixes. The per-scope LUT/FF/BRAM counts are unchanged from the
+prior 2026-05-28 snapshot (the dead-CRC removal was already pruned, and the
+remaining edits net out within existing slices).
 
 | Scope | LUTs | FFs | RAMB36 | RAMB18 | DSP | Notes |
 |-------|-----:|----:|-------:|-------:|----:|-------|
@@ -390,7 +392,7 @@ allocates a larger RX buffer because `RX_AXIS_ADDR_WIDTH` scales with
 can be absorbed under sustained downstream backpressure; override
 `RX_AXIS_ADDR_WIDTH` to trade that buffering back for BRAM.
 
-Post-route timing met with WNS `0.305 ns` on the full Arty top. The generated
+Post-route timing met with WNS `0.349 ns` on the full Arty top. The generated
 reports live under `build_arty/` (`utilization_route.rpt`,
 `utilization_hier_route.rpt`, `timing.rpt`, `timing_summary_route.rpt`) and
 are intentionally ignored by git as build artifacts.
