@@ -18,6 +18,13 @@ This project does not yet maintain long-lived release branches.
 - `gmii_cdc` TX fill level / `tx_busy` now use `async_fifo.wr_data_count`
   instead of a per-byte read toggle synchronizer, which could drop counts when
   `media_clk` (125 MHz) outran `sys_clk` (100 MHz) at 1G.
+- `gmii_cdc` TX path now uses a single EOF-sideband packet FIFO (9-bit: data
+  byte + EOF marker) with a gray-coded committed-frame counter to gate the
+  store-and-forward start, replacing the separate 14-bit length FIFO and its
+  length accumulator. This matches the MII adapter and `gmii_cdc`'s own RX path.
+  The paced media-side waveform (1G/100M/10M) is byte-for-byte unchanged, and
+  BRAM usage is unchanged (the EOF bit occupies the spare 9th bit of the
+  16K-deep data FIFO). Validated by the GMII-CDC 1G/100M/10M loopback tests.
 
 - `eth_mac_sys` / `eth_mac` now scale the RX AXIS buffer with `MAX_FRAME` via a
   new `RX_AXIS_ADDR_WIDTH` parameter (defaults to one full frame, 2048-byte

@@ -34,8 +34,8 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 ## PHY / Line Side
 
 - [x] MII 10/100 path (standard MTU only; jumbo requires the RGMII path)
-- [x] MII store-and-forward CDC uses EOF-sideband frame markers without
-      separate MII length FIFOs
+- [x] MII and RGMII (`gmii_cdc`) store-and-forward CDCs use EOF-sideband frame
+      markers with a committed-frame counter, without separate length FIFOs
 - [x] RGMII 10/100/1G path with runtime speed selection
 - [x] RGMII build-time speed trimming through `RGMII_SPEEDS`
 - [x] MDIO clause-22
