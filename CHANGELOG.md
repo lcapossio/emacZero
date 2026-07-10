@@ -7,6 +7,14 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- `mii_tx_saf`: a fully store-and-forward MII transmit path built on a **single**
+  async frame FIFO (`{tlast,data}`) feeding a media-side framer (preamble/SFD/
+  CRC/pad/FCS/IFG + nibble output). The framer starts only once a whole frame is
+  committed, so the AXIS input MAY bubble (deassert `tvalid` mid-frame) with no
+  wire underrun and no transmit error - unlike the cut-through `eth_mac_tx` it is
+  intended to replace on the MII path. Standalone-validated by `MII-TX-SAF`
+  (byte-exact framing + recomputed FCS under per-byte gaps and a 40-cycle
+  mid-frame stall). `eth_mac_sys` integration is pending.
 - `STATUS[3]` (`mdio_cmd_dropped`): an MDIO `GO` written while the MDIO master
   is busy no longer fails silently — it sets this sticky bit (cleared by the
   next successfully-issued `GO`) so software can detect the dropped command.

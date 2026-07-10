@@ -202,6 +202,7 @@ LINT_SOURCES = [
     "rtl/crc32.v",
     "rtl/async_fifo.v",
     "rtl/mii_if.v",
+    "rtl/mii_tx_saf.v",
     "rtl/sync_fifo.v", "rtl/eth_mac_rx.v",
     "rtl/eth_mac_tx.v",
     "rtl/eth_mac.v",
@@ -409,6 +410,12 @@ TESTS = [
                  "rtl/sync_fifo.v", "rtl/eth_mac_rx.v", "rtl/eth_mac_tx.v", "rtl/eth_mac.v",
                  "sim/tb/tb_mii_loopback.v"],
         "out": "sim/tb_mii_loopback.vvp",
+    },
+    {
+        "name": "MII-TX-SAF",
+        "srcs": ["rtl/async_fifo.v", "rtl/mii_tx_saf.v",
+                 "sim/tb/tb_mii_tx_saf.v"],
+        "out": "sim/tb_mii_tx_saf.vvp",
     },
     {
         "name": "MII-RX-REPLAY-STRESS",
