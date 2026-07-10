@@ -14,7 +14,18 @@ This project does not yet maintain long-lived release branches.
   wire underrun and no transmit error - unlike the cut-through `eth_mac_tx` it is
   intended to replace on the MII path. Standalone-validated by `MII-TX-SAF`
   (byte-exact framing + recomputed FCS under per-byte gaps and a 40-cycle
-  mid-frame stall). `eth_mac_sys` integration is pending.
+  mid-frame stall).
+
+### Changed
+
+- `eth_mac_sys` MII path now transmits through `mii_tx_saf` instead of the
+  cut-through `eth_mac_tx`, so a bubbling TX AXIS source can no longer cause a
+  mid-frame underrun / bad frame on the wire. `eth_mac_tx` is retained on the
+  RGMII path. TX stats (`tx_byte_cnt`/`tx_frame_cnt`), `STATUS.tx_active`, the
+  TX-done IRQ, and inbound-PAUSE TX gating are preserved (wire-byte semantics
+  unchanged). Known follow-up: `mii_if`'s now-idle internal TX FIFO is disabled
+  (tied off) rather than compiled out, so the MII path still infers one unused
+  TX BRAM pending an `mii_if` RX-only refactor.
 - `STATUS[3]` (`mdio_cmd_dropped`): an MDIO `GO` written while the MDIO master
   is busy no longer fails silently — it sets this sticky bit (cleared by the
   next successfully-issued `GO`) so software can detect the dropped command.

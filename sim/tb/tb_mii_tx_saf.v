@@ -32,6 +32,7 @@ module tb_mii_tx_saf;
         .s_axis_tvalid (tvalid),
         .s_axis_tready (tready),
         .s_axis_tlast  (tlast),
+        .tx_start_ok   (1'b1),
         .mii_tx_clk    (mii_clk),
         .mii_txd       (mii_txd),
         .mii_tx_en     (mii_tx_en),

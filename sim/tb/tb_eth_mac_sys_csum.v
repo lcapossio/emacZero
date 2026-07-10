@@ -165,27 +165,39 @@ module tb_eth_mac_sys_csum;
             frame[i] = i[7:0];
     end
 
-    // ---- GMII bus tap (directly inside eth_mac_sys) ----
-    // Captures every byte while gmii_tx_en is asserted, INCLUDING preamble/SFD
-    // and the 4-byte CRC. We strip those at verification time.
+    // ---- MII wire capture ----
+    // The store-and-forward MII TX (mii_tx_saf) frames on the media clock, so we
+    // reconstruct the transmitted byte stream from the MII nibble pins into the
+    // same gmii_buf layout (preamble/SFD, payload, pad, 4-byte CRC) the
+    // verification below expects. Low nibble is sent first.
     reg [7:0] gmii_buf [0:127];
     integer   gmii_byte_cnt;
     reg       gmii_done;
-    reg       gmii_tx_en_d1;
-    always @(posedge clk) begin
+    reg       mii_en_d1;
+    reg       mii_nsel;
+    reg [3:0] mii_lown;
+    always @(posedge mii_clk) begin
         if (!rst_n) begin
             gmii_byte_cnt <= 0;
             gmii_done     <= 0;
-            gmii_tx_en_d1 <= 0;
+            mii_en_d1     <= 0;
+            mii_nsel      <= 0;
+            mii_lown      <= 0;
         end else begin
-            gmii_tx_en_d1 <= uut.gmii_tx_en;
-            if (uut.gmii_tx_en && !gmii_done) begin
-                if (gmii_byte_cnt < 128)
-                    gmii_buf[gmii_byte_cnt] <= uut.gmii_txd;
-                gmii_byte_cnt <= gmii_byte_cnt + 1;
+            mii_en_d1 <= mii_tx_en;
+            if (mii_tx_en && !gmii_done) begin
+                if (!mii_nsel) begin
+                    mii_lown <= mii_txd;
+                    mii_nsel <= 1'b1;
+                end else begin
+                    if (gmii_byte_cnt < 128)
+                        gmii_buf[gmii_byte_cnt] <= {mii_txd, mii_lown};
+                    gmii_byte_cnt <= gmii_byte_cnt + 1;
+                    mii_nsel <= 1'b0;
+                end
             end
-            // Falling edge of gmii_tx_en marks frame end
-            if (gmii_tx_en_d1 && !uut.gmii_tx_en && gmii_byte_cnt > 0)
+            // Falling edge of mii_tx_en marks frame end
+            if (mii_en_d1 && !mii_tx_en && gmii_byte_cnt > 0)
                 gmii_done <= 1;
         end
     end

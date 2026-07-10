@@ -30,6 +30,11 @@ module mii_tx_saf #(
     output wire        s_axis_tready,
     input  wire        s_axis_tlast,
 
+    // Gate frame START (sys clk). Low pauses starting new frames (e.g. on an
+    // inbound 802.3x PAUSE); an in-flight frame always completes. Tie high if
+    // unused.
+    input  wire        tx_start_ok,
+
     // ---- MII output (media clock) ----
     input  wire        mii_tx_clk,
     output wire [3:0]  mii_txd,
@@ -122,16 +127,21 @@ module mii_tx_saf #(
     (* ASYNC_REG = "TRUE" *) reg [3:0] frame_wr_s1;
     (* ASYNC_REG = "TRUE" *) reg [3:0] frame_wr_s2;
     (* ASYNC_REG = "TRUE" *) reg [3:0] frame_wr_s3;
+    (* ASYNC_REG = "TRUE" *) reg       start_ok_s1, start_ok_s2;
     reg [3:0] frame_rd_bin;
     always @(posedge mii_tx_clk or negedge tx_rst_n_s2) begin
         if (!tx_rst_n_s2) begin
             frame_wr_s1 <= 4'd0;
             frame_wr_s2 <= 4'd0;
             frame_wr_s3 <= 4'd0;
+            start_ok_s1 <= 1'b0;
+            start_ok_s2 <= 1'b0;
         end else begin
             frame_wr_s1 <= frame_wr_gray;
             frame_wr_s2 <= frame_wr_s1;
             frame_wr_s3 <= frame_wr_s2;
+            start_ok_s1 <= tx_start_ok;
+            start_ok_s2 <= start_ok_s1;
         end
     end
     wire [3:0] frame_wr_media = gray4_to_bin(frame_wr_s3);
@@ -215,7 +225,7 @@ module mii_tx_saf #(
                     mii_tx_en_int <= 1'b0;
                     nib           <= 1'b0;
                     tx_active_media <= 1'b0;
-                    if (frame_pending && !rd_empty) begin
+                    if (frame_pending && !rd_empty && start_ok_s2) begin
                         // tx_en is raised in the first S_PRE cycle (default
                         // branch) together with the first nibble, so it stays
                         // aligned with mii_txd. Raising it here would emit one
