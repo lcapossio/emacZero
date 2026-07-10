@@ -38,6 +38,7 @@ module tb_axilite_regs;
     // ---- Register interface ----
     wire        cfg_tx_en, cfg_rx_en, cfg_promisc;
     wire [47:0] cfg_mac_addr;
+    wire [31:0] cfg_ip_addr;
     wire        mdio_go, mdio_write;
     wire [4:0]  mdio_phy_addr, mdio_reg_addr;
     wire [15:0] mdio_wdata_out;
@@ -83,6 +84,7 @@ module tb_axilite_regs;
         .cfg_passthrough(),
         .cfg_mcast_hash_table(),
         .cfg_mac_addr   (cfg_mac_addr),
+        .cfg_ip_addr    (cfg_ip_addr),
         .mdio_go        (mdio_go),
         .mdio_write     (mdio_write),
         .mdio_phy_addr  (mdio_phy_addr),
@@ -142,6 +144,7 @@ module tb_axilite_regs;
     localparam [7:0] A_RX_FRAME   = 8'h30;
     localparam [7:0] A_RX_ERR     = 8'h38;
     localparam [7:0] A_SCRATCH    = 8'h3C;
+    localparam [7:0] A_IP_ADDR    = 8'h40;
 
     task axi_write;
         input [7:0]  addr;
@@ -339,6 +342,17 @@ module tb_axilite_regs;
         axi_write(A_SCRATCH, 32'h1234_5678);
         axi_read(A_SCRATCH, rd_result);
         check32("SCRATCH overwrite", rd_result, 32'h1234_5678);
+
+        // =================================================================
+        // Test 2b: IP_ADDR register (demo L3 IPv4) - reset default, RW, output
+        // =================================================================
+        axi_read(A_IP_ADDR, rd_result);
+        check32("IP_ADDR reset default", rd_result, 32'hC0A8_89C8);  // 192.168.137.200
+
+        axi_write(A_IP_ADDR, 32'hC0A8_EDC8);                         // 192.168.237.200
+        axi_read(A_IP_ADDR, rd_result);
+        check32("IP_ADDR write/read", rd_result, 32'hC0A8_EDC8);
+        check32("cfg_ip_addr output", cfg_ip_addr, 32'hC0A8_EDC8);
 
         // =================================================================
         // Test 3: CTRL register + config outputs

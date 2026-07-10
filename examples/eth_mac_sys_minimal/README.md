@@ -19,10 +19,14 @@ No clock generation, no PHY reset sequencing, no UART, no test sequencer,
 no ARP responder, no ICMP echo. That's deliberate — this template is the
 MAC alone, ready to be wired into your existing infrastructure.
 
-There is also no external AXI-Stream store-forward wrapper here. The MII PHY
-path inside `eth_mac_sys` already uses frame-aware CDC buffering. Add a parent
-`axis_store_forward`-style block only if your upstream DMA or packet producer
-can begin a TX frame and then underrun before `tlast`.
+There is also no external AXI-Stream store-forward wrapper here, and the MII
+path does not need one. The MII TX (`mii_tx_saf`) is fully store-and-forward on
+a single frame FIFO: it only starts a frame on the wire once the whole frame is
+buffered, so a TX AXIS producer MAY bubble (deassert `tvalid` mid-frame) with no
+underrun or bad frame. The RGMII path keeps the cut-through `eth_mac_tx` behind
+`gmii_cdc`'s store-and-forward CDC; add a parent `axis_store_forward`-style block
+ahead of it only if your upstream DMA can begin a frame and then underrun before
+`tlast`.
 
 `MII_DEBUG` is an `eth_mac_sys` parameter and defaults to `0`. Leave it off
 for normal builds; set it only when you deliberately want the lower-level MII

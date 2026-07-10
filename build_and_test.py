@@ -223,6 +223,7 @@ LINT_SOURCES = [
     "rtl/net/udp_iperf_sink.v",
     "rtl/net/udp_stats_reply.v",
     "fpga/arty_a7/rtl/arty_tx_arbiter.v",
+    "rtl/axil_arb2.v",
     "rtl/eth_mac_sys.v",
 ]
 
@@ -524,6 +525,11 @@ TESTS = [
         "name": "ARTY-TX-ARBITER",
         "srcs": ["fpga/arty_a7/rtl/arty_tx_arbiter.v", "sim/tb/tb_arty_tx_arbiter.v"],
         "out": "sim/tb_arty_tx_arbiter.vvp",
+    },
+    {
+        "name": "AXIL-ARB2",
+        "srcs": ["rtl/axil_arb2.v", "sim/tb/tb_axil_arb2.v"],
+        "out": "sim/tb_axil_arb2.vvp",
     },
     {
         "name": "UDP-BLAST-PATH",

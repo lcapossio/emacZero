@@ -29,6 +29,7 @@ dropped.
 | `0x34` | RX_BYTE | RO/WC | `0x00000000` | RX byte count |
 | `0x38` | RX_ERR | RO/WC | `0x00000000` | RX error count |
 | `0x3C` | SCRATCH | RW | `0x00000000` | Scratch register |
+| `0x40` | IP_ADDR | RW | `0xC0A889C8` | Demo L3 stack IPv4 (`cfg_ip_addr`, default 192.168.137.200) |
 | `0x44` | MCAST_LO | RW* | `0x00000000` | `mcast_hash_table[31:0]` |
 | `0x48` | MCAST_HI | RW* | `0x00000000` | `mcast_hash_table[63:32]` |
 | `0x4C` | RX_ERR_ALIGN | RO/WC | `0x00000000` | RX frames with `rx_er` asserted |
@@ -144,6 +145,17 @@ to an RX counter clears all RX counters in the `eth_stats` RX block.
 ## 0x3C - SCRATCH
 
 32-bit RW with no hardware side effects. Useful for software self-tests.
+
+## 0x40 - IP_ADDR
+
+32-bit RW holding the IPv4 address (`cfg_ip_addr[31:0]`, byte order
+`{a,b,c,d}` for `a.b.c.d`) used by the optional demonstration L3 stack for
+ARP, ICMP, and UDP address matching. Reset value `0xC0A889C8`
+(192.168.137.200). The bare MAC leaves `cfg_ip_addr` unconnected; the value is
+still readable/writable in the CSR block. Because it is a live wire into the
+L3 responders, changing it retargets the demo IP at runtime with no rebuild -
+the Arty debug bitstream exercises exactly this over the fpgacapZero
+JTAG-to-AXI bridge.
 
 ## 0x44 / 0x48 - MCAST_LO / MCAST_HI
 

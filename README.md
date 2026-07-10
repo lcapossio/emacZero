@@ -169,6 +169,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0x34 | RX_BYTE_CNT | RO/WC | RX byte counter |
 | 0x38 | RX_ERR_CNT | RO/WC | RX CRC error counter |
 | 0x3C | SCRATCH | RW | Read-back test register |
+| 0x40 | IP_ADDR | RW | Demo L3 stack IPv4, `cfg_ip_addr[31:0]` (default 0xC0A889C8 = 192.168.137.200); sets the ARP/ICMP/UDP match address in the example L3 design. Unused by the bare MAC. |
 | 0x44 | MCAST_LO | RW | mcast_hash_table[31:0] (only if MCAST_HASH_FILTER=1) |
 | 0x48 | MCAST_HI | RW | mcast_hash_table[63:32] (only if MCAST_HASH_FILTER=1) |
 | 0x4C | RX_ERR_ALIGN | RO/WC | RX frames with `rx_er` asserted |
@@ -225,7 +226,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | MII-LOOPBACK | Full TX-to-RX loopback through MII | 1 |
 | MII-RX-REPLAY-STRESS | RX frame-ready accounting under replay stalls | 7 |
 | ETH-STATS | Statistics counters: increment, saturation, clear | 19 |
-| AXILITE-REGS | AXI4-Lite CSR: all register behaviors | 32 |
+| AXILITE-REGS | AXI4-Lite CSR: all register behaviors | 35 |
 | GMII-CDC | GMII CDC bridge: loopback, data integrity, back-to-back | 7 |
 | ETH-MAC-SYS | Full integration: AXI-Lite config, MII loopback, stats, MDIO | 10 |
 | RGMII-IF | RGMII DDR pin packing/unpacking at 1G | 14 |
@@ -242,6 +243,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | UDP-BLAST-TRIGGER | trigger payload parsing and busy/port filtering | 13 |
 | UDP-BLAST-START-DELAY | First-packet delay after UDP blast trigger | 7 |
 | ARTY-TX-ARBITER | Arty six-source TX arbitration and blast holdoff | 9 |
+| AXIL-ARB2 | 2:1 AXI4-Lite arbiter: independent RW channels, concurrency, hammer | 24 |
 | UDP-BLAST-PATH | UDP trigger frame through `net_rx` into `udp_blast` TX | 9 |
 | UDP-STATS-REPLY | binary stats query/clear responder packet generation | 19 |
 | ETH-MAC-SYS-CSUM | Integrated TX checksum-offload path with `TX_CSUM_OFFLOAD=1` | 7 |

@@ -37,21 +37,26 @@ set rtl_files [list \
     fpga/arty_a7/rtl/test_sequencer.v \
     fpga/arty_a7/rtl/arp_responder.v \
     fpga/arty_a7/rtl/arty_tx_arbiter.v \
+    rtl/axil_arb2.v \
     fpga/arty_a7/rtl/arty_a7_top.v \
 ]
 
 # fpgacapZero debug core files
 set fcapz_files [list \
+    $fcapz_rtl/reset_sync.v \
     $fcapz_rtl/dpram.v \
     $fcapz_rtl/jtag_reg_iface.v \
+    $fcapz_rtl/jtag_pipe_iface.v \
     $fcapz_rtl/jtag_burst_read.v \
     $fcapz_rtl/trig_compare.v \
     $fcapz_rtl/fcapz_async_fifo.v \
     $fcapz_rtl/fcapz_ela.v \
     $fcapz_rtl/fcapz_eio.v \
+    $fcapz_rtl/fcapz_ejtagaxi.v \
     $fcapz_rtl/jtag_tap/jtag_tap_xilinx7.v \
     $fcapz_rtl/fcapz_ela_xilinx7.v \
     $fcapz_rtl/fcapz_eio_xilinx7.v \
+    $fcapz_rtl/fcapz_ejtagaxi_xilinx7.v \
 ]
 
 set xdc_file fpga/arty_a7/constraints/arty_a7.xdc

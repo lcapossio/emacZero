@@ -89,6 +89,9 @@ module eth_mac_sys #(
     output wire        mdio_o,
     output wire        mdio_oe,
 
+    // ---- Demo L3 config (IP_ADDR CSR @ 0x40; drives a board-level L3 stack) ----
+    output wire [31:0] cfg_ip_addr,
+
     // ---- Interrupt ----
     output wire        irq
 );
@@ -643,6 +646,7 @@ module eth_mac_sys #(
         .cfg_tx_csum_off       (cfg_tx_csum_off),
         .cfg_passthrough       (cfg_passthrough),
         .cfg_mac_addr          (cfg_mac_addr),
+        .cfg_ip_addr           (cfg_ip_addr),
         .cfg_mcast_hash_table  (cfg_mcast_hash_table),
         .mdio_go        (mdio_go),
         .mdio_write     (mdio_write),
