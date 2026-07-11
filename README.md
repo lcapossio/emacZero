@@ -188,6 +188,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0x88 | PAUSE_QUANTA | RW | [15:0] quanta for next emitted PAUSE frame |
 | 0x8C | PAUSE_RX_CNT | RO/WC | Received PAUSE frames |
 | 0x90 | PAUSE_TX_CNT | RO/WC | Transmitted PAUSE frames |
+| 0x94 | SAF_DBG | RO | `mii_tx_saf` framer/FIFO debug snapshot (MII path; 0 on RGMII). See [docs/registers.md](docs/registers.md). |
 
 Default CTRL: tx_en=1, rx_en=1, promisc=0, speed=00 (1G), full_duplex=1,
 jumbo_en=0, tx_csum_off=0, passthrough=0  ->  0x23.

@@ -33,6 +33,7 @@ extern "C" {
 #define EMZ_REG_RX_BYTE_CNT  0x34u
 #define EMZ_REG_RX_ERR_CNT   0x38u
 #define EMZ_REG_SCRATCH      0x3Cu
+#define EMZ_REG_IP_ADDR      0x40u  /* demo L3 stack IPv4; unused by bare MAC */
 #define EMZ_REG_MCAST_LO     0x44u  /* only if MCAST_HASH_FILTER=1 */
 #define EMZ_REG_MCAST_HI     0x48u
 #define EMZ_REG_RX_ERR_ALIGN     0x4Cu
@@ -51,6 +52,7 @@ extern "C" {
 #define EMZ_REG_PAUSE_QUANTA     0x88u
 #define EMZ_REG_PAUSE_RX_CNT     0x8Cu
 #define EMZ_REG_PAUSE_TX_CNT     0x90u
+#define EMZ_REG_SAF_DBG          0x94u  /* RO mii_tx_saf debug; 0 on RGMII */
 
 /* Mirror of rtl/version.vh. build_and_test.py asserts these match. */
 #define EMZ_VERSION_MAJOR        0u

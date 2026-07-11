@@ -15,6 +15,14 @@ This project does not yet maintain long-lived release branches.
   intended to replace on the MII path. Standalone-validated by `MII-TX-SAF`
   (byte-exact framing + recomputed FCS under per-byte gaps and a 40-cycle
   mid-frame stall).
+- `IP_ADDR` CSR (`0x40`, RW): the demo L3 stack IPv4 (`cfg_ip_addr`) is now
+  AXI-writable, so a board can be retargeted to a new subnet at runtime without
+  a rebuild. Unused by the bare MAC.
+- `SAF_DBG` CSR (`0x94`, RO): a synchronized snapshot of the `mii_tx_saf`
+  framer/FIFO state (committed/drained frame counts, `rd_empty`, framer state)
+  for on-hardware TX diagnosis. Reads `0` on the RGMII build.
+- `axil_arb2`: a 2:1 AXI4-Lite arbiter, used to share the CSR bus between the
+  test sequencer and an EJTAG-AXI debug bridge on the Arty A7 debug build.
 
 ### Changed
 
@@ -23,9 +31,13 @@ This project does not yet maintain long-lived release branches.
   mid-frame underrun / bad frame on the wire. `eth_mac_tx` is retained on the
   RGMII path. TX stats (`tx_byte_cnt`/`tx_frame_cnt`), `STATUS.tx_active`, the
   TX-done IRQ, and inbound-PAUSE TX gating are preserved (wire-byte semantics
-  unchanged). Known follow-up: `mii_if`'s now-idle internal TX FIFO is disabled
-  (tied off) rather than compiled out, so the MII path still infers one unused
-  TX BRAM pending an `mii_if` RX-only refactor.
+  unchanged).
+- `mii_if` gained a `TX_ENABLE` parameter (default 1). The MII path in
+  `eth_mac_sys` sets `TX_ENABLE=0` so `mii_if`'s now-idle internal TX FIFO is
+  compiled out (not merely tied off): its RAMB36 is reclaimed (Arty A7 debug
+  build 6.5 -> 5.5 BRAM tiles) and the MII TX path now has a single FIFO. The
+  legacy `eth_mac` wrapper and the MII TX testbenches keep the default
+  `TX_ENABLE=1`.
 - `STATUS[3]` (`mdio_cmd_dropped`): an MDIO `GO` written while the MDIO master
   is busy no longer fails silently — it sets this sticky bit (cleared by the
   next successfully-issued `GO`) so software can detect the dropped command.
@@ -65,6 +77,19 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `mii_tx_saf` TX deadlock (committed-frame counter wrap): a 4-bit committed
+  frame counter aliased to a false "equal" once 16 frames backed up in the 4 KB
+  FIFO, parking the framer in idle. Widened the counter to `FIFO_ADDR_WIDTH+1`
+  bits. Regression `tb_mii_tx_saf_burst_stall`.
+- `mii_tx_saf` permanent TX wedge on oversized / uncommitted frames: the write
+  side committed only on `tlast` with no bound on the uncommitted run, so a
+  no-`tlast` run reaching the FIFO depth (an oversized frame, or frames merged
+  by a dropped `tlast` upstream) filled the FIFO with uncommitted data - the
+  framer never started and the whole TX path deadlocked (reproduced on Arty A7
+  under a 64-byte UDP echo flood). Capped the in-flight run at `MAX_FRAME` (force
+  a synthetic EOF, drop the runaway tail); since `MAX_FRAME` < FIFO depth a
+  permanent wedge is now structurally impossible. Regression
+  `tb_mii_tx_saf_oversize`; re-validated on hardware at 300-400 Mbps, `<1%` loss.
 - Removed a dead `crc32` instance from `eth_mac_tx` (the TX FCS is computed by
   the local `crc_step_byte`/`crc_accum` lookahead; the instance and its driver
   registers were unused).

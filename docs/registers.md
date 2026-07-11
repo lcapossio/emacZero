@@ -48,6 +48,7 @@ dropped.
 | `0x88` | PAUSE_QUANTA | RW | `0x00000000` | Quanta payload of next emitted PAUSE frame |
 | `0x8C` | PAUSE_RX_CNT | RO/WC | `0x00000000` | Received PAUSE frames |
 | `0x90` | PAUSE_TX_CNT | RO/WC | `0x00000000` | Transmitted PAUSE frames |
+| `0x94` | SAF_DBG | RO | `0x00000000` | `mii_tx_saf` framer/FIFO debug snapshot (MII path; `0` on RGMII) |
 
 `*` Present only when `MCAST_HASH_FILTER == 1`. When disabled, both multicast
 hash registers read 0 and writes are ignored.
@@ -179,6 +180,25 @@ quantum is 512 bit-times of the current line rate.
 
 Saturating 32-bit counters. Writing any value to either register clears both
 PAUSE counters together.
+
+## 0x94 - SAF_DBG
+
+Read-only debug snapshot of the store-and-forward MII transmit path
+(`mii_tx_saf`), with the media-clock (`mii_tx_clk`) read-side state synchronized
+into the AXI (`sys_clk`) domain so the word reads stable while the framer is
+quiescent. Reads `0` on the RGMII build (no `mii_tx_saf`). Layout:
+
+| Bits | Field | Meaning |
+|-----:|-------|---------|
+| `[5:0]` | committed | Committed-frame count (write side), low 6 bits |
+| `[11:6]` | drained | Drained-frame count (read side, synced), low 6 bits |
+| `[12]` | rd_empty | Frame FIFO read-side empty |
+| `[15:13]` | state | Framer FSM: 0 IDLE, 1 PRE, 2 SFD, 3 DATA, 4 PAD, 5 FCS, 6 IFG |
+| `[31:16]` | reserved | `0` |
+
+A healthy idle read has `committed == drained`, `rd_empty = 1`, `state = IDLE`.
+`committed == drained` with `rd_empty = 0` while idle indicates uncommitted data
+stuck in the FIFO (the failure mode fixed by the oversized-frame guard).
 
 ## Arty UDP Demo Sideband Ports
 
