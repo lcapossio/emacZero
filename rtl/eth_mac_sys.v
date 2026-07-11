@@ -170,6 +170,7 @@ module eth_mac_sys #(
     wire        tx_active;
     wire        tx_fifo_busy;
     wire [12:0] tx_fifo_level;
+    wire [15:0] dbg_mii_tx_saf;   // mii_tx_saf read-side debug (0 on RGMII)
 
     // MDIO busy tracking
     reg         mdio_busy_r;
@@ -451,7 +452,8 @@ module eth_mac_sys #(
                 .tx_fifo_level (tx_fifo_level),
                 .tx_active     (tx_active),
                 .tx_byte_stb   (tx_byte_ev),
-                .tx_frame_done (tx_frame_done_ev)
+                .tx_frame_done (tx_frame_done_ev),
+                .dbg_saf       (dbg_mii_tx_saf)
             );
 
             // Tie off RGMII outputs
@@ -553,6 +555,7 @@ module eth_mac_sys #(
             // Tie off MII outputs
             assign mii_txd   = 4'd0;
             assign mii_tx_en = 1'b0;
+            assign dbg_mii_tx_saf = 16'd0;
         end
     endgenerate
 
@@ -647,6 +650,7 @@ module eth_mac_sys #(
         .cfg_passthrough       (cfg_passthrough),
         .cfg_mac_addr          (cfg_mac_addr),
         .cfg_ip_addr           (cfg_ip_addr),
+        .dbg_saf               (dbg_mii_tx_saf),
         .cfg_mcast_hash_table  (cfg_mcast_hash_table),
         .mdio_go        (mdio_go),
         .mdio_write     (mdio_write),

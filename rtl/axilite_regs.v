@@ -122,6 +122,7 @@ module axilite_regs #(
     output wire        cfg_passthrough,
     output wire [47:0] cfg_mac_addr,
     output wire [31:0] cfg_ip_addr,          // demo L3 stack IPv4 (0x40 IP_ADDR)
+    input  wire [15:0] dbg_saf,               // mii_tx_saf read-side debug (0x94, RO)
     output wire [63:0] cfg_mcast_hash_table,
 
     // ---- PAUSE controls ----
@@ -223,6 +224,7 @@ module axilite_regs #(
     localparam [5:0] A_PAUSE_QUANTA  = 6'h22;  // 0x88
     localparam [5:0] A_PAUSE_RX_CNT  = 6'h23;  // 0x8C
     localparam [5:0] A_PAUSE_TX_CNT  = 6'h24;  // 0x90
+    localparam [5:0] A_SAF_DBG       = 6'h25;  // 0x94 (RO, mii_tx_saf debug)
 
     // =========================================================================
     // Responses always OKAY
@@ -479,6 +481,7 @@ module axilite_regs #(
                     A_MAC_LO:     s_axi_rdata <= reg_mac_lo;
                     A_MAC_HI:     s_axi_rdata <= {16'd0, reg_mac_hi};
                     A_IP_ADDR:    s_axi_rdata <= reg_ip_addr;
+                    A_SAF_DBG:    s_axi_rdata <= {16'd0, dbg_saf};
                     A_MDIO_CMD:   s_axi_rdata <= {17'd0, reg_mdio_cmd}; // bit 11 (go) reads 0 by storage
                     A_MDIO_WDATA: s_axi_rdata <= {16'd0, reg_mdio_wdata};
                     A_MDIO_RDATA: s_axi_rdata <= {16'd0, mdio_rdata};

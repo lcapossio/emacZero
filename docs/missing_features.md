@@ -124,19 +124,35 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 
 ## Known Issues
 
-- **MII TX wedge under sustained small-frame load (`mii_tx_saf`).** The framer
-  gates frame start on a committed-frame counter. A prior 4-bit counter
-  deadlocked once 16 frames backed up in the 4 KB FIFO; that is **fixed**
-  (counter widened to `FIFO_ADDR_WIDTH+1` bits, regression
-  `tb_mii_tx_saf_burst_stall`). A separate, deeper failure remains: under heavy
-  sustained MII TX (reproduced on Arty A7 with a 64-byte UDP echo flood) the
-  transmit path can still wedge with the async frame FIFO in an inconsistent
-  state — the write side reports full (`tx_fifo_busy`) while the media read side
-  reads empty — leaving the framer parked in idle with TX frozen (`TX_FRAME`
-  stops, `mii_tx_clk` keeps running). It clears on reprogram, does **not**
-  reproduce in the deterministic Icarus regression, and is under investigation
-  as an async-FIFO / CDC pointer desync. Steady-rate and request/response
-  traffic (ARP, ICMP, single-stream UDP) is unaffected.
+- **MII TX wedge under sustained small-frame load (`mii_tx_saf`) — fixed.** The
+  framer gates frame start on a committed-frame counter (`frame_pending`), and
+  only starts a frame once its `tlast` has been written (committed) so it can
+  never underrun. Two deadlocks were found and fixed:
+  - *Counter wrap:* a prior 4-bit committed-frame counter aliased to a false
+    "equal" once 16 frames backed up in the 4 KB FIFO, parking the framer in
+    idle. Fixed by widening the counter to `FIFO_ADDR_WIDTH+1` bits (regression
+    `tb_mii_tx_saf_burst_stall`).
+  - *Unbounded uncommitted data:* the write side wrote every accepted byte but
+    only committed on `tlast`, with no bound on the uncommitted run. A contiguous
+    run of bytes with no `tlast` that reached the FIFO depth — an oversized frame,
+    or several frames merged by a dropped `tlast` upstream — filled the FIFO with
+    uncommitted data: `frame_pending` never rose, the framer stayed in idle,
+    `wr_full` stuck, and the **whole** TX path deadlocked permanently (captured on
+    Arty A7 via the `SAF_DBG` CSR during a 64-byte UDP echo flood: committed ==
+    drained, `rd_empty=0`, `tx_fifo_level > MAX_FRAME`, framer idle, `mii_tx_clk`
+    still running; cleared only on reprogram). Fixed by an oversized-frame guard:
+    the in-flight (uncommitted) run is capped at `MAX_FRAME`; on the `MAX_FRAME`-th
+    byte with no real `tlast` the write side forces a synthetic EOF (commits a
+    truncated frame) and drops the rest of the runaway frame until its real
+    `tlast`. Because `MAX_FRAME` < FIFO depth the forced commit always finds room,
+    so uncommitted data can never fill the FIFO and the framer can always make
+    progress — a permanent wedge is structurally impossible. Well-formed frames
+    (`<= MAX_FRAME`) are untouched. Deterministic regression
+    `tb_mii_tx_saf_oversize` reproduces the wedge on the old RTL and passes on the
+    fixed RTL. Re-validated on Arty A7: the 64-byte UDP echo flood that used to
+    wedge the board at 300 Mbps (echo loss ~99%) now sustains 300-400 Mbps with
+    <1% loss, `RX_ERR=0`, and `SAF_DBG` returning to clean idle (committed ==
+    drained, `rd_empty=1`) after every burst.
 
 ---
 

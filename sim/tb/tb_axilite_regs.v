@@ -85,6 +85,7 @@ module tb_axilite_regs;
         .cfg_mcast_hash_table(),
         .cfg_mac_addr   (cfg_mac_addr),
         .cfg_ip_addr    (cfg_ip_addr),
+        .dbg_saf        (16'd0),
         .mdio_go        (mdio_go),
         .mdio_write     (mdio_write),
         .mdio_phy_addr  (mdio_phy_addr),

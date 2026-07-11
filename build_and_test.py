@@ -426,6 +426,13 @@ TESTS = [
         "sim_timeout": 90,
     },
     {
+        "name": "MII-TX-SAF-OVERSIZE",
+        "srcs": ["rtl/async_fifo.v", "rtl/mii_tx_saf.v",
+                 "sim/tb/tb_mii_tx_saf_oversize.v"],
+        "out": "sim/tb_mii_tx_saf_oversize.vvp",
+        "sim_timeout": 90,
+    },
+    {
         "name": "MII-RX-REPLAY-STRESS",
         "srcs": ["sim/tb/xpm_fifo_async_model.v", "sim/tb/xpm_memory_sdpram_model.v",
                  "rtl/mii_if.v",

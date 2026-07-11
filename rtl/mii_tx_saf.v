@@ -11,9 +11,11 @@
 // mid-frame) with no wire underrun and no transmit error - the framer replaces
 // the cut-through eth_mac_tx on the MII path.
 //
-// Overflow policy: backpressure (tready = !full). Size the FIFO >= MAX_FRAME so
-// a valid frame always fits; a runaway (never-tlast) frame would stall the
-// source, which is the intended flow-control behaviour.
+// Overflow policy: backpressure (tready = !full) for well-formed frames; size
+// the FIFO >= MAX_FRAME so a valid frame always fits. A runaway frame whose
+// no-tlast run reaches MAX_FRAME is force-terminated (synthetic EOF) and its
+// tail dropped, so uncommitted data can never fill the FIFO and deadlock the
+// framer (see the oversized-frame guard on the write side).
 // Verilog 2001
 // =============================================================================
 
@@ -47,7 +49,13 @@ module mii_tx_saf #(
     // ---- TX observability for stats/IRQ (sys clk) ----
     output wire        tx_active,       // high while a frame is on the wire
     output wire        tx_byte_stb,     // 1-cycle pulse per byte put on the wire
-    output wire        tx_frame_done    // 1-cycle pulse when a frame finishes
+    output wire        tx_frame_done,   // 1-cycle pulse when a frame finishes
+
+    // ---- Debug (sys clk): read-side framer state synchronized into the write
+    //      domain so a CSR/ELA on sys clk sees stable values. Layout:
+    //      [5:0] committed frames  [11:6] drained frames (synced)
+    //      [12] rd_empty (synced)  [15:13] framer state (synced)
+    output wire [15:0] dbg_saf
 );
 
     localparam PREAMBLE_LEN = 7;
@@ -73,17 +81,60 @@ module mii_tx_saf #(
     // =========================================================================
     // AXIS write side (sys clk): {tlast, data} straight into the frame FIFO.
     // tlast is already aligned to the last byte, so no delay stage is needed.
+    //
+    // Oversized-frame guard. The framer only starts a frame once it is COMMITTED
+    // (a tlast byte written, tracked by frame_wr_bin). A contiguous run of bytes
+    // with no tlast that reaches the FIFO depth - an oversized frame, or several
+    // frames merged by a dropped tlast upstream - would otherwise fill the FIFO
+    // with uncommitted data: frame_pending never rises, the framer never starts,
+    // wr_full sticks, and the WHOLE TX path deadlocks permanently. To stay robust
+    // we cap the in-flight (uncommitted) run at MAX_FRAME: on the MAX_FRAME-th
+    // byte with no real tlast we force a synthetic EOF (commit a truncated frame)
+    // and then drop the rest of the runaway frame until its real tlast. Because
+    // MAX_FRAME < FIFO depth, that forced commit always finds room, so
+    // uncommitted data can never fill the FIFO and the framer can always make
+    // progress. Well-formed frames (<= MAX_FRAME ending in a real tlast) hit the
+    // real tlast first and are never truncated.
     // =========================================================================
-    wire [8:0]               wr_data   = {s_axis_tlast, s_axis_tdata};
+    localparam [13:0] OVERSIZE_LIMIT = MAX_FRAME[13:0]; // max bytes written per frame
+
     wire                     wr_full;
-    wire                     wr_accept = s_axis_tvalid && !wr_full;
-    wire                     eof_wr    = wr_accept && s_axis_tlast;
+    reg                      dropping;      // discarding the tail of an oversized frame
+    reg  [13:0]              frame_bytes;   // bytes written in the current frame so far
+    wire                     reached_limit = (frame_bytes == OVERSIZE_LIMIT - 14'd1);
+    wire                     eff_last      = s_axis_tlast || reached_limit;
+    wire                     forced_cut    = reached_limit && !s_axis_tlast;
+
+    wire                     wr_accept = s_axis_tvalid && !wr_full && !dropping;
+    wire                     eof_wr    = wr_accept && eff_last;   // frame committed
+    wire [8:0]               wr_data   = {eff_last, s_axis_tdata};
     wire [FIFO_ADDR_WIDTH:0] fifo_count;
 
-    assign s_axis_tready = !wr_full;
+    // While dropping a runaway frame's tail, absorb source bytes fast (ready high,
+    // no writes) until its real tlast; otherwise ready = !full (backpressure).
+    assign s_axis_tready = dropping ? 1'b1 : !wr_full;
 
-    // Committed-frame counter (sys clk): +1 when a frame's tlast byte is
-    // accepted, i.e. a whole frame is now buffered. Gray-coded for the media CDC.
+    // In-flight byte count + runaway-tail drop state.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            dropping    <= 1'b0;
+            frame_bytes <= 14'd0;
+        end else if (dropping) begin
+            if (s_axis_tvalid && s_axis_tlast)   // real end of the dropped frame
+                dropping <= 1'b0;
+        end else if (wr_accept) begin
+            if (eff_last) begin
+                frame_bytes <= 14'd0;
+                if (forced_cut) dropping <= 1'b1; // truncated: drop the runaway tail
+            end else begin
+                frame_bytes <= frame_bytes + 14'd1;
+            end
+        end
+    end
+
+    // Committed-frame counter (sys clk): +1 when a frame's (real or forced) last
+    // byte is accepted, i.e. a whole frame is now buffered. Gray-coded for the
+    // media CDC.
     reg [FRAME_CNT_W-1:0] frame_wr_bin;
     reg [FRAME_CNT_W-1:0] frame_wr_gray;
     wire [FRAME_CNT_W-1:0] frame_wr_next = frame_wr_bin + 1'b1;
@@ -382,5 +433,26 @@ module mii_tx_saf #(
     assign tx_byte_stb   = tx_byte_s2 ^ tx_byte_s3;
     assign tx_frame_done = tx_done_s2 ^ tx_done_s3;
     assign tx_active     = tx_active_s2;
+
+    // =========================================================================
+    // Debug: synchronize the read-side (mii_tx_clk) framer signals into the
+    // write (sys) domain. Plain 2-FF sync - values are only read while the
+    // framer is quiescent/stuck, so multi-bit skew is not a concern here.
+    // =========================================================================
+    (* ASYNC_REG = "TRUE" *) reg [FRAME_CNT_W-1:0] frame_rd_ws1, frame_rd_ws2;
+    (* ASYNC_REG = "TRUE" *) reg                   rd_empty_ws1, rd_empty_ws2;
+    (* ASYNC_REG = "TRUE" *) reg [2:0]             st_ws1, st_ws2;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            frame_rd_ws1 <= {FRAME_CNT_W{1'b0}}; frame_rd_ws2 <= {FRAME_CNT_W{1'b0}};
+            rd_empty_ws1 <= 1'b1;                rd_empty_ws2 <= 1'b1;
+            st_ws1       <= 3'd0;                st_ws2       <= 3'd0;
+        end else begin
+            frame_rd_ws1 <= frame_rd_bin; frame_rd_ws2 <= frame_rd_ws1;
+            rd_empty_ws1 <= rd_empty;     rd_empty_ws2 <= rd_empty_ws1;
+            st_ws1       <= st;           st_ws2       <= st_ws1;
+        end
+    end
+    assign dbg_saf = {st_ws2, rd_empty_ws2, frame_rd_ws2[5:0], frame_wr_bin[5:0]};
 
 endmodule
