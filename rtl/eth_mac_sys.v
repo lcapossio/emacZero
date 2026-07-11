@@ -340,7 +340,9 @@ module eth_mac_sys #(
             // replay buffer are 4096 bytes, which cannot hold a jumbo frame
             // while the 12.5 MB/s MII side drains the 100 MB/s write side. Use
             // MAX_FRAME=1518 for MII; jumbo requires PHY_INTERFACE="RGMII".
-            mii_if #(.MII_DEBUG(MII_DEBUG)) u_mii_if (
+            // TX_ENABLE(0): mii_tx_saf (u_mii_tx) drives the MII TX pins on this
+            // branch, so mii_if is RX-only here - omit its dead TX FIFO's BRAM.
+            mii_if #(.MII_DEBUG(MII_DEBUG), .TX_ENABLE(0)) u_mii_if (
                 .clk            (clk),
                 .rst_n          (rst_n),
                 .mii_rxd        (mii_rxd),
