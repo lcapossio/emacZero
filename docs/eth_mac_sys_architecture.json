@@ -4,8 +4,8 @@
   "theme": "dark",
   "grid": {
     "cell_w": 255,
-    "cell_h": 98,
-    "gutter_x": 145,
+    "cell_h": 120,
+    "gutter_x": 190,
     "gutter_y": 150,
     "margin": 44
   },
@@ -34,16 +34,15 @@
       "domain": "sys",
       "row": 0,
       "col": 1,
-      "sublabel": "tx_csum_off + eth_mac_tx + PAUSE"
+      "sublabel": "tx_csum_off + PAUSE + eth_mac_tx (RGMII)"
     },
     {
       "id": "phy_if",
-      "label": "PHY interface",
       "domain": "sys",
       "domain_b": "media",
       "row": 0,
       "col": 2,
-      "sublabel": "mii_if or gmii_cdc + rgmii_if"
+      "lines": ["PHY interface", "MII: mii_tx_saf + mii_if", "RGMII: gmii_cdc + rgmii_if"]
     },
     {
       "id": "phy",
@@ -105,19 +104,21 @@
       "from": "tx_path",
       "to": "phy_if",
       "kind": "generic",
-      "width": "GMII"
+      "width": "GMII",
+      "label": {"segment": 0, "t": 0.78}
     },
     {
       "from": "phy_if",
       "to": "phy",
-      "kind": "cdc",
+      "kind": "generic",
       "width": "MII/RGMII"
     },
     {
       "from": "phy_if",
       "to": "rx_path",
       "kind": "generic",
-      "width": "GMII"
+      "width": "GMII",
+      "label": {"dy": 26}
     },
     {
       "from": "rx_path",
