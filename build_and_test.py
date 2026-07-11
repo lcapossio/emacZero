@@ -419,6 +419,13 @@ TESTS = [
         "out": "sim/tb_mii_tx_saf.vvp",
     },
     {
+        "name": "MII-TX-SAF-BURST-STALL",
+        "srcs": ["rtl/async_fifo.v", "rtl/mii_tx_saf.v",
+                 "sim/tb/tb_mii_tx_saf_burst_stall.v"],
+        "out": "sim/tb_mii_tx_saf_burst_stall.vvp",
+        "sim_timeout": 90,
+    },
+    {
         "name": "MII-RX-REPLAY-STRESS",
         "srcs": ["sim/tb/xpm_fifo_async_model.v", "sim/tb/xpm_memory_sdpram_model.v",
                  "rtl/mii_if.v",

@@ -54,6 +54,13 @@ module mii_tx_saf #(
     localparam MIN_FRAME    = 60;   // data+pad bytes before the 4-byte FCS
     localparam IFG_BYTES    = 12;
 
+    // Committed-frame counter width. The framer only starts a frame while
+    // frame_pending (frame_wr != frame_rd) is set, so this counter must never
+    // wrap to a false "equal" before the FIFO backpressures. A 1-byte frame is
+    // one FIFO entry, so up to FIFO_DEPTH (=2**FIFO_ADDR_WIDTH) frames can be
+    // buffered at once; one extra bit guarantees the difference never aliases.
+    localparam FRAME_CNT_W = FIFO_ADDR_WIDTH + 1;
+
     // =========================================================================
     // mii_tx_clk reset synchronizer
     // =========================================================================
@@ -77,15 +84,16 @@ module mii_tx_saf #(
 
     // Committed-frame counter (sys clk): +1 when a frame's tlast byte is
     // accepted, i.e. a whole frame is now buffered. Gray-coded for the media CDC.
-    reg [3:0] frame_wr_bin;
-    reg [3:0] frame_wr_gray;
+    reg [FRAME_CNT_W-1:0] frame_wr_bin;
+    reg [FRAME_CNT_W-1:0] frame_wr_gray;
+    wire [FRAME_CNT_W-1:0] frame_wr_next = frame_wr_bin + 1'b1;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            frame_wr_bin  <= 4'd0;
-            frame_wr_gray <= 4'd0;
+            frame_wr_bin  <= {FRAME_CNT_W{1'b0}};
+            frame_wr_gray <= {FRAME_CNT_W{1'b0}};
         end else if (eof_wr) begin
-            frame_wr_bin  <= frame_wr_bin + 4'd1;
-            frame_wr_gray <= (frame_wr_bin + 4'd1) ^ ((frame_wr_bin + 4'd1) >> 1);
+            frame_wr_bin  <= frame_wr_next;
+            frame_wr_gray <= frame_wr_next ^ (frame_wr_next >> 1);
         end
     end
 
@@ -113,27 +121,27 @@ module mii_tx_saf #(
         .wr_data_count(fifo_count)
     );
 
-    function [3:0] gray4_to_bin;
-        input [3:0] gray;
+    function [FRAME_CNT_W-1:0] gray_to_bin;
+        input [FRAME_CNT_W-1:0] gray;
+        integer i;
         begin
-            gray4_to_bin[3] = gray[3];
-            gray4_to_bin[2] = gray4_to_bin[3] ^ gray[2];
-            gray4_to_bin[1] = gray4_to_bin[2] ^ gray[1];
-            gray4_to_bin[0] = gray4_to_bin[1] ^ gray[0];
+            gray_to_bin[FRAME_CNT_W-1] = gray[FRAME_CNT_W-1];
+            for (i = FRAME_CNT_W-2; i >= 0; i = i - 1)
+                gray_to_bin[i] = gray_to_bin[i+1] ^ gray[i];
         end
     endfunction
 
     // Committed-frame counter CDC into the media domain.
-    (* ASYNC_REG = "TRUE" *) reg [3:0] frame_wr_s1;
-    (* ASYNC_REG = "TRUE" *) reg [3:0] frame_wr_s2;
-    (* ASYNC_REG = "TRUE" *) reg [3:0] frame_wr_s3;
-    (* ASYNC_REG = "TRUE" *) reg       start_ok_s1, start_ok_s2;
-    reg [3:0] frame_rd_bin;
+    (* ASYNC_REG = "TRUE" *) reg [FRAME_CNT_W-1:0] frame_wr_s1;
+    (* ASYNC_REG = "TRUE" *) reg [FRAME_CNT_W-1:0] frame_wr_s2;
+    (* ASYNC_REG = "TRUE" *) reg [FRAME_CNT_W-1:0] frame_wr_s3;
+    (* ASYNC_REG = "TRUE" *) reg                   start_ok_s1, start_ok_s2;
+    reg [FRAME_CNT_W-1:0] frame_rd_bin;
     always @(posedge mii_tx_clk or negedge tx_rst_n_s2) begin
         if (!tx_rst_n_s2) begin
-            frame_wr_s1 <= 4'd0;
-            frame_wr_s2 <= 4'd0;
-            frame_wr_s3 <= 4'd0;
+            frame_wr_s1 <= {FRAME_CNT_W{1'b0}};
+            frame_wr_s2 <= {FRAME_CNT_W{1'b0}};
+            frame_wr_s3 <= {FRAME_CNT_W{1'b0}};
             start_ok_s1 <= 1'b0;
             start_ok_s2 <= 1'b0;
         end else begin
@@ -144,8 +152,8 @@ module mii_tx_saf #(
             start_ok_s2 <= start_ok_s1;
         end
     end
-    wire [3:0] frame_wr_media = gray4_to_bin(frame_wr_s3);
-    wire       frame_pending  = (frame_wr_media != frame_rd_bin);
+    wire [FRAME_CNT_W-1:0] frame_wr_media = gray_to_bin(frame_wr_s3);
+    wire                   frame_pending  = (frame_wr_media != frame_rd_bin);
 
     // =========================================================================
     // CRC-32 (Ethernet FCS), one byte per step - same polynomial as eth_mac_tx.
@@ -210,7 +218,7 @@ module mii_tx_saf #(
             crc           <= 32'hFFFFFFFF;
             crc_saved     <= 32'd0;
             cur_last      <= 1'b0;
-            frame_rd_bin  <= 4'd0;
+            frame_rd_bin  <= {FRAME_CNT_W{1'b0}};
             rd_en         <= 1'b0;
             mii_txd_int   <= 4'd0;
             mii_tx_en_int <= 1'b0;
@@ -323,7 +331,7 @@ module mii_tx_saf #(
                             S_IFG: begin
                                 if (cnt == IFG_BYTES - 1) begin
                                     st           <= S_IDLE;
-                                    frame_rd_bin <= frame_rd_bin + 4'd1;
+                                    frame_rd_bin <= frame_rd_bin + 1'b1;
                                     tx_done_tgl  <= ~tx_done_tgl;
                                 end else begin
                                     cnt <= cnt + 4'd1;

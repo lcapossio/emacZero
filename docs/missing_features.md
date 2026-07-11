@@ -122,6 +122,24 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 
 ---
 
+## Known Issues
+
+- **MII TX wedge under sustained small-frame load (`mii_tx_saf`).** The framer
+  gates frame start on a committed-frame counter. A prior 4-bit counter
+  deadlocked once 16 frames backed up in the 4 KB FIFO; that is **fixed**
+  (counter widened to `FIFO_ADDR_WIDTH+1` bits, regression
+  `tb_mii_tx_saf_burst_stall`). A separate, deeper failure remains: under heavy
+  sustained MII TX (reproduced on Arty A7 with a 64-byte UDP echo flood) the
+  transmit path can still wedge with the async frame FIFO in an inconsistent
+  state — the write side reports full (`tx_fifo_busy`) while the media read side
+  reads empty — leaving the framer parked in idle with TX frozen (`TX_FRAME`
+  stops, `mii_tx_clk` keeps running). It clears on reprogram, does **not**
+  reproduce in the deterministic Icarus regression, and is under investigation
+  as an async-FIFO / CDC pointer desync. Steady-rate and request/response
+  traffic (ARP, ICMP, single-stream UDP) is unaffected.
+
+---
+
 ## Suggested Next Four
 
 1. ARP cache + outbound resolve - required for general TX beyond broadcast.

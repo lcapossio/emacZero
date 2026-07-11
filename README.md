@@ -222,6 +222,8 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | ETH-MAC-JUMBO | Jumbo-frame TX/RX behavior | 6 |
 | MII-TX-BRIDGE | GMII-to-MII byte-to-nibble conversion | 1 |
 | MII-TX-BURST-BACKPRESSURE | MII TX burst pacing under downstream stalls | 4 |
+| MII-TX-SAF | Store-and-forward MII TX: bubbles, pad, byte-exact FCS | 6 |
+| MII-TX-SAF-BURST-STALL | Many small frames backed up: committed-frame counter must not wrap/stall | 1 |
 | MII-STORE-FORWARD | Store-and-forward CDC, frame toggle | 7 |
 | MII-LOOPBACK | Full TX-to-RX loopback through MII | 1 |
 | MII-RX-REPLAY-STRESS | RX frame-ready accounting under replay stalls | 7 |
