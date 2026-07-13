@@ -183,58 +183,64 @@ module gmii_cdc (
     end
 
     // =========================================================================
-    // TX path: sys_clk GMII -> data FIFO + length FIFO -> media_clk GMII
+    // TX path: sys_clk GMII -> packet FIFO (data + EOF sideband) -> media_clk GMII
+    // Store-and-forward: the media side does not start a frame until that frame's
+    // EOF byte has been committed to the FIFO, tracked by a gray-coded committed-
+    // frame counter. This mirrors the RX path's EOF-marker packet FIFO (and the
+    // MII adapter's scheme), replacing the separate length FIFO the earlier
+    // revision used to signal frame boundaries.
     // =========================================================================
-    reg tx_en_d1;
+    // One-cycle delay so the EOF sideband bit can be attached to the frame's
+    // last byte: tx_en_fall pulses the cycle after gmii_tx_en_in drops, which is
+    // exactly when tx_data_d1 still holds that last byte.
+    reg        tx_en_d1;
+    reg  [7:0] tx_data_d1;
+    reg        tx_valid_d1;
     always @(posedge sys_clk or negedge sys_rst_n) begin
-        if (!sys_rst_n) tx_en_d1 <= 1'b0;
-        else            tx_en_d1 <= gmii_tx_en_in;
+        if (!sys_rst_n) begin
+            tx_en_d1    <= 1'b0;
+            tx_data_d1  <= 8'd0;
+            tx_valid_d1 <= 1'b0;
+        end else begin
+            tx_en_d1    <= gmii_tx_en_in;
+            tx_data_d1  <= gmii_txd_in;
+            tx_valid_d1 <= gmii_tx_en_in;
+        end
     end
     wire tx_en_fall = tx_en_d1 && !gmii_tx_en_in;
 
-    // Frame length tracking (sys_clk domain). 14-bit width covers jumbo
-    // frames up to 16383 bytes.
-    reg [13:0] tx_frame_len_wr;
-    reg [13:0] tx_len_wr_data;
-    reg        tx_len_wr_en;
+    // FIFO word: [8] = EOF (set on the frame's last byte), [7:0] = data.
+    wire [8:0] tx_wr_data   = {tx_en_fall, tx_data_d1};
+    wire       tx_wr_en     = tx_valid_d1;
+    wire       tx_wr_full;
+    wire       tx_wr_accept = tx_wr_en && !tx_wr_full;
+    wire       tx_eof_wr    = tx_wr_accept && tx_wr_data[8];
 
-    wire [7:0] tx_wr_data = gmii_txd_in;
-    wire       tx_wr_en   = gmii_tx_en_in;
-    wire [7:0] tx_rd_data;
+    wire [8:0] tx_rd_data;
     wire       tx_rd_empty;
     reg        tx_rd_en;
-    wire       tx_wr_full;
-
-    wire [13:0] tx_len_rd_data;
-    wire        tx_len_rd_empty;
-    reg         tx_len_rd_en;
 
     // FIFO occupancy (sys_clk / write domain), taken directly from the async
-    // FIFO's exact write-side data count (wr_ptr - synced rd_ptr). This never
-    // loses events, unlike a per-byte read toggle pulse which can drop counts
-    // when media_clk (125 MHz) outruns sys_clk (100 MHz) at 1G.
+    // FIFO's exact write-side data count (wr_ptr - synced rd_ptr).
     wire [14:0] tx_fifo_count;
 
     localparam [14:0] TX_FIFO_DEPTH      = 15'd16383;
     localparam [14:0] TX_MAX_FRAME_BYTES = 15'd9018;   // jumbo MTU + headers
     localparam [14:0] TX_START_LIMIT     = TX_FIFO_DEPTH - TX_MAX_FRAME_BYTES;
 
+    // Committed-frame counter (sys_clk): increments when a frame's EOF byte is
+    // accepted, i.e. a whole frame is now buffered. Gray-coded for the CDC to the
+    // media domain, where it gates the start of transmission.
+    reg [3:0] tx_frame_wr_count_bin;
+    reg [3:0] tx_frame_wr_count_gray;
     always @(posedge sys_clk or negedge sys_rst_n) begin
         if (!sys_rst_n) begin
-            tx_frame_len_wr <= 14'd0;
-            tx_len_wr_data  <= 14'd0;
-            tx_len_wr_en    <= 1'b0;
-        end else begin
-            tx_len_wr_en <= 1'b0;
-
-            if (gmii_tx_en_in && !tx_wr_full)
-                tx_frame_len_wr <= tx_frame_len_wr + 14'd1;
-
-            if (tx_en_fall) begin
-                tx_len_wr_data  <= tx_frame_len_wr;
-                tx_len_wr_en    <= 1'b1;
-                tx_frame_len_wr <= 14'd0;
-            end
+            tx_frame_wr_count_bin  <= 4'd0;
+            tx_frame_wr_count_gray <= 4'd0;
+        end else if (tx_eof_wr) begin
+            tx_frame_wr_count_bin  <= tx_frame_wr_count_bin + 4'd1;
+            tx_frame_wr_count_gray <= (tx_frame_wr_count_bin + 4'd1) ^
+                                       ((tx_frame_wr_count_bin + 4'd1) >> 1);
         end
     end
 
@@ -244,12 +250,12 @@ module gmii_cdc (
                                                      : tx_fifo_count[11:0];
     assign tx_busy       = (tx_fifo_count > TX_START_LIMIT);
 
-    // TX data FIFO: sys_clk -> media_clk (16K bytes for jumbo support)
-    async_fifo #(.DATA_WIDTH(8), .ADDR_WIDTH(14)) u_tx_fifo (
+    // TX data + EOF packet FIFO: sys_clk -> media_clk (16K words for jumbo)
+    async_fifo #(.DATA_WIDTH(9), .ADDR_WIDTH(14)) u_tx_fifo (
         .wr_clk  (sys_clk),
         .wr_rst_n(sys_rst_n),
         .wr_data (tx_wr_data),
-        .wr_en   (tx_wr_en && !tx_wr_full),
+        .wr_en   (tx_wr_accept),
         .wr_full (tx_wr_full),
         .rd_clk  (media_clk),
         .rd_rst_n(media_rst_n_s2),
@@ -259,20 +265,15 @@ module gmii_cdc (
         .wr_data_count(tx_fifo_count)
     );
 
-    // TX frame length FIFO: sys_clk -> media_clk (14-bit lengths)
-    async_fifo #(.DATA_WIDTH(14), .ADDR_WIDTH(4)) u_tx_len_fifo (
-        .wr_clk  (sys_clk),
-        .wr_rst_n(sys_rst_n),
-        .wr_data (tx_len_wr_data),
-        .wr_en   (tx_len_wr_en),
-        .wr_full (),
-        .rd_clk  (media_clk),
-        .rd_rst_n(media_rst_n_s2),
-        .rd_data (tx_len_rd_data),
-        .rd_en   (tx_len_rd_en),
-        .rd_empty(tx_len_rd_empty),
-        .wr_data_count()
-    );
+    function [3:0] gray4_to_bin;
+        input [3:0] gray;
+        begin
+            gray4_to_bin[3] = gray[3];
+            gray4_to_bin[2] = gray4_to_bin[3] ^ gray[2];
+            gray4_to_bin[1] = gray4_to_bin[2] ^ gray[1];
+            gray4_to_bin[0] = gray4_to_bin[1] ^ gray[0];
+        end
+    endfunction
 
     // =========================================================================
     // Speed selection synchronizer (sys_clk -> media_clk)
@@ -297,79 +298,100 @@ module gmii_cdc (
     //   10M  = 800ns = 100 cycles(pace_max = 99)
     wire [9:0] pace_max = is_1g ? 10'd0 : (is_100 ? 10'd9 : 10'd99);
 
+    // Committed-frame counter CDC into the media domain. tx_frame_pending_media
+    // asserts once at least one whole frame has been committed to the FIFO but
+    // not yet drained - the store-and-forward start gate.
+    (* ASYNC_REG = "TRUE" *) reg [3:0] tx_frame_wr_count_s1;
+    (* ASYNC_REG = "TRUE" *) reg [3:0] tx_frame_wr_count_s2;
+    (* ASYNC_REG = "TRUE" *) reg [3:0] tx_frame_wr_count_s3;
+    reg [3:0] tx_frame_rd_count_bin;
+    always @(posedge media_clk or negedge media_rst_n_s2) begin
+        if (!media_rst_n_s2) begin
+            tx_frame_wr_count_s1 <= 4'd0;
+            tx_frame_wr_count_s2 <= 4'd0;
+            tx_frame_wr_count_s3 <= 4'd0;
+        end else begin
+            tx_frame_wr_count_s1 <= tx_frame_wr_count_gray;
+            tx_frame_wr_count_s2 <= tx_frame_wr_count_s1;
+            tx_frame_wr_count_s3 <= tx_frame_wr_count_s2;
+        end
+    end
+    wire [3:0] tx_frame_wr_count_media = gray4_to_bin(tx_frame_wr_count_s3);
+    wire       tx_frame_pending_media  =
+                   (tx_frame_wr_count_media != tx_frame_rd_count_bin);
+
     // =========================================================================
     // TX readout state machine (media_clk domain)
     // =========================================================================
-    // Read scheme:
-    //   - A 1-cycle prefetch (start_delay==1) pulses rd_en so byte 0 lands
-    //     at the FIFO output by start_delay==0.
-    //   - Each subsequent rd_en pulse fires on the cycle BEFORE the next
-    //     pace_tick (pace_advance), so the FIFO advance is visible at the
-    //     pace_tick edge. This avoids the NBA race that caused byte
-    //     duplication / skips.
-    reg        tx_frame_loaded;
-    reg [13:0] tx_frame_bytes_left;
-    reg [5:0]  tx_start_delay;
-    reg [9:0]  pace_cnt;
-    wire       pace_tick    = (pace_cnt == 10'd0);
-    wire       pace_advance = (pace_max == 10'd0) || (pace_cnt == 10'd1);
+    // Read scheme (pacing unchanged from the length-FIFO revision):
+    //   - A 1-cycle prefetch (start_delay==1) pulses rd_en so byte 0 is at the
+    //     FWFT FIFO output for the first pace_tick while rd_en advances to byte 1,
+    //     keeping the read pointer exactly one byte ahead of each paced emit.
+    //     This avoids the NBA race that caused byte duplication / skips.
+    //   - The frame ends when the emitted byte carries the EOF sideband bit,
+    //     rather than when a preloaded byte counter reaches zero.
+    reg       tx_frame_loaded;
+    reg       tx_frame_end;
+    reg [5:0] tx_start_delay;
+    reg [9:0] pace_cnt;
+    wire      pace_tick    = (pace_cnt == 10'd0);
+    wire      pace_advance = (pace_max == 10'd0) || (pace_cnt == 10'd1);
 
     always @(posedge media_clk) begin
         if (!media_rst_n_s2) begin
-            gmii_txd_out        <= 8'd0;
-            gmii_tx_en_out      <= 1'b0;
-            gmii_tx_er_out      <= 1'b0;
-            tx_rd_en            <= 1'b0;
-            tx_len_rd_en        <= 1'b0;
-            tx_frame_loaded     <= 1'b0;
-            tx_frame_bytes_left <= 14'd0;
-            tx_start_delay      <= 6'd0;
-            pace_cnt            <= 10'd0;
+            gmii_txd_out          <= 8'd0;
+            gmii_tx_en_out        <= 1'b0;
+            gmii_tx_er_out        <= 1'b0;
+            tx_rd_en              <= 1'b0;
+            tx_frame_loaded       <= 1'b0;
+            tx_frame_end          <= 1'b0;
+            tx_start_delay        <= 6'd0;
+            tx_frame_rd_count_bin <= 4'd0;
+            pace_cnt              <= 10'd0;
         end else begin
-            tx_rd_en     <= 1'b0;
-            tx_len_rd_en <= 1'b0;
+            tx_rd_en <= 1'b0;
 
             if (pace_cnt == 10'd0)
                 pace_cnt <= pace_max;
             else
                 pace_cnt <= pace_cnt - 10'd1;
 
-            if (!tx_frame_loaded && !tx_len_rd_empty) begin
-                tx_len_rd_en        <= 1'b1;
-                tx_frame_bytes_left <= tx_len_rd_data;
-                tx_start_delay      <= 6'd8;
-                tx_frame_loaded     <= 1'b1;
-                pace_cnt            <= pace_max;
+            if (!tx_frame_loaded && tx_frame_pending_media) begin
+                tx_start_delay  <= 6'd8;
+                tx_frame_loaded <= 1'b1;
+                pace_cnt        <= pace_max;
             end else if (tx_frame_loaded) begin
                 if (tx_start_delay != 6'd0) begin
                     tx_start_delay <= tx_start_delay - 6'd1;
                     gmii_tx_en_out <= 1'b0;
-                    // Prefetch: pulse rd_en one cycle before start_delay==0
-                    // so byte 0 is already at the FIFO output for the first
-                    // pace_tick. Also align pace_cnt so pace_tick fires at
-                    // start_delay==0.
+                    // Prefetch: pulse rd_en one cycle before start_delay==0 so
+                    // byte 0 is at the FIFO output for the first pace_tick. Also
+                    // align pace_cnt so pace_tick fires at start_delay==0.
                     if (tx_start_delay == 6'd1 && !tx_rd_empty) begin
                         tx_rd_en <= 1'b1;
                         pace_cnt <= 10'd0;
                     end
-                end else if (tx_frame_bytes_left != 14'd0 && !tx_rd_empty) begin
+                end else if (tx_frame_end) begin
+                    // Emitted the EOF byte last cycle; close out the frame.
+                    gmii_tx_en_out        <= 1'b0;
+                    tx_frame_loaded       <= 1'b0;
+                    tx_frame_end          <= 1'b0;
+                    tx_frame_rd_count_bin <= tx_frame_rd_count_bin + 4'd1;
+                end else if (!tx_rd_empty) begin
                     if (pace_tick) begin
-                        gmii_txd_out        <= tx_rd_data;
-                        gmii_tx_en_out      <= 1'b1;
-                        gmii_tx_er_out      <= 1'b0;
-                        tx_frame_bytes_left <= tx_frame_bytes_left - 14'd1;
+                        gmii_txd_out   <= tx_rd_data[7:0];
+                        gmii_tx_en_out <= 1'b1;
+                        gmii_tx_er_out <= 1'b0;
+                        if (tx_rd_data[8])
+                            tx_frame_end <= 1'b1;   // last byte of the frame
                     end
-                    // Pulse rd_en the cycle before the NEXT pace_tick so the
-                    // FIFO advance is visible exactly at that capture edge.
-                    // Don't pulse on the very last byte's pre-tick (no more
-                    // bytes to read).
-                    if (pace_advance && tx_frame_bytes_left > 14'd1)
+                    // Pulse rd_en the cycle before the NEXT pace_tick so the FIFO
+                    // advance is visible exactly at that capture edge. Don't
+                    // prefetch past the last (EOF) byte.
+                    if (pace_advance && !tx_rd_data[8])
                         tx_rd_en <= 1'b1;
-                    // Hold gmii_tx_en_out high between paced beats so the
-                    // RGMII PHY sees a continuous frame.
-                end else if (tx_frame_bytes_left == 14'd0) begin
-                    gmii_tx_en_out  <= 1'b0;
-                    tx_frame_loaded <= 1'b0;
+                    // Hold gmii_tx_en_out high between paced beats so the RGMII
+                    // PHY sees a continuous frame.
                 end
             end else begin
                 gmii_tx_en_out <= 1'b0;

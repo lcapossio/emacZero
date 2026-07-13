@@ -16,7 +16,8 @@ not run them. CI covers simulation and lint only.
 - USB: connect the Arty USB cable for JTAG and UART.
 - Ethernet: connect the Arty Ethernet port to the host NIC or a switch.
 - Demo FPGA MAC: `02:00:00:00:00:01`.
-- Demo FPGA IP: `192.168.137.200`.
+- Demo FPGA IP: `192.168.137.200` (the `IP_ADDR` CSR at 0x40; runtime-settable
+  over AXI, e.g. via the debug build's JTAG-to-AXI bridge - see Build and Program).
 - Recommended host NIC IP: `192.168.137.1/24`.
 - UART: 115200 baud, 8N1.
 - Tested with Vivado 2025.2.
@@ -61,8 +62,27 @@ vivado -mode batch -source fpga/arty_a7/scripts/program_arty_debug.tcl
 ```
 
 The debug bitstream instantiates fpgacapZero ELA/EIO probes in
-`arty_a7_top.v`. The current probes focus on reset, UART, sequencer state, and
-AXI-Lite handshakes.
+`arty_a7_top.v`. The ELA probes reset, UART, sequencer state, and AXI-Lite
+handshakes, plus the MII TX/RX pins (`ETH_TX_EN`, `ETH_TXD`, `ETH_TX_CLK`,
+`ETH_RX_DV`, `ETH_RXD`, `ETH_RX_CLK`) so a capture shows the actual on-wire
+transmit waveform.
+
+The debug build also adds an fpgacapZero **JTAG-to-AXI bridge** on JTAG USER4.
+A verified 2:1 AXI-Lite arbiter ([`rtl/axil_arb2.v`](../../rtl/axil_arb2.v))
+multiplexes the on-chip test sequencer (priority master) with the bridge, so
+the host can read and write every CSR live over JTAG while the design runs:
+
+```bash
+fcapz axi-read  --addr 0x00                 # VERSION = 0x0001454D
+fcapz axi-write --addr 0x40 --data 0xC0A8EDC8   # retarget demo IP -> 192.168.237.200
+fcapz axi-read  --addr 0x28                 # TX_FRAME counter
+```
+
+Writing `IP_ADDR` (0x40) retargets the demo L3 IP at runtime with no rebuild,
+which is handy when the board is wired to a host subnet other than the default
+`192.168.137.0/24`. This path was used to validate the `mii_tx_saf`
+store-and-forward MII transmitter on hardware end to end (ARP, ICMP, and UDP
+replies), with the ELA confirming the framed nibbles on the TX pins.
 
 ## Test Scripts
 

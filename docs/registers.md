@@ -29,6 +29,7 @@ dropped.
 | `0x34` | RX_BYTE | RO/WC | `0x00000000` | RX byte count |
 | `0x38` | RX_ERR | RO/WC | `0x00000000` | RX error count |
 | `0x3C` | SCRATCH | RW | `0x00000000` | Scratch register |
+| `0x40` | IP_ADDR | RW | `0xC0A889C8` | Demo L3 stack IPv4 (`cfg_ip_addr`, default 192.168.137.200) |
 | `0x44` | MCAST_LO | RW* | `0x00000000` | `mcast_hash_table[31:0]` |
 | `0x48` | MCAST_HI | RW* | `0x00000000` | `mcast_hash_table[63:32]` |
 | `0x4C` | RX_ERR_ALIGN | RO/WC | `0x00000000` | RX frames with `rx_er` asserted |
@@ -47,6 +48,7 @@ dropped.
 | `0x88` | PAUSE_QUANTA | RW | `0x00000000` | Quanta payload of next emitted PAUSE frame |
 | `0x8C` | PAUSE_RX_CNT | RO/WC | `0x00000000` | Received PAUSE frames |
 | `0x90` | PAUSE_TX_CNT | RO/WC | `0x00000000` | Transmitted PAUSE frames |
+| `0x94` | SAF_DBG | RO | `0x00000000` | `mii_tx_saf` framer/FIFO debug snapshot (MII path; `0` on RGMII) |
 
 `*` Present only when `MCAST_HASH_FILTER == 1`. When disabled, both multicast
 hash registers read 0 and writes are ignored.
@@ -145,6 +147,17 @@ to an RX counter clears all RX counters in the `eth_stats` RX block.
 
 32-bit RW with no hardware side effects. Useful for software self-tests.
 
+## 0x40 - IP_ADDR
+
+32-bit RW holding the IPv4 address (`cfg_ip_addr[31:0]`, byte order
+`{a,b,c,d}` for `a.b.c.d`) used by the optional demonstration L3 stack for
+ARP, ICMP, and UDP address matching. Reset value `0xC0A889C8`
+(192.168.137.200). The bare MAC leaves `cfg_ip_addr` unconnected; the value is
+still readable/writable in the CSR block. Because it is a live wire into the
+L3 responders, changing it retargets the demo IP at runtime with no rebuild -
+the Arty debug bitstream exercises exactly this over the fpgacapZero
+JTAG-to-AXI bridge.
+
 ## 0x44 / 0x48 - MCAST_LO / MCAST_HI
 
 When `MCAST_HASH_FILTER == 1`, an incoming multicast frame is hashed into a
@@ -167,6 +180,25 @@ quantum is 512 bit-times of the current line rate.
 
 Saturating 32-bit counters. Writing any value to either register clears both
 PAUSE counters together.
+
+## 0x94 - SAF_DBG
+
+Read-only debug snapshot of the store-and-forward MII transmit path
+(`mii_tx_saf`), with the media-clock (`mii_tx_clk`) read-side state synchronized
+into the AXI (`sys_clk`) domain so the word reads stable while the framer is
+quiescent. Reads `0` on the RGMII build (no `mii_tx_saf`). Layout:
+
+| Bits | Field | Meaning |
+|-----:|-------|---------|
+| `[5:0]` | committed | Committed-frame count (write side), low 6 bits |
+| `[11:6]` | drained | Drained-frame count (read side, synced), low 6 bits |
+| `[12]` | rd_empty | Frame FIFO read-side empty |
+| `[15:13]` | state | Framer FSM: 0 IDLE, 1 PRE, 2 SFD, 3 DATA, 4 PAD, 5 FCS, 6 IFG |
+| `[31:16]` | reserved | `0` |
+
+A healthy idle read has `committed == drained`, `rd_empty = 1`, `state = IDLE`.
+`committed == drained` with `rd_empty = 0` while idle indicates uncommitted data
+stuck in the FIFO (the failure mode fixed by the oversized-frame guard).
 
 ## Arty UDP Demo Sideband Ports
 

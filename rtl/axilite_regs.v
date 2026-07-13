@@ -44,6 +44,12 @@
 //   0x34 RX_BYTE    RO/WC write-any-to-clear
 //   0x38 RX_ERR     RO/WC write-any-to-clear
 //   0x3C SCRATCH    RW
+//   0x40 IP_ADDR    RW    cfg_ip_addr[31:0] - IPv4 address for the demo L3
+//                          stack (arp/icmp/udp responders in the board top).
+//                          Default 0xC0A889C8 = 192.168.137.200. Not a MAC-layer
+//                          concept; provided so the hardware L3 IP can be set at
+//                          runtime over AXI (e.g. via the EJTAG-AXI bridge)
+//                          instead of only at build time.
 //   --- Only present when MCAST_HASH_FILTER == 1 ---
 //   0x44 MCAST_LO   RW    mcast_hash_table[31:0]
 //   0x48 MCAST_HI   RW    mcast_hash_table[63:32]
@@ -115,6 +121,8 @@ module axilite_regs #(
     output wire        cfg_tx_csum_off,
     output wire        cfg_passthrough,
     output wire [47:0] cfg_mac_addr,
+    output wire [31:0] cfg_ip_addr,          // demo L3 stack IPv4 (0x40 IP_ADDR)
+    input  wire [15:0] dbg_saf,               // mii_tx_saf read-side debug (0x94, RO)
     output wire [63:0] cfg_mcast_hash_table,
 
     // ---- PAUSE controls ----
@@ -194,6 +202,7 @@ module axilite_regs #(
     localparam [5:0] A_RX_BYTE    = 6'h0D;  // 0x34
     localparam [5:0] A_RX_ERR     = 6'h0E;  // 0x38
     localparam [5:0] A_SCRATCH    = 6'h0F;  // 0x3C
+    localparam [5:0] A_IP_ADDR    = 6'h10;  // 0x40 (demo L3 stack IPv4)
     // MCAST registers (only active when MCAST_HASH_FILTER == 1)
     localparam [5:0] A_MCAST_LO   = 6'h11;  // 0x44
     localparam [5:0] A_MCAST_HI   = 6'h12;  // 0x48
@@ -215,6 +224,7 @@ module axilite_regs #(
     localparam [5:0] A_PAUSE_QUANTA  = 6'h22;  // 0x88
     localparam [5:0] A_PAUSE_RX_CNT  = 6'h23;  // 0x8C
     localparam [5:0] A_PAUSE_TX_CNT  = 6'h24;  // 0x90
+    localparam [5:0] A_SAF_DBG       = 6'h25;  // 0x94 (RO, mii_tx_saf debug)
 
     // =========================================================================
     // Responses always OKAY
@@ -230,6 +240,7 @@ module axilite_regs #(
     reg  [8:0]  reg_ctrl;
     reg  [31:0] reg_mac_lo;
     reg  [15:0] reg_mac_hi;
+    reg  [31:0] reg_ip_addr;
     // Storage mirrors user bit positions exactly. Bit 11 (go) self-clears and
     // is captured separately via mdio_go, so bit 11 of this register reads 0.
     reg  [14:0] reg_mdio_cmd;   // [4:0] reg/devad, [9:5] phy, [10] write,
@@ -257,6 +268,7 @@ module axilite_regs #(
     assign cfg_tx_csum_off = reg_ctrl[7];
     assign cfg_passthrough = reg_ctrl[8];
     assign cfg_mac_addr    = {reg_mac_hi, reg_mac_lo};
+    assign cfg_ip_addr     = reg_ip_addr;
     assign cfg_mcast_hash_table = MCAST_HASH_FILTER ?
                                   {reg_mcast_hi, reg_mcast_lo} : 64'h0;
     assign cfg_pause_rx_en      = reg_pause_rx_en;
@@ -324,6 +336,7 @@ module axilite_regs #(
             reg_ctrl       <= 9'b0_0010_0011;
             reg_mac_lo     <= 32'h00_00_00_01;
             reg_mac_hi     <= 16'h02_00;  // locally administered
+            reg_ip_addr    <= 32'hC0_A8_89_C8;  // 192.168.137.200
             reg_mdio_cmd   <= 15'd0;
             reg_mdio_wdata <= 16'd0;
             reg_irq_en     <= 3'd0;
@@ -377,6 +390,7 @@ module axilite_regs #(
                     A_CTRL:       reg_ctrl       <= strb_merge({23'd0, reg_ctrl}, w_data, w_strb);
                     A_MAC_LO:     reg_mac_lo     <= strb_merge(reg_mac_lo, w_data, w_strb);
                     A_MAC_HI:     reg_mac_hi     <= strb_merge({16'd0, reg_mac_hi}, w_data, w_strb);
+                    A_IP_ADDR:    reg_ip_addr    <= strb_merge(reg_ip_addr, w_data, w_strb);
                     A_MDIO_CMD: begin
                         // Mask bit 11 (go) to 0 so it never persists in storage
                         reg_mdio_cmd <= strb_merge({17'd0, reg_mdio_cmd}, w_data, w_strb)
@@ -466,6 +480,8 @@ module axilite_regs #(
                                                   sts_tx_fifo_busy, sts_tx_active};
                     A_MAC_LO:     s_axi_rdata <= reg_mac_lo;
                     A_MAC_HI:     s_axi_rdata <= {16'd0, reg_mac_hi};
+                    A_IP_ADDR:    s_axi_rdata <= reg_ip_addr;
+                    A_SAF_DBG:    s_axi_rdata <= {16'd0, dbg_saf};
                     A_MDIO_CMD:   s_axi_rdata <= {17'd0, reg_mdio_cmd}; // bit 11 (go) reads 0 by storage
                     A_MDIO_WDATA: s_axi_rdata <= {16'd0, reg_mdio_wdata};
                     A_MDIO_RDATA: s_axi_rdata <= {16'd0, mdio_rdata};

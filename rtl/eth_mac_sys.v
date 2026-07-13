@@ -89,6 +89,9 @@ module eth_mac_sys #(
     output wire        mdio_o,
     output wire        mdio_oe,
 
+    // ---- Demo L3 config (IP_ADDR CSR @ 0x40; drives a board-level L3 stack) ----
+    output wire [31:0] cfg_ip_addr,
+
     // ---- Interrupt ----
     output wire        irq
 );
@@ -167,6 +170,7 @@ module eth_mac_sys #(
     wire        tx_active;
     wire        tx_fifo_busy;
     wire [12:0] tx_fifo_level;
+    wire [15:0] dbg_mii_tx_saf;   // mii_tx_saf read-side debug (0 on RGMII)
 
     // MDIO busy tracking
     reg         mdio_busy_r;
@@ -178,10 +182,12 @@ module eth_mac_sys #(
 
     // =========================================================================
     // Internal GMII bus (sys_clk domain)
+    // TX-side GMII now lives inside the RGMII generate branch (the MII branch
+    // frames on the media clock in mii_tx_saf), so only the RX bus is top-level.
+    // tx_byte_ev / tx_frame_done_ev are the per-PHY TX events fed to eth_stats.
     // =========================================================================
-    wire [7:0] gmii_txd;
-    wire       gmii_tx_en;
-    wire       gmii_tx_er;
+    wire       tx_byte_ev;        // 1 pulse per wire byte transmitted (sys_clk)
+    wire       tx_frame_done_ev;  // 1 pulse per transmitted frame (sys_clk)
     wire [7:0] gmii_rxd;
     wire       gmii_rx_dv;
     wire       gmii_rx_er;
@@ -262,27 +268,13 @@ module eth_mac_sys #(
     assign m_axis_tsof   = m_axis_tsof_mac;
 
     // =========================================================================
-    // MAC TX - adds preamble/SFD, pads, appends CRC
+    // MAC TX framer is instantiated per-PHY below:
+    //   - MII:  mii_tx_saf   (store-and-forward, single frame FIFO, media-clk
+    //           framer; tolerates AXIS bubbles - no cut-through underrun)
+    //   - RGMII: eth_mac_tx  (cut-through framer) -> gmii_cdc
+    // Both are fed by the pause-muxed AXIS (mac_tx_in_*) and drive the shared
+    // tx_active / tx_fifo_busy / tx_byte_ev / tx_frame_done_ev / s_axis_tready_mac.
     // =========================================================================
-    eth_mac_tx #(.MAX_FRAME(MAX_FRAME)) u_mac_tx (
-        .clk           (clk),
-        .rst_n         (rst_n),
-        // tx_start_ok also blocked by tx_paused so a received PAUSE quanta
-        // gates the start of the next frame (an in-flight frame is allowed
-        // to complete by design — eth_mac_tx samples tx_start_ok only in S_IDLE).
-        .tx_start_ok   (~tx_fifo_busy & ~tx_paused),
-        .gmii_txd      (gmii_txd),
-        .gmii_tx_en    (gmii_tx_en),
-        .gmii_tx_er    (gmii_tx_er),
-        .s_axis_tdata  (mac_tx_in_tdata),
-        .s_axis_tvalid (mac_tx_in_tvalid),
-        .s_axis_tready (s_axis_tready_mac),
-        .s_axis_tkeep  (1'b1),
-        .s_axis_tlast  (mac_tx_in_tlast),
-        .tx_active     (tx_active),
-        .dbg_state     (),
-        .dbg_stall_cnt ()
-    );
 
     // =========================================================================
     // MAC RX - strips preamble/SFD, validates CRC
@@ -348,7 +340,9 @@ module eth_mac_sys #(
             // replay buffer are 4096 bytes, which cannot hold a jumbo frame
             // while the 12.5 MB/s MII side drains the 100 MB/s write side. Use
             // MAX_FRAME=1518 for MII; jumbo requires PHY_INTERFACE="RGMII".
-            mii_if #(.MII_DEBUG(MII_DEBUG)) u_mii_if (
+            // TX_ENABLE(0): mii_tx_saf (u_mii_tx) drives the MII TX pins on this
+            // branch, so mii_if is RX-only here - omit its dead TX FIFO's BRAM.
+            mii_if #(.MII_DEBUG(MII_DEBUG), .TX_ENABLE(0)) u_mii_if (
                 .clk            (clk),
                 .rst_n          (rst_n),
                 .mii_rxd        (mii_rxd),
@@ -357,18 +351,21 @@ module eth_mac_sys #(
                 .mii_rx_clk     (mii_rx_clk),
                 .mii_col        (mii_col),
                 .mii_crs        (mii_crs),
-                .mii_txd        (mii_txd),
-                .mii_tx_en      (mii_tx_en),
+                // mii_if TX path is unused on this branch: MII pins are driven
+                // by u_mii_tx (mii_tx_saf) below; disable its TX FIFO by tying
+                // gmii_tx_en low and leave its TX outputs unconnected.
+                .mii_txd        (),
+                .mii_tx_en      (),
                 .mii_tx_clk     (mii_tx_clk),
-                .gmii_txd       (gmii_txd),
-                .gmii_tx_en     (gmii_tx_en),
-                .gmii_tx_er     (gmii_tx_er),
+                .gmii_txd       (8'd0),
+                .gmii_tx_en     (1'b0),
+                .gmii_tx_er     (1'b0),
                 .gmii_rxd       (gmii_rxd),
                 .gmii_rx_dv     (gmii_rx_dv),
                 .gmii_rx_er     (gmii_rx_er),
                 .mii_tx_clk_out (),
-                .tx_busy               (tx_fifo_busy),
-                .tx_fifo_level         (tx_fifo_level),
+                .tx_busy               (),
+                .tx_fifo_level         (),
                 .dbg_tx_fifo_empty     (),
                 .dbg_rx_prog_empty     (),
                 .dbg_rx_rd_empty       (),
@@ -437,6 +434,30 @@ module eth_mac_sys #(
                 .dbg_tx_er_frames    ()
             );
 
+            // Store-and-forward MII transmit: single frame FIFO + media-clk
+            // framer. Drives the MII TX pins and the shared TX status/stats.
+            mii_tx_saf #(
+                .MAX_FRAME      (MAX_FRAME),
+                .FIFO_ADDR_WIDTH(12)
+            ) u_mii_tx (
+                .clk           (clk),
+                .rst_n         (rst_n),
+                .s_axis_tdata  (mac_tx_in_tdata),
+                .s_axis_tvalid (mac_tx_in_tvalid),
+                .s_axis_tready (s_axis_tready_mac),
+                .s_axis_tlast  (mac_tx_in_tlast),
+                .tx_start_ok   (~tx_paused),
+                .mii_tx_clk    (mii_tx_clk),
+                .mii_txd       (mii_txd),
+                .mii_tx_en     (mii_tx_en),
+                .tx_busy       (tx_fifo_busy),
+                .tx_fifo_level (tx_fifo_level),
+                .tx_active     (tx_active),
+                .tx_byte_stb   (tx_byte_ev),
+                .tx_frame_done (tx_frame_done_ev),
+                .dbg_saf       (dbg_mii_tx_saf)
+            );
+
             // Tie off RGMII outputs
             assign rgmii_txd   = 4'd0;
             assign rgmii_tx_ctl = 1'b0;
@@ -451,6 +472,42 @@ module eth_mac_sys #(
             wire       media_gmii_rx_er;
 
             wire [11:0] rgmii_tx_fifo_level;
+
+            // Cut-through MAC TX framer -> GMII (sys_clk), then CDC to media.
+            wire [7:0] gmii_txd;
+            wire       gmii_tx_en;
+            wire       gmii_tx_er;
+            wire       mac_tx_active;
+            eth_mac_tx #(.MAX_FRAME(MAX_FRAME)) u_mac_tx (
+                .clk           (clk),
+                .rst_n         (rst_n),
+                // tx_start_ok blocked by tx_fifo_busy (store-and-forward FIFO
+                // headroom) and tx_paused (inbound PAUSE). eth_mac_tx samples it
+                // only in S_IDLE, so an in-flight frame always completes.
+                .tx_start_ok   (~tx_fifo_busy & ~tx_paused),
+                .gmii_txd      (gmii_txd),
+                .gmii_tx_en    (gmii_tx_en),
+                .gmii_tx_er    (gmii_tx_er),
+                .s_axis_tdata  (mac_tx_in_tdata),
+                .s_axis_tvalid (mac_tx_in_tvalid),
+                .s_axis_tready (s_axis_tready_mac),
+                .s_axis_tkeep  (1'b1),
+                .s_axis_tlast  (mac_tx_in_tlast),
+                .tx_active     (mac_tx_active),
+                .dbg_state     (),
+                .dbg_stall_cnt ()
+            );
+
+            // TX stats events: one byte per cycle while gmii_tx_en is high, plus
+            // a frame-done pulse on its falling edge.
+            reg gmii_tx_en_d1;
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) gmii_tx_en_d1 <= 1'b0;
+                else        gmii_tx_en_d1 <= gmii_tx_en;
+            end
+            assign tx_byte_ev       = gmii_tx_en;
+            assign tx_frame_done_ev = gmii_tx_en_d1 & ~gmii_tx_en;
+            assign tx_active        = mac_tx_active;
 
             gmii_cdc u_gmii_cdc (
                 .sys_clk        (clk),
@@ -500,19 +557,15 @@ module eth_mac_sys #(
             // Tie off MII outputs
             assign mii_txd   = 4'd0;
             assign mii_tx_en = 1'b0;
+            assign dbg_mii_tx_saf = 16'd0;
         end
     endgenerate
 
     // =========================================================================
     // Statistics counters
     // =========================================================================
-    // TX frame done: falling edge of gmii_tx_en
-    reg gmii_tx_en_d1;
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) gmii_tx_en_d1 <= 1'b0;
-        else        gmii_tx_en_d1 <= gmii_tx_en;
-    end
-    wire tx_frame_done = gmii_tx_en_d1 & ~gmii_tx_en;
+    // TX byte / frame-done events come from the active PHY's TX framer
+    // (tx_byte_ev / tx_frame_done_ev), muxed in the generate branches above.
 
     // RX frame done pulses
     wire rx_frame_good = m_axis_tvalid_mac & m_axis_tlast_mac & ~m_axis_terror_mac;
@@ -521,9 +574,9 @@ module eth_mac_sys #(
     eth_stats u_stats (
         .clk            (clk),
         .rst_n          (rst_n),
-        .gmii_tx_en     (gmii_tx_en),
+        .gmii_tx_en     (tx_byte_ev),
         .gmii_rx_dv     (gmii_rx_dv),
-        .tx_frame_done  (tx_frame_done),
+        .tx_frame_done  (tx_frame_done_ev),
         .rx_frame_good  (rx_frame_good),
         .rx_frame_bad   (rx_frame_bad),
         .rx_stat_done         (rx_stat_done),
@@ -598,6 +651,8 @@ module eth_mac_sys #(
         .cfg_tx_csum_off       (cfg_tx_csum_off),
         .cfg_passthrough       (cfg_passthrough),
         .cfg_mac_addr          (cfg_mac_addr),
+        .cfg_ip_addr           (cfg_ip_addr),
+        .dbg_saf               (dbg_mii_tx_saf),
         .cfg_mcast_hash_table  (cfg_mcast_hash_table),
         .mdio_go        (mdio_go),
         .mdio_write     (mdio_write),

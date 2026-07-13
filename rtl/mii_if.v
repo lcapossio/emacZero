@@ -7,7 +7,12 @@
 // =============================================================================
 
 module mii_if #(
-    parameter MII_DEBUG = 0
+    parameter MII_DEBUG = 0,
+    // TX_ENABLE=0 omits the TX data FIFO (and its inferred BRAM); the framer
+    // then sees a permanently-empty FIFO and the MII TX outputs stay idle.
+    // Used by the store-and-forward MII path in eth_mac_sys, where mii_tx_saf
+    // drives the MII TX pins and mii_if is effectively RX-only.
+    parameter TX_ENABLE = 1
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -960,6 +965,13 @@ module mii_if #(
     assign dbg_rx_reading        = (MII_DEBUG != 0) ? (rx_replay_state != RX_REPLAY_IDLE) : 1'b0;
     assign dbg_rx_frames_pending = (MII_DEBUG != 0) ? {1'b0, rx_frame_ready} : 2'd0;
 
+    // TX data FIFO. Guarded by TX_ENABLE so the store-and-forward MII path
+    // (mii_tx_saf drives the pins) can omit this FIFO's BRAM. Only this
+    // instance is guarded - the framer, IOB stage and debug taps below stay at
+    // module level and self-drive to idle when the FIFO is tied empty, so no
+    // module output ports go undriven and no hierarchical names shift.
+    generate
+    if (TX_ENABLE != 0) begin : gen_tx_fifo
 `ifdef XILINX_7SERIES
     xpm_fifo_async #(
         .FIFO_WRITE_DEPTH(4096),
@@ -1025,6 +1037,20 @@ module mii_if #(
         .wr_data_count()
     );
 `endif
+    end else begin : gen_no_tx_fifo
+        // TX disabled: present a permanently-empty FIFO so no RAMB is inferred.
+        // gmii_tx_en is expected tied low upstream, so nothing is ever written;
+        // the framer below reads rd_empty=1 and keeps the MII TX pins idle.
+        assign tx_wr_full       = 1'b0;
+        assign tx_wr_rst_busy   = 1'b0;
+        assign tx_rd_rst_busy   = 1'b0;
+        assign tx_rd_data       = 9'd0;
+        assign tx_rd_empty      = 1'b1;
+        assign tx_wr_data_count = 13'd0;
+        assign tx_rd_valid      = 1'b0;
+        assign tx_rd_word_valid = 1'b0;
+    end
+    endgenerate
 
     localparam [1:0]
         TX_IDLE = 2'd0,

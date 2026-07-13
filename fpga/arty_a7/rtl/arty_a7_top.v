@@ -38,7 +38,9 @@ module arty_a7_top (
     wire sys_clk = CLK100MHZ;
     wire sys_rst_n = ~BTN0;
     localparam [47:0] OUR_MAC = 48'h02_00_00_00_00_01;
-    localparam [31:0] OUR_IP  = 32'hC0_A8_89_C8; // 192.168.137.200
+    // Demo L3 IPv4 now comes from the IP_ADDR CSR (eth_mac_sys.cfg_ip_addr, reg
+    // 0x40, reset value 0xC0A889C8 = 192.168.137.200). It is runtime-settable
+    // over AXI (e.g. the EJTAG-AXI bridge) instead of a build-time localparam.
 
     // 25 MHz reference clock for PHY
     wire clk_25;
@@ -107,10 +109,27 @@ module arty_a7_top (
     wire        axi_rvalid;
     wire        axi_rready;
 
+    // test_sequencer AXI-Lite master side (arbiter master 0). In a normal build
+    // these pass straight through to axi_* below; in an FCAPZ_DEBUG build the
+    // 2:1 arbiter muxes them with the EJTAG-AXI bridge (master 1).
+    wire [7:0]  seq_axi_awaddr;
+    wire        seq_axi_awvalid, seq_axi_awready;
+    wire [31:0] seq_axi_wdata;
+    wire [3:0]  seq_axi_wstrb;
+    wire        seq_axi_wvalid, seq_axi_wready;
+    wire [1:0]  seq_axi_bresp;
+    wire        seq_axi_bvalid, seq_axi_bready;
+    wire [7:0]  seq_axi_araddr;
+    wire        seq_axi_arvalid, seq_axi_arready;
+    wire [31:0] seq_axi_rdata;
+    wire [1:0]  seq_axi_rresp;
+    wire        seq_axi_rvalid, seq_axi_rready;
+
     // =========================================================================
     // AXI4-Stream TX mux: test_sequencer / ARP / ICMP / stats / UDP / blast
     // =========================================================================
     wire        arp_tx_active;  // test_sequencer owns TX when high
+    wire [31:0] cfg_ip_addr;    // demo L3 IP from CSR 0x40 (default OUR_IP)
 
     // Test sequencer TX
     wire [7:0]  seq_tx_tdata;
@@ -276,6 +295,8 @@ module arty_a7_top (
         .mdio_i         (mdio_i),
         .mdio_o         (mdio_o),
         .mdio_oe        (mdio_oe),
+        // Demo L3 IP (CSR 0x40; default OUR_IP, runtime-settable over AXI)
+        .cfg_ip_addr    (cfg_ip_addr),
         // IRQ
         .irq            (irq)
     );
@@ -309,21 +330,21 @@ module arty_a7_top (
         .rst_n         (int_rst_n),
         .phy_rst_done  (phy_rst_done_r),
         // AXI-Lite master
-        .m_axi_awaddr  (axi_awaddr),
-        .m_axi_awvalid (axi_awvalid),
-        .m_axi_awready (axi_awready),
-        .m_axi_wdata   (axi_wdata),
-        .m_axi_wstrb   (axi_wstrb),
-        .m_axi_wvalid  (axi_wvalid),
-        .m_axi_wready  (axi_wready),
-        .m_axi_bvalid  (axi_bvalid),
-        .m_axi_bready  (axi_bready),
-        .m_axi_araddr  (axi_araddr),
-        .m_axi_arvalid (axi_arvalid),
-        .m_axi_arready (axi_arready),
-        .m_axi_rdata   (axi_rdata),
-        .m_axi_rvalid  (axi_rvalid),
-        .m_axi_rready  (axi_rready),
+        .m_axi_awaddr  (seq_axi_awaddr),
+        .m_axi_awvalid (seq_axi_awvalid),
+        .m_axi_awready (seq_axi_awready),
+        .m_axi_wdata   (seq_axi_wdata),
+        .m_axi_wstrb   (seq_axi_wstrb),
+        .m_axi_wvalid  (seq_axi_wvalid),
+        .m_axi_wready  (seq_axi_wready),
+        .m_axi_bvalid  (seq_axi_bvalid),
+        .m_axi_bready  (seq_axi_bready),
+        .m_axi_araddr  (seq_axi_araddr),
+        .m_axi_arvalid (seq_axi_arvalid),
+        .m_axi_arready (seq_axi_arready),
+        .m_axi_rdata   (seq_axi_rdata),
+        .m_axi_rvalid  (seq_axi_rvalid),
+        .m_axi_rready  (seq_axi_rready),
         // TX AXI-Stream
         .tx_tdata      (seq_tx_tdata),
         .tx_tvalid     (seq_tx_tvalid),
@@ -342,6 +363,83 @@ module arty_a7_top (
     );
 
     // =========================================================================
+    // AXI-Lite path to the eth_mac_sys CSR.
+    //   Normal build : test_sequencer (seq_axi_*) drives the CSR (axi_*) direct.
+    //   FCAPZ_DEBUG  : a 2:1 arbiter muxes the sequencer (master 0) with the
+    //                  fpgacapZero EJTAG-AXI bridge (master 1, JTAG USER4), so
+    //                  the host can read/write every CSR over JTAG - including
+    //                  the IP_ADDR register (0x40) to retarget the demo L3 IP
+    //                  at runtime without a rebuild.
+    // =========================================================================
+`ifdef FCAPZ_DEBUG
+    // Bridge master port (AXI-Lite subset; AXI4 burst/prot signals unused).
+    wire [7:0]  brg_awaddr;  wire brg_awvalid, brg_awready;
+    wire [31:0] brg_wdata;   wire [3:0] brg_wstrb; wire brg_wvalid, brg_wready;
+    wire [1:0]  brg_bresp;   wire brg_bvalid, brg_bready;
+    wire [7:0]  brg_araddr;  wire brg_arvalid, brg_arready;
+    wire [31:0] brg_rdata;   wire [1:0] brg_rresp; wire brg_rvalid, brg_rready;
+    wire [31:0] brg_awaddr32, brg_araddr32;
+
+    fcapz_ejtagaxi_xilinx7 #(
+        .ADDR_W(32), .DATA_W(32),
+        .FIFO_DEPTH(16), .CMD_FIFO_DEPTH(16), .RESP_FIFO_DEPTH(16),
+        .CMD_FIFO_MEMORY_TYPE("distributed"),
+        .CHAIN(4)                       // USER4 (USER1-3 = ELA + EIO)
+    ) u_ejtagaxi (
+        .axi_clk(sys_clk), .axi_rst(~int_rst_n),
+        .m_axi_awaddr(brg_awaddr32), .m_axi_awlen(), .m_axi_awsize(), .m_axi_awburst(),
+        .m_axi_awvalid(brg_awvalid), .m_axi_awready(brg_awready), .m_axi_awprot(),
+        .m_axi_wdata(brg_wdata), .m_axi_wstrb(brg_wstrb),
+        .m_axi_wvalid(brg_wvalid), .m_axi_wready(brg_wready), .m_axi_wlast(),
+        .m_axi_bresp(brg_bresp), .m_axi_bvalid(brg_bvalid), .m_axi_bready(brg_bready),
+        .m_axi_araddr(brg_araddr32), .m_axi_arlen(), .m_axi_arsize(), .m_axi_arburst(),
+        .m_axi_arvalid(brg_arvalid), .m_axi_arready(brg_arready), .m_axi_arprot(),
+        .m_axi_rdata(brg_rdata), .m_axi_rresp(brg_rresp),
+        .m_axi_rvalid(brg_rvalid), .m_axi_rlast(brg_rvalid), .m_axi_rready(brg_rready),
+        .debug_tck(), .debug_tck_edge(), .debug_axi(), .debug_axi_edge()
+    );
+    assign brg_awaddr = brg_awaddr32[7:0];
+    assign brg_araddr = brg_araddr32[7:0];
+
+    axil_arb2 #(.AW(8), .DW(32)) u_axi_arb (
+        .aclk(sys_clk), .aresetn(int_rst_n),
+        .m0_awaddr(seq_axi_awaddr), .m0_awvalid(seq_axi_awvalid), .m0_awready(seq_axi_awready),
+        .m0_wdata(seq_axi_wdata), .m0_wstrb(seq_axi_wstrb), .m0_wvalid(seq_axi_wvalid), .m0_wready(seq_axi_wready),
+        .m0_bresp(seq_axi_bresp), .m0_bvalid(seq_axi_bvalid), .m0_bready(seq_axi_bready),
+        .m0_araddr(seq_axi_araddr), .m0_arvalid(seq_axi_arvalid), .m0_arready(seq_axi_arready),
+        .m0_rdata(seq_axi_rdata), .m0_rresp(seq_axi_rresp), .m0_rvalid(seq_axi_rvalid), .m0_rready(seq_axi_rready),
+        .m1_awaddr(brg_awaddr), .m1_awvalid(brg_awvalid), .m1_awready(brg_awready),
+        .m1_wdata(brg_wdata), .m1_wstrb(brg_wstrb), .m1_wvalid(brg_wvalid), .m1_wready(brg_wready),
+        .m1_bresp(brg_bresp), .m1_bvalid(brg_bvalid), .m1_bready(brg_bready),
+        .m1_araddr(brg_araddr), .m1_arvalid(brg_arvalid), .m1_arready(brg_arready),
+        .m1_rdata(brg_rdata), .m1_rresp(brg_rresp), .m1_rvalid(brg_rvalid), .m1_rready(brg_rready),
+        .s_awaddr(axi_awaddr), .s_awvalid(axi_awvalid), .s_awready(axi_awready),
+        .s_wdata(axi_wdata), .s_wstrb(axi_wstrb), .s_wvalid(axi_wvalid), .s_wready(axi_wready),
+        .s_bresp(axi_bresp), .s_bvalid(axi_bvalid), .s_bready(axi_bready),
+        .s_araddr(axi_araddr), .s_arvalid(axi_arvalid), .s_arready(axi_arready),
+        .s_rdata(axi_rdata), .s_rresp(axi_rresp), .s_rvalid(axi_rvalid), .s_rready(axi_rready)
+    );
+`else
+    assign axi_awaddr      = seq_axi_awaddr;
+    assign axi_awvalid     = seq_axi_awvalid;
+    assign seq_axi_awready = axi_awready;
+    assign axi_wdata       = seq_axi_wdata;
+    assign axi_wstrb       = seq_axi_wstrb;
+    assign axi_wvalid      = seq_axi_wvalid;
+    assign seq_axi_wready  = axi_wready;
+    assign seq_axi_bresp   = axi_bresp;
+    assign seq_axi_bvalid  = axi_bvalid;
+    assign axi_bready      = seq_axi_bready;
+    assign axi_araddr      = seq_axi_araddr;
+    assign axi_arvalid     = seq_axi_arvalid;
+    assign seq_axi_arready = axi_arready;
+    assign seq_axi_rdata   = axi_rdata;
+    assign seq_axi_rresp   = axi_rresp;
+    assign seq_axi_rvalid  = axi_rvalid;
+    assign axi_rready      = seq_axi_rready;
+`endif
+
+    // =========================================================================
     // ARP Responder
     // =========================================================================
     arp_responder u_arp (
@@ -358,7 +456,7 @@ module arty_a7_top (
         .tx_tready     (arp_tx_tready),
         .tx_tlast      (arp_tx_tlast),
         .our_mac       (OUR_MAC),
-        .our_ip        (OUR_IP),
+        .our_ip        (cfg_ip_addr),
         .arp_reply_sent()
     );
 
@@ -401,7 +499,7 @@ module arty_a7_top (
         .udp_dst_port   (netrx_udp_dst_port),
         .udp_length     (netrx_udp_length),
         .rx_src_mac     (netrx_rx_src_mac),
-        .our_ip         (OUR_IP)
+        .our_ip         (cfg_ip_addr)
     );
 
     // =========================================================================
@@ -411,7 +509,7 @@ module arty_a7_top (
         .clk            (sys_clk),
         .rst_n          (int_rst_n),
         .our_mac        (OUR_MAC),
-        .our_ip         (OUR_IP),
+        .our_ip         (cfg_ip_addr),
         .icmp_rx_data   (netrx_icmp_data),
         .icmp_rx_valid  (netrx_icmp_valid),
         .icmp_rx_last   (netrx_icmp_last),
@@ -527,7 +625,7 @@ module arty_a7_top (
         .clk            (sys_clk),
         .rst_n          (int_rst_n),
         .our_mac        (OUR_MAC),
-        .our_ip         (OUR_IP),
+        .our_ip         (cfg_ip_addr),
         .dst_mac        (blast_dst_mac),
         .dst_ip         (blast_dst_ip),
         .dst_port       (blast_dst_port),
@@ -591,7 +689,7 @@ module arty_a7_top (
         .clk                 (sys_clk),
         .rst_n               (int_rst_n),
         .our_mac             (OUR_MAC),
-        .our_ip              (OUR_IP),
+        .our_ip              (cfg_ip_addr),
         .stats_port          (IPERF_STATS_PORT),
         .udp_rx_data         (netrx_udp_data),
         .udp_rx_valid        (netrx_udp_valid),
@@ -627,7 +725,7 @@ module arty_a7_top (
         .clk             (sys_clk),
         .rst_n           (int_rst_n),
         .our_mac         (OUR_MAC),
-        .our_ip          (OUR_IP),
+        .our_ip          (cfg_ip_addr),
         .udp_rx_data     (netrx_udp_data),
         .udp_rx_valid    (netrx_udp_valid),
         .udp_rx_last     (netrx_udp_last),
@@ -695,7 +793,20 @@ module arty_a7_top (
     assign ela_probe[17]    = axi_awvalid;
     assign ela_probe[18]    = axi_wvalid;
     assign ela_probe[19]    = axi_bvalid;
-    assign ela_probe[63:20] = 44'd0;
+    // MII TX/RX pins + mii_tx_saf framer internals (proves the on-wire TX).
+    // The pins are in the mii_tx_clk (25 MHz) domain, oversampled 4x by the
+    // 100 MHz ELA sample clock, so a full frame fits in the 1024-sample buffer.
+    assign ela_probe[20]    = ETH_TX_EN;
+    assign ela_probe[24:21] = ETH_TXD;
+    assign ela_probe[25]    = ETH_TX_CLK;   // confirm the PHY drives TX_CLK
+    assign ela_probe[26]    = ETH_RX_DV;
+    assign ela_probe[30:27] = ETH_RXD;
+    assign ela_probe[31]    = ETH_RX_CLK;
+    assign ela_probe[34:32] = u_mac_sys.gen_mii.u_mii_tx.st;              // framer FSM
+    assign ela_probe[35]    = u_mac_sys.gen_mii.u_mii_tx.tx_active_media; // frame on wire
+    assign ela_probe[36]    = u_mac_sys.gen_mii.u_mii_tx.rd_empty;        // FIFO empty
+    assign ela_probe[37]    = u_mac_sys.gen_mii.u_mii_tx.frame_pending;   // committed frame
+    assign ela_probe[63:38] = 26'd0;
 
     // Trigger on phy_rst_done_r rising edge (bit 6)
     fcapz_ela_xilinx7 #(
