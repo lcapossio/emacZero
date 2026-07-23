@@ -683,6 +683,39 @@ def run_simulation():
     return all_pass
 
 
+def run_cocotb():
+    header("PHASE 2: cocotb (directed + randomized)")
+    try:
+        import cocotb  # noqa: F401
+    except Exception:
+        print(f"  {C.YELLOW}SKIP{C.END} cocotb not installed "
+              "(pip install 'cocotb>=2.0') - randomized suite not run")
+        return True
+
+    runner = os.path.join(PROJECT_DIR, "sim", "cocotb", "run.py")
+    if not os.path.exists(runner):
+        fail("cocotb runner missing")
+        return False
+
+    rc, stdout, stderr = run_cmd(
+        f'"{sys.executable}" "{runner}"', cwd=PROJECT_DIR, timeout=1800
+    )
+    combined = stdout + stderr
+    for line in combined.splitlines():
+        if re.search(r"TESTS=\d", line):
+            print(f"    {line.strip()}")
+
+    if rc == 0:
+        ok("cocotb suite (mii_tx_saf: directed + randomized)")
+        return True
+
+    fail(f"cocotb suite (mii_tx_saf) rc={rc}")
+    for line in combined.splitlines():
+        if "failed" in line.lower() or "random seed =" in line.lower():
+            print(f"    {line.strip()[:160]}")  # seeds shown for deterministic replay
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="emacZero — Build & Test")
     parser.add_argument("--sim-only", action="store_true", help="Run simulation only")
@@ -698,8 +731,9 @@ def main():
     lint_ok = run_lint()
     verilator_ok = run_verilator_lint()
     sim_ok = run_simulation()
+    cocotb_ok = run_cocotb()
 
-    if version_ok and lint_ok and verilator_ok and sim_ok:
+    if version_ok and lint_ok and verilator_ok and sim_ok and cocotb_ok:
         print(f"\n{C.GREEN}{C.BOLD}All tests passed.{C.END}")
         sys.exit(0)
     else:
