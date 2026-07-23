@@ -6,7 +6,7 @@ a.out
 
 # cocotb
 sim/cocotb/**/sim_build/
-sim/cocotb/**/results.xml
+sim/cocotb/**/results*.xml
 
 # Vivado / synthesis
 *.log

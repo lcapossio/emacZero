@@ -17,22 +17,29 @@ planned Verilog→VHDL port.
 ```
 sim/cocotb/
   lib/            reusable, DUT-independent building blocks
-    eth.py          Ethernet framing + FCS (matches rtl/mii_tx_saf.v conventions)
-    frame_gen.py    constrained-random frames (boundary-weighted) + merge/oversize
-    axis_driver.py  AXIS master with randomized tvalid bubbles + dropped-tlast
-    mii_monitor.py  MII nibble->byte, preamble/SFD strip, FCS check
-    model.py        SAF commit/truncate/drop reference model + scoreboard
+    eth.py           Ethernet framing + FCS (matches the RTL conventions)
+    frame_gen.py     constrained-random frames (boundary-weighted) + merge/oversize
+    axis_driver.py   AXIS master with randomized tvalid bubbles + dropped-tlast
+    mii_monitor.py   MII nibble->byte, preamble/SFD strip, FCS check
+    model.py         mii_tx_saf commit/truncate/drop reference model + scoreboard
+    gmii_rx_driver.py  GMII input driver (preamble/SFD/FCS, FCS-corrupt, rx_er)
+    axis_sink.py     AXIS slave with backpressure; reassembles frames + terror
+    rx_model.py      eth_mac_rx filter/error/stats reference model + scoreboard
   tests/
-    test_mii_tx_saf.py   pilot: directed boundaries + seed-logged random cases
-  run.py          build + run entry point (Icarus today)
+    test_mii_tx_saf.py   directed boundaries + seed-logged random (TX store-and-forward)
+    test_eth_mac_rx.py   filter/error/backpressure + seed-logged random (RX datapath)
+  run.py          build + run entry point (SUITES table; Icarus today)
   smoke/          toolchain smoke (cocotb + Icarus VPI sanity)
 ```
 
 ## Running
 
 ```bash
-# full pilot suite
+# all suites
 python sim/cocotb/run.py
+
+# one suite
+python sim/cocotb/run.py --suite eth_mac_rx
 
 # reproduce a specific failure (seed is logged by every random test)
 python sim/cocotb/run.py --seed 2506875794
@@ -44,7 +51,26 @@ python sim/cocotb/run.py --test random_heavy_bubble --waves
 Requires `cocotb>=2.0` and Icarus Verilog on `PATH` (both already present on the
 dev bench). It is also wired into `build_and_test.py` as its own phase.
 
-## What the pilot covers (`mii_tx_saf`)
+## Modules covered
+
+### `eth_mac_rx` (RX datapath)
+
+Drives whole GMII wire frames, predicts delivery/`terror`/stats with the RX
+reference model, and checks the AXIS output + per-frame stat pulses:
+
+- **Filtering** — unicast-match, broadcast, foreign (dropped), multicast, plus
+  `promisc`/`passthrough`; a filtered frame yields no AXIS output and no stat.
+- **Error paths** — bad FCS, `rx_er` alignment, and oversize each deliver with
+  `terror` on `tlast` and the matching `stat_err_*` (the MAC flags, the wrapper
+  drops).
+- **Backpressure** — random `tready` stalls during reception (gated so a single
+  frame stays within the RX FIFO); frames stay byte-exact.
+- **Randomized** — seed-logged mix of destinations, sizes, and injected errors.
+
+Mutation-checked: corrupting the FCS residue constant fails all tests; defeating
+the MAC filter fails exactly the tests that send frames which should be dropped.
+
+### `mii_tx_saf` (TX store-and-forward)
 
 Each test drives AXIS stimulus, predicts the transmitted frames with the
 `model.saf_expected` reference model, and checks the MII wire (payload + recomputed
