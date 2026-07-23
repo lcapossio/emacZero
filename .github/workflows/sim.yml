@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 #
-# Lint + simulation regression. Mirrors `python build_and_test.py`.
+# Lint + simulation + cocotb regression. Mirrors `python build_and_test.py`.
 
 name: sim
 
@@ -32,5 +32,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Run lint + simulation
+      - name: Install cocotb
+        # Icarus (installed above) is cocotb's simulator backend. Without this
+        # the cocotb phase (PHASE 2) would skip silently instead of running.
+        run: |
+          pip install "cocotb>=2.0"
+          python -c "import cocotb; print('cocotb', cocotb.__version__)"
+
+      - name: Run lint + simulation + cocotb
         run: python build_and_test.py
