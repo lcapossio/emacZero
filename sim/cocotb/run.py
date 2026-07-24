@@ -41,6 +41,13 @@ SUITES = {
         "test_module": "test_eth_mac_rx",
         "env": {"RX_MAX_FRAME_STD": "1518"},
     },
+    "gmii_cdc": {
+        "toplevel": "gmii_cdc",
+        "sources": ["async_fifo.v", "gmii_cdc.v"],
+        "params": {},
+        "test_module": "test_gmii_cdc",
+        "env": {},
+    },
 }
 
 

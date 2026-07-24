@@ -231,16 +231,23 @@ module gmii_cdc (
     // Committed-frame counter (sys_clk): increments when a frame's EOF byte is
     // accepted, i.e. a whole frame is now buffered. Gray-coded for the CDC to the
     // media domain, where it gates the start of transmission.
-    reg [3:0] tx_frame_wr_count_bin;
-    reg [3:0] tx_frame_wr_count_gray;
+    // Counter width = FIFO addr width + 1. A narrower counter (was 4 bits)
+    // aliases to a false "equal" once 2**width whole frames back up in the FIFO
+    // (16 for 4 bits) - small frames reach that long before the 16K-byte FIFO
+    // fills - deasserting tx_frame_pending_media and wedging the paced media
+    // side. At ADDR_WIDTH+1 bits the byte FIFO fills first, so it cannot alias.
+    localparam FRAME_CNT_W = 15;   // 14 (ADDR_WIDTH) + 1
+    reg [FRAME_CNT_W-1:0] tx_frame_wr_count_bin;
+    reg [FRAME_CNT_W-1:0] tx_frame_wr_count_gray;
+    wire [FRAME_CNT_W-1:0] tx_frame_wr_count_next = tx_frame_wr_count_bin + 1'b1;
     always @(posedge sys_clk or negedge sys_rst_n) begin
         if (!sys_rst_n) begin
-            tx_frame_wr_count_bin  <= 4'd0;
-            tx_frame_wr_count_gray <= 4'd0;
+            tx_frame_wr_count_bin  <= {FRAME_CNT_W{1'b0}};
+            tx_frame_wr_count_gray <= {FRAME_CNT_W{1'b0}};
         end else if (tx_eof_wr) begin
-            tx_frame_wr_count_bin  <= tx_frame_wr_count_bin + 4'd1;
-            tx_frame_wr_count_gray <= (tx_frame_wr_count_bin + 4'd1) ^
-                                       ((tx_frame_wr_count_bin + 4'd1) >> 1);
+            tx_frame_wr_count_bin  <= tx_frame_wr_count_next;
+            tx_frame_wr_count_gray <= tx_frame_wr_count_next ^
+                                      (tx_frame_wr_count_next >> 1);
         end
     end
 
@@ -265,13 +272,13 @@ module gmii_cdc (
         .wr_data_count(tx_fifo_count)
     );
 
-    function [3:0] gray4_to_bin;
-        input [3:0] gray;
+    function [FRAME_CNT_W-1:0] gray_to_bin;
+        input [FRAME_CNT_W-1:0] gray;
+        integer i;
         begin
-            gray4_to_bin[3] = gray[3];
-            gray4_to_bin[2] = gray4_to_bin[3] ^ gray[2];
-            gray4_to_bin[1] = gray4_to_bin[2] ^ gray[1];
-            gray4_to_bin[0] = gray4_to_bin[1] ^ gray[0];
+            gray_to_bin[FRAME_CNT_W-1] = gray[FRAME_CNT_W-1];
+            for (i = FRAME_CNT_W-2; i >= 0; i = i - 1)
+                gray_to_bin[i] = gray_to_bin[i+1] ^ gray[i];
         end
     endfunction
 
@@ -301,22 +308,22 @@ module gmii_cdc (
     // Committed-frame counter CDC into the media domain. tx_frame_pending_media
     // asserts once at least one whole frame has been committed to the FIFO but
     // not yet drained - the store-and-forward start gate.
-    (* ASYNC_REG = "TRUE" *) reg [3:0] tx_frame_wr_count_s1;
-    (* ASYNC_REG = "TRUE" *) reg [3:0] tx_frame_wr_count_s2;
-    (* ASYNC_REG = "TRUE" *) reg [3:0] tx_frame_wr_count_s3;
-    reg [3:0] tx_frame_rd_count_bin;
+    (* ASYNC_REG = "TRUE" *) reg [FRAME_CNT_W-1:0] tx_frame_wr_count_s1;
+    (* ASYNC_REG = "TRUE" *) reg [FRAME_CNT_W-1:0] tx_frame_wr_count_s2;
+    (* ASYNC_REG = "TRUE" *) reg [FRAME_CNT_W-1:0] tx_frame_wr_count_s3;
+    reg [FRAME_CNT_W-1:0] tx_frame_rd_count_bin;
     always @(posedge media_clk or negedge media_rst_n_s2) begin
         if (!media_rst_n_s2) begin
-            tx_frame_wr_count_s1 <= 4'd0;
-            tx_frame_wr_count_s2 <= 4'd0;
-            tx_frame_wr_count_s3 <= 4'd0;
+            tx_frame_wr_count_s1 <= {FRAME_CNT_W{1'b0}};
+            tx_frame_wr_count_s2 <= {FRAME_CNT_W{1'b0}};
+            tx_frame_wr_count_s3 <= {FRAME_CNT_W{1'b0}};
         end else begin
             tx_frame_wr_count_s1 <= tx_frame_wr_count_gray;
             tx_frame_wr_count_s2 <= tx_frame_wr_count_s1;
             tx_frame_wr_count_s3 <= tx_frame_wr_count_s2;
         end
     end
-    wire [3:0] tx_frame_wr_count_media = gray4_to_bin(tx_frame_wr_count_s3);
+    wire [FRAME_CNT_W-1:0] tx_frame_wr_count_media = gray_to_bin(tx_frame_wr_count_s3);
     wire       tx_frame_pending_media  =
                    (tx_frame_wr_count_media != tx_frame_rd_count_bin);
 
@@ -346,7 +353,7 @@ module gmii_cdc (
             tx_frame_loaded       <= 1'b0;
             tx_frame_end          <= 1'b0;
             tx_start_delay        <= 6'd0;
-            tx_frame_rd_count_bin <= 4'd0;
+            tx_frame_rd_count_bin <= {FRAME_CNT_W{1'b0}};
             pace_cnt              <= 10'd0;
         end else begin
             tx_rd_en <= 1'b0;
@@ -373,10 +380,21 @@ module gmii_cdc (
                     end
                 end else if (tx_frame_end) begin
                     // Emitted the EOF byte last cycle; close out the frame.
+                    // Advance past the EOF word: its per-byte advance is
+                    // suppressed above (don't prefetch past EOF), so without this
+                    // the read pointer would be left sitting on the EOF byte. The
+                    // next paced frame would then emit that stale byte as its
+                    // first byte, see EOF, and end immediately - a phantom frame
+                    // that orphans the real frame in the FIFO. Only in the paced
+                    // modes: at 1G the every-cycle prefetch already realigns the
+                    // read pointer, so an extra advance there would skip the next
+                    // frame's first byte.
+                    if (!is_1g)
+                        tx_rd_en          <= 1'b1;
                     gmii_tx_en_out        <= 1'b0;
                     tx_frame_loaded       <= 1'b0;
                     tx_frame_end          <= 1'b0;
-                    tx_frame_rd_count_bin <= tx_frame_rd_count_bin + 4'd1;
+                    tx_frame_rd_count_bin <= tx_frame_rd_count_bin + 1'b1;
                 end else if (!tx_rd_empty) begin
                     if (pace_tick) begin
                         gmii_txd_out   <= tx_rd_data[7:0];

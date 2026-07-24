@@ -77,6 +77,19 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `gmii_cdc` paced-TX phantom-frame stall: in 100M/10M the read pointer was left
+  parked on a frame's EOF word (its per-byte prefetch is suppressed on EOF), so
+  the next paced frame emitted that stale EOF byte, ended after one cycle, and
+  orphaned the real frame in the FIFO - dropping every frame after the first.
+  The frame close-out now advances the read pointer past the EOF word in the
+  paced modes only (1G's every-cycle prefetch already realigns it). Regression
+  `test_gmii_cdc.directed_100m` / `directed_10m`.
+- `gmii_cdc` paced-TX committed-counter wrap (same class as the `mii_tx_saf` fix
+  below): a 4-bit committed-frame counter aliased once 16 whole frames backed up
+  in the 16 KB TX FIFO, deasserting the store-and-forward start gate and wedging
+  the media side long before the FIFO filled. Widened the counter and its gray
+  CDC to `ADDR_WIDTH+1` (15) bits so the byte FIFO fills first. Regression
+  `test_gmii_cdc.burst_small_frames_100m` (20 small frames).
 - `mii_tx_saf` TX deadlock (committed-frame counter wrap): a 4-bit committed
   frame counter aliased to a false "equal" once 16 frames backed up in the 4 KB
   FIFO, parking the framer in idle. Widened the counter to `FIFO_ADDR_WIDTH+1`

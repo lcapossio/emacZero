@@ -25,9 +25,13 @@ sim/cocotb/
     gmii_rx_driver.py  GMII input driver (preamble/SFD/FCS, FCS-corrupt, rx_er)
     axis_sink.py     AXIS slave with backpressure; reassembles frames + terror
     rx_model.py      eth_mac_rx filter/error/stats reference model + scoreboard
+    gmii_tx_driver.py  contiguous GMII byte frames on the sys-clock TX input
+    gmii_tx_monitor.py paced media-side monitor (byte-exact 1G; span->len 100M/10M)
+    gmii_cdc_model.py  identity CDC reference model + scoreboard
   tests/
     test_mii_tx_saf.py   directed boundaries + seed-logged random (TX store-and-forward)
     test_eth_mac_rx.py   filter/error/backpressure + seed-logged random (RX datapath)
+    test_gmii_cdc.py     paced TX CDC across 1G/100M/10M + committed-counter burst probe
   run.py          build + run entry point (SUITES table; Icarus today)
   smoke/          toolchain smoke (cocotb + Icarus VPI sanity)
 ```
@@ -88,6 +92,24 @@ The reference model encodes the DUT's commit/truncate/drop policy, so a randomiz
 run has a precise expected result — not just a "didn't hang" check. The suite is
 **mutation-checked**: disabling the oversize-guard cap in the RTL makes it fail
 (wedge → per-test timeout), confirming it would catch a regression of that bug.
+
+### `gmii_cdc` (TX store-and-forward CDC)
+
+Drives contiguous GMII frames on the sys-clock input and checks the paced
+media-side output is byte-for-byte identical, in order, across 1G/100M/10M (the
+CDC is a content-identity re-timer). The monitor is byte-exact at 1G; at 100M/10M
+repeated payload bytes are indistinguishable from a held byte, so it checks the
+delivered frame count and each frame's length (inferred from the `tx_en` span).
+
+- **Directed** — mixed sizes byte-exact at 1G; length/count-exact at 100M/10M.
+- **Burst probe** — 20 back-to-back small frames at 100M: the sys side commits
+  many frames before the paced media side drains them, stressing the
+  committed-frame counter (the `mii_tx_saf`-class wrap hazard).
+- **Randomized** — seed-logged size/gap/speed mix.
+
+**Mutation-checked**: narrowing the committed counter back to 4 bits wedges the
+burst probe at 4/20 (= 20 mod 16); removing the paced EOF-advance fix drops every
+frame after the first at 100M/10M. Both are the real bugs this suite found.
 
 ## Adding a module
 
