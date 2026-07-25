@@ -77,6 +77,18 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `gmii_cdc` RX multi-frame byte-drop: the sys-side readout returned to idle at
+  each frame's EOF and re-ran its "align" pre-consume on the next frame - correct
+  on a cold start out of empty, but on a frame boundary (next frame already
+  buffered, first-word-fall-through FIFO) it consumed and dropped that frame's
+  first byte. Every frame after the first lost byte 0. The readout now stays in
+  its reading state across the EOF marker so the following frame's first byte is
+  taken by the normal data path. Regression `test_gmii_cdc.rx_directed`.
+- `gmii_cdc` RX committed-frame-counter wrap (same class as the TX/`mii_tx_saf`
+  fixes): a 4-bit `rx_frames_pending` counter aliased once 16 frames buffered, so
+  under a slow sys drain small frames piled up past 16 long before the 4K RX FIFO
+  filled - `rx_frame_ready` read false and the readout stalled. Widened to
+  `ADDR_WIDTH+1` (13) bits. Regression `test_gmii_cdc.rx_burst_wrap_probe`.
 - `gmii_cdc` paced-TX phantom-frame stall: in 100M/10M the read pointer was left
   parked on a frame's EOF word (its per-byte prefetch is suppressed on EOF), so
   the next paced frame emitted that stale EOF byte, ended after one cycle, and

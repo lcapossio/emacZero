@@ -15,6 +15,8 @@ from cocotb.triggers import RisingEdge, ReadOnly
 
 from lib.gmii_tx_driver import GmiiTxDriver
 from lib.gmii_tx_monitor import GmiiTxMonitor
+from lib.gmii_rx_cdc_driver import GmiiRxCdcDriver
+from lib.gmii_rx_cdc_monitor import GmiiRxCdcMonitor
 from lib.gmii_cdc_model import gmii_tx_expected, GmiiTxScoreboard
 
 SYS_NS = 10        # 100 MHz system clock
@@ -23,8 +25,8 @@ SPEED = {"1G": 0b00, "100M": 0b01, "10M": 0b10}
 PERIOD = {"1G": 1, "100M": 10, "10M": 100}    # media cycles per emitted byte
 
 
-async def _setup(dut, speed):
-    cocotb.start_soon(Clock(dut.sys_clk, SYS_NS, unit="ns").start())
+async def _setup(dut, speed, sys_ns=SYS_NS):
+    cocotb.start_soon(Clock(dut.sys_clk, sys_ns, unit="ns").start())
     cocotb.start_soon(Clock(dut.media_clk, MEDIA_NS, unit="ns").start())
     cocotb.start_soon(Clock(dut.media_rx_clk, MEDIA_NS, unit="ns").start())
     dut.cfg_speed.value = SPEED[speed]
@@ -119,6 +121,87 @@ async def burst_small_frames_100m(dut):
     aliases, media stops early and frames are stuck."""
     frames = [_frame(64, 0x40 + i) for i in range(20)]
     await _run(dut, frames, "100M", gap=1)
+
+
+# --------------------------------------------------------------------------- #
+# RX path: media_rx GMII -> sys GMII (byte-exact, unpaced)
+# --------------------------------------------------------------------------- #
+async def _rx_run(dut, frames, gap=6, timeout_cycles=200_000, sys_ns=SYS_NS):
+    """Drive raw frames on the media_rx side; check the sys-side output is
+    byte-for-byte identical, in order. A small gap (>=1 idle cycle) is required
+    to delimit frames - GMII marks a frame by rx_dv, so continuous rx_dv is one
+    frame. A slower sys clock (sys_ns) makes the sys readout drain much slower
+    than the 125 MHz media_rx fills, so committed frames pile up in the RX FIFO
+    and drive rx_frames_pending past its old 4-bit range (the wrap probe)."""
+    mon = await _setup(dut, "1G", sys_ns=sys_ns)  # cfg_speed only paces TX; RX unpaced
+    rx_mon = GmiiRxCdcMonitor(dut)
+    cocotb.start_soon(rx_mon.run())
+    drv = GmiiRxCdcDriver(dut)
+    await drv.idle(4)
+    for f in frames:
+        await drv.send_frame(f, gap=gap)
+    await drv.idle(64)
+
+    for _ in range(timeout_cycles):
+        await RisingEdge(dut.sys_clk)
+        await ReadOnly()
+        if rx_mon.count >= len(frames):
+            break
+    else:
+        raise AssertionError(
+            f"RX timeout: {rx_mon.count}/{len(frames)} frames drained "
+            f"(possible rx_frames_pending wrap wedge)")
+
+    exp = [bytes(f) for f in frames]
+    assert rx_mon.count == len(exp), \
+        f"RX frame count: expected {len(exp)}, delivered {rx_mon.count}"
+    assert rx_mon.frames == exp, \
+        f"RX mismatch: first bad frame " + next(
+            (f"#{i}: exp {e[:8].hex()} got {o[:8].hex()}"
+             for i, (e, o) in enumerate(zip(exp, rx_mon.frames)) if e != o), "?")
+    dut._log.info(f"OK [RX]: {len(frames)} frames byte-exact")
+    return rx_mon
+
+
+@cocotb.test(timeout_time=20, timeout_unit="ms")
+async def rx_directed(dut):
+    frames = [_frame(64, 0x10), _frame(128, 0x60), _frame(60, 0xA0), _frame(300, 0x01)]
+    await _rx_run(dut, frames, gap=6)
+
+
+@cocotb.test(timeout_time=20, timeout_unit="ms")
+async def rx_error_flag(dut):
+    """rx_er must ride through the CDC on the same byte it was asserted."""
+    mon = await _setup(dut, "1G")
+    rx_mon = GmiiRxCdcMonitor(dut)
+    cocotb.start_soon(rx_mon.run())
+    drv = GmiiRxCdcDriver(dut)
+    await drv.idle(4)
+    data = _frame(64, 0x22)
+    er = [1 if i in (10, 11, 40) else 0 for i in range(len(data))]
+    await drv.send_frame(data, gap=6, er=er)
+    await drv.idle(64)
+    for _ in range(20_000):
+        await RisingEdge(dut.sys_clk)
+        await ReadOnly()
+        if rx_mon.count >= 1:
+            break
+    assert rx_mon.count == 1, f"expected 1 RX frame, got {rx_mon.count}"
+    assert rx_mon.frames[0] == data, "RX data corrupted"
+    assert rx_mon.frame_ers[0] == er, \
+        f"rx_er misaligned: exp {er}, got {rx_mon.frame_ers[0]}"
+    dut._log.info("OK [RX]: rx_er byte-aligned through CDC")
+
+
+@cocotb.test(timeout_time=40, timeout_unit="ms")
+async def rx_burst_wrap_probe(dut):
+    """30 tightly-spaced min frames on the 125 MHz media_rx side, drained by a
+    deliberately slow 25 MHz sys clock (~5x slower). Frames pile up in the RX
+    FIFO so rx_frames_pending peaks well above 16; if that counter aliases (was
+    4 bits) the sys readout stalls and frames are lost/stuck - even though the
+    ~30 buffered frames are far from filling the 4K RX FIFO."""
+    frames = [_frame(64, 0x30 + i) for i in range(30)]
+    await _rx_run(dut, frames, gap=1, sys_ns=40, timeout_cycles=400_000)
 
 
 # --------------------------------------------------------------------------- #

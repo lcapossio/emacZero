@@ -115,7 +115,14 @@ module gmii_cdc (
     // Frame availability tracking (sys_clk domain)
     (* ASYNC_REG = "TRUE" *) reg rx_toggle_s1, rx_toggle_s2, rx_toggle_s3;
     reg [7:0]  rx_avail_delay;
-    reg [3:0]  rx_frames_pending;
+    // Width = RX FIFO addr width + 1 (RX_CNT_W). A 4-bit counter aliased once 16
+    // frames buffered: under sustained line rate the 125 MHz media_rx side fills
+    // faster than the (slower) sys side drains, so small frames pile up well past
+    // 16 long before the 4K RX FIFO fills - the counter wrapped, rx_frame_ready
+    // read false, and the readout stalled. At ADDR_WIDTH+1 bits the FIFO fills
+    // first, so it cannot alias.
+    localparam RX_CNT_W = 13;   // 12 (RX FIFO ADDR_WIDTH) + 1
+    reg [RX_CNT_W-1:0] rx_frames_pending;
     reg        rx_frame_done_pulse;
     reg        rx_reading;
 
@@ -129,7 +136,7 @@ module gmii_cdc (
             rx_toggle_s2    <= 1'b0;
             rx_toggle_s3    <= 1'b0;
             rx_avail_delay  <= 8'd0;
-            rx_frames_pending <= 4'd0;
+            rx_frames_pending <= {RX_CNT_W{1'b0}};
         end else begin
             rx_toggle_s1 <= rx_frame_toggle;
             rx_toggle_s2 <= rx_toggle_s1;
@@ -137,9 +144,9 @@ module gmii_cdc (
             rx_avail_delay <= {rx_avail_delay[6:0], rx_frame_avail};
 
             case ({rx_frame_avail_d, rx_frame_done_pulse})
-                2'b10: rx_frames_pending <= rx_frames_pending + 4'd1;
-                2'b01: if (rx_frames_pending != 4'd0)
-                           rx_frames_pending <= rx_frames_pending - 4'd1;
+                2'b10: rx_frames_pending <= rx_frames_pending + 1'b1;
+                2'b01: if (rx_frames_pending != {RX_CNT_W{1'b0}})
+                           rx_frames_pending <= rx_frames_pending - 1'b1;
                 default: ;
             endcase
         end
@@ -163,9 +170,16 @@ module gmii_cdc (
             if (rx_reading) begin
                 if (!rx_rd_empty) begin
                     if (rx_rd_data[9]) begin
+                        // EOF marker: end this frame (consume it, do not output).
+                        // Stay in rx_reading so any following frame's first byte
+                        // is read by the normal data path below. Dropping to idle
+                        // here would re-enter the "align" pre-consume at the next
+                        // frame start and skip that frame's byte 0 (the byte-drop
+                        // that only appears once a next frame is already buffered).
                         rx_rd_en            <= 1'b1;
-                        rx_reading          <= 1'b0;
                         rx_frame_done_pulse <= 1'b1;
+                        if (!rx_frame_ready)
+                            rx_reading <= 1'b0;
                     end else begin
                         gmii_rxd_out   <= rx_rd_data[7:0];
                         gmii_rx_dv_out <= 1'b1;
@@ -176,8 +190,11 @@ module gmii_cdc (
                     rx_reading <= 1'b0;
                 end
             end else if (rx_frame_ready && !rx_rd_empty) begin
+                // Cold start out of empty: the FIFO/pointer are not settled for a
+                // direct output, so burn one "align" read; byte 0 falls through to
+                // rx_rd_data next cycle for the reading path above.
                 rx_reading <= 1'b1;
-                rx_rd_en   <= 1'b1;  // align first readable word from behavioral FIFO
+                rx_rd_en   <= 1'b1;
             end
         end
     end

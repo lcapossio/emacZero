@@ -27,11 +27,13 @@ sim/cocotb/
     rx_model.py      eth_mac_rx filter/error/stats reference model + scoreboard
     gmii_tx_driver.py  contiguous GMII byte frames on the sys-clock TX input
     gmii_tx_monitor.py paced media-side monitor (byte-exact 1G; span->len 100M/10M)
+    gmii_rx_cdc_driver.py  raw-GMII media-side RX driver (rx_dv-delimited frames)
+    gmii_rx_cdc_monitor.py sys-side RX monitor (byte-exact; per-byte rx_er)
     gmii_cdc_model.py  identity CDC reference model + scoreboard
   tests/
     test_mii_tx_saf.py   directed boundaries + seed-logged random (TX store-and-forward)
     test_eth_mac_rx.py   filter/error/backpressure + seed-logged random (RX datapath)
-    test_gmii_cdc.py     paced TX CDC across 1G/100M/10M + committed-counter burst probe
+    test_gmii_cdc.py     TX+RX CDC across 1G/100M/10M + committed-counter burst probes
   run.py          build + run entry point (SUITES table; Icarus today)
   smoke/          toolchain smoke (cocotb + Icarus VPI sanity)
 ```
@@ -101,15 +103,22 @@ CDC is a content-identity re-timer). The monitor is byte-exact at 1G; at 100M/10
 repeated payload bytes are indistinguishable from a held byte, so it checks the
 delivered frame count and each frame's length (inferred from the `tx_en` span).
 
-- **Directed** — mixed sizes byte-exact at 1G; length/count-exact at 100M/10M.
-- **Burst probe** — 20 back-to-back small frames at 100M: the sys side commits
+- **TX directed** — mixed sizes byte-exact at 1G; length/count-exact at 100M/10M.
+- **TX burst probe** — 20 back-to-back small frames at 100M: the sys side commits
   many frames before the paced media side drains them, stressing the
   committed-frame counter (the `mii_tx_saf`-class wrap hazard).
+- **RX directed** — media-side frames byte-exact on the sys output (the RX
+  readout is unpaced), plus per-byte `rx_er` alignment through the CDC.
+- **RX burst probe** — tight media-side frames drained by a deliberately slow sys
+  clock, so committed frames pile up past 16 and stress `rx_frames_pending`.
 - **Randomized** — seed-logged size/gap/speed mix.
 
-**Mutation-checked**: narrowing the committed counter back to 4 bits wedges the
-burst probe at 4/20 (= 20 mod 16); removing the paced EOF-advance fix drops every
-frame after the first at 100M/10M. Both are the real bugs this suite found.
+**Mutation-checked**, and every mutation is a real bug this suite found:
+narrowing the TX committed counter to 4 bits wedges its burst probe at 4/20
+(= 20 mod 16); removing the paced EOF-advance drops every TX frame after the
+first at 100M/10M; narrowing `rx_frames_pending` to 4 bits wedges the RX burst
+at 15/30; reverting the RX readout to re-align at each EOF drops byte 0 of every
+frame after the first.
 
 ## Adding a module
 
