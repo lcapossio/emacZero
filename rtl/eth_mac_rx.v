@@ -103,7 +103,7 @@ module eth_mac_rx #(
                          (mac_chk == 48'hFFFFFFFFFFFF) ||
                          promisc || passthrough ||
                          (MCAST_HASH_FILTER &&
-                          mac_chk[0] &&
+                          mac_chk[40] &&
                           mac_chk != 48'hFFFFFFFFFFFF &&
                           mcast_hash_table[mcast_hash_idx]);
 
@@ -292,7 +292,7 @@ module eth_mac_rx #(
                                 mac_chk == 48'hFFFFFFFFFFFF ||
                                 promisc || passthrough ||
                                 (MCAST_HASH_FILTER &&
-                                 mac_chk[0] &&
+                                 mac_chk[40] &&
                                  mac_chk != 48'hFFFFFFFFFFFF &&
                                  mcast_hash_table[mcast_hash_idx]))
                                 mac_ok <= 1'b1;

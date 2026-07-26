@@ -31,9 +31,10 @@ sim/cocotb/
     gmii_rx_cdc_monitor.py sys-side RX monitor (byte-exact; per-byte rx_er)
     gmii_cdc_model.py  identity CDC reference model + scoreboard
   tests/
-    test_mii_tx_saf.py   directed boundaries + seed-logged random (TX store-and-forward)
-    test_eth_mac_rx.py   filter/error/backpressure + seed-logged random (RX datapath)
-    test_gmii_cdc.py     TX+RX CDC across 1G/100M/10M + committed-counter burst probes
+    test_mii_tx_saf.py       directed boundaries + seed-logged random (TX store-and-forward)
+    test_eth_mac_rx.py       filter/error/backpressure + seed-logged random (RX datapath)
+    test_eth_mac_rx_mcast.py multicast hash filter (MCAST_HASH_FILTER=1 build)
+    test_gmii_cdc.py         TX+RX CDC across 1G/100M/10M + committed-counter burst probes
   run.py          build + run entry point (SUITES table; Icarus today)
   smoke/          toolchain smoke (cocotb + Icarus VPI sanity)
 ```
@@ -76,6 +77,14 @@ reference model, and checks the AXIS output + per-frame stat pulses:
 Mutation-checked: corrupting the FCS residue constant fails all tests; defeating
 the MAC filter fails exactly the tests that send frames which should be dropped.
 
+A separate `eth_mac_rx_mcast` suite builds the module with `MCAST_HASH_FILTER=1`
+and drives the 64-bit hash table directly (the default suite runs the filter off,
+and `rx_model.py` does not model it). It pins the hash-admit gate to the I/G bit:
+a hashed group address is admitted (even with an even last octet), an unhashed
+group address is dropped, and a unicast that collides with a set bucket is not
+leaked. Mutation-checked: reverting the admit bit to `mac_chk[0]` fails the
+admit-a-group and don't-leak-a-unicast cases in opposite directions.
+
 ### `mii_tx_saf` (TX store-and-forward)
 
 Each test drives AXIS stimulus, predicts the transmitted frames with the
@@ -111,6 +120,10 @@ delivered frame count and each frame's length (inferred from the `tx_en` span).
   readout is unpaced), plus per-byte `rx_er` alignment through the CDC.
 - **RX burst probe** — tight media-side frames drained by a deliberately slow sys
   clock, so committed frames pile up past 16 and stress `rx_frames_pending`.
+- **Error passthrough** — `gmii_tx_er_in`/`rx_er` must ride the CDC on the same
+  byte they were asserted (byte-exact at 1G).
+- **Paced last-byte hold** — at 100M the final byte must occupy the full pace
+  interval (raw `tx_en` span = `len*period`), not a single cycle.
 - **Randomized** — seed-logged size/gap/speed mix.
 
 **Mutation-checked**, and every mutation is a real bug this suite found:
@@ -118,7 +131,9 @@ narrowing the TX committed counter to 4 bits wedges its burst probe at 4/20
 (= 20 mod 16); removing the paced EOF-advance drops every TX frame after the
 first at 100M/10M; narrowing `rx_frames_pending` to 4 bits wedges the RX burst
 at 15/30; reverting the RX readout to re-align at each EOF drops byte 0 of every
-frame after the first.
+frame after the first; hard-wiring `gmii_tx_er_out` to 0 fails the error
+passthrough; closing out the paced frame one cycle early shortens the last
+byte's span from `len*period` to `(len-1)*period+1`.
 
 ## Adding a module
 

@@ -77,6 +77,21 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `eth_mac_rx` multicast-hash filter gated on the wrong bit: the hash-admit term
+  tested `mac_chk[0]` (LSB of the last dst octet) instead of `mac_chk[40]` (the
+  I/G bit, dst byte 0 LSB) - so with `MCAST_HASH_FILTER=1` a genuine group address
+  whose last octet was even was rejected, and a unicast with an odd last octet and
+  a colliding hash bucket was admitted. Both admit sites now use `mac_chk[40]`,
+  matching the neighboring `is_mcast_r`. Regression suite `eth_mac_rx_mcast`.
+- `gmii_cdc` TX error input was dropped: `gmii_tx_er_in` was never captured and
+  `gmii_tx_er_out` was hard-wired 0, so a MAC-signalled transmit error never
+  reached the media side (the RX path already carried `rx_er`). The TX FIFO word
+  gained a per-byte error lane (9 -> 10 bits) that re-drives `gmii_tx_er_out`.
+  Regression `test_gmii_cdc.tx_error_flag`.
+- `gmii_cdc` paced-TX held the final (EOF) byte for only 1 media cycle instead of
+  the full pace interval at 100M/10M, so a paced downstream could mis-sample the
+  last byte. The frame now closes out at the next `pace_tick`, giving the last
+  byte its full `period`. Regression `test_gmii_cdc.paced_last_byte_hold_100m`.
 - `gmii_cdc` RX multi-frame byte-drop: the sys-side readout returned to idle at
   each frame's EOF and re-ran its "align" pre-consume on the next frame - correct
   on a cold start out of empty, but on a frame boundary (next frame already

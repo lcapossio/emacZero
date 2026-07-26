@@ -41,6 +41,13 @@ SUITES = {
         "test_module": "test_eth_mac_rx",
         "env": {"RX_MAX_FRAME_STD": "1518"},
     },
+    "eth_mac_rx_mcast": {
+        "toplevel": "eth_mac_rx",
+        "sources": ["crc32.v", "sync_fifo.v", "eth_mac_rx.v"],
+        "params": {"MAX_FRAME_STD": 1518, "MCAST_HASH_FILTER": 1},
+        "test_module": "test_eth_mac_rx_mcast",
+        "env": {"RX_MAX_FRAME_STD": "1518"},
+    },
     "gmii_cdc": {
         "toplevel": "gmii_cdc",
         "sources": ["async_fifo.v", "gmii_cdc.v"],

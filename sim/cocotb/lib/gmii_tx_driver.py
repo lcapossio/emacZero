@@ -17,18 +17,20 @@ class GmiiTxDriver:
         dut.gmii_tx_en_in.value = 0
         dut.gmii_tx_er_in.value = 0
 
-    async def _beat(self, data, en):
+    async def _beat(self, data, en, er=0):
         self.dut.gmii_txd_in.value = data
         self.dut.gmii_tx_en_in.value = en
-        self.dut.gmii_tx_er_in.value = 0
+        self.dut.gmii_tx_er_in.value = er
         await RisingEdge(self.dut.sys_clk)
 
     async def idle(self, cycles):
         for _ in range(cycles):
             await self._beat(0, 0)
 
-    async def send_frame(self, data: bytes, gap=2):
-        for b in data:
-            await self._beat(b, 1)
+    async def send_frame(self, data: bytes, gap=2, er=None):
+        """er: optional iterable of 0/1 per byte (gmii_tx_er_in), else all 0."""
+        er = list(er) if er is not None else [0] * len(data)
+        for i, b in enumerate(data):
+            await self._beat(b, 1, er[i])
         await self._beat(0, 0)        # tx_en low -> EOF on the last byte
         await self.idle(max(0, gap - 1))

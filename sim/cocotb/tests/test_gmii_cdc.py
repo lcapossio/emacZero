@@ -111,6 +111,44 @@ async def directed_10m(dut):
     await _run(dut, frames, "10M")
 
 
+@cocotb.test(timeout_time=20, timeout_unit="ms")
+async def paced_last_byte_hold_100m(dut):
+    """Every byte - including the last - must occupy the full pace interval, so a
+    frame's tx_en span is len*period. If the EOF byte is held only 1 cycle the
+    span is (len-1)*period+1; the frame_lens formula masks that, raw span does not."""
+    period = PERIOD["100M"]
+    mon = await _setup(dut, "100M")
+    drv = GmiiTxDriver(dut)
+    await drv.idle(4)
+    frames = [_frame(64, 0x20), _frame(97, 0x50)]
+    for f in frames:
+        await drv.send_frame(f, gap=4)
+    await _drain(dut, mon, len(frames), 300_000)
+    exp = [len(f) * period for f in frames]
+    assert mon.frame_spans == exp, \
+        f"last byte not held full interval: spans {mon.frame_spans}, expected {exp}"
+    dut._log.info(f"OK [100M]: last byte held full {period}-cycle interval")
+
+
+# --------------------------------------------------------------------------- #
+# TX error passthrough (gmii_tx_er_in -> gmii_tx_er_out, per byte)
+# --------------------------------------------------------------------------- #
+@cocotb.test(timeout_time=15, timeout_unit="ms")
+async def tx_error_flag(dut):
+    """gmii_tx_er_in must ride through the CDC on the same byte, byte-exact at 1G."""
+    mon = await _setup(dut, "1G")
+    drv = GmiiTxDriver(dut)
+    await drv.idle(4)
+    data = _frame(64, 0x20)
+    er = [1 if i in (5, 6, 63) else 0 for i in range(len(data))]
+    await drv.send_frame(data, gap=3, er=er)
+    await _drain(dut, mon, 1, 300_000)
+    assert mon.frames and mon.frames[0] == data, "TX data corrupted"
+    assert mon.frame_ers[0] == er, \
+        f"tx_er misaligned: exp {er}, got {mon.frame_ers[0]}"
+    dut._log.info("OK [1G]: tx_er byte-aligned through CDC")
+
+
 # --------------------------------------------------------------------------- #
 # Committed-frame-counter burst probe (the mii_tx_saf-class wrap hazard)
 # --------------------------------------------------------------------------- #

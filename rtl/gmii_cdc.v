@@ -212,28 +212,33 @@ module gmii_cdc (
     // exactly when tx_data_d1 still holds that last byte.
     reg        tx_en_d1;
     reg  [7:0] tx_data_d1;
+    reg        tx_er_d1;
     reg        tx_valid_d1;
     always @(posedge sys_clk or negedge sys_rst_n) begin
         if (!sys_rst_n) begin
             tx_en_d1    <= 1'b0;
             tx_data_d1  <= 8'd0;
+            tx_er_d1    <= 1'b0;
             tx_valid_d1 <= 1'b0;
         end else begin
             tx_en_d1    <= gmii_tx_en_in;
             tx_data_d1  <= gmii_txd_in;
+            tx_er_d1    <= gmii_tx_er_in;   // rides with its byte through the FIFO
             tx_valid_d1 <= gmii_tx_en_in;
         end
     end
     wire tx_en_fall = tx_en_d1 && !gmii_tx_en_in;
 
-    // FIFO word: [8] = EOF (set on the frame's last byte), [7:0] = data.
-    wire [8:0] tx_wr_data   = {tx_en_fall, tx_data_d1};
+    // FIFO word: [9] = error (per byte), [8] = EOF (set on the frame's last byte),
+    // [7:0] = data. The error bit carries gmii_tx_er_in across the CDC so the
+    // media side can re-drive gmii_tx_er_out, mirroring the RX rx_er path.
+    wire [9:0] tx_wr_data   = {tx_er_d1, tx_en_fall, tx_data_d1};
     wire       tx_wr_en     = tx_valid_d1;
     wire       tx_wr_full;
     wire       tx_wr_accept = tx_wr_en && !tx_wr_full;
     wire       tx_eof_wr    = tx_wr_accept && tx_wr_data[8];
 
-    wire [8:0] tx_rd_data;
+    wire [9:0] tx_rd_data;
     wire       tx_rd_empty;
     reg        tx_rd_en;
 
@@ -275,7 +280,7 @@ module gmii_cdc (
     assign tx_busy       = (tx_fifo_count > TX_START_LIMIT);
 
     // TX data + EOF packet FIFO: sys_clk -> media_clk (16K words for jumbo)
-    async_fifo #(.DATA_WIDTH(9), .ADDR_WIDTH(14)) u_tx_fifo (
+    async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(14)) u_tx_fifo (
         .wr_clk  (sys_clk),
         .wr_rst_n(sys_rst_n),
         .wr_data (tx_wr_data),
@@ -396,27 +401,33 @@ module gmii_cdc (
                         pace_cnt <= 10'd0;
                     end
                 end else if (tx_frame_end) begin
-                    // Emitted the EOF byte last cycle; close out the frame.
-                    // Advance past the EOF word: its per-byte advance is
-                    // suppressed above (don't prefetch past EOF), so without this
-                    // the read pointer would be left sitting on the EOF byte. The
-                    // next paced frame would then emit that stale byte as its
-                    // first byte, see EOF, and end immediately - a phantom frame
-                    // that orphans the real frame in the FIFO. Only in the paced
-                    // modes: at 1G the every-cycle prefetch already realigns the
-                    // read pointer, so an extra advance there would skip the next
-                    // frame's first byte.
-                    if (!is_1g)
-                        tx_rd_en          <= 1'b1;
-                    gmii_tx_en_out        <= 1'b0;
-                    tx_frame_loaded       <= 1'b0;
-                    tx_frame_end          <= 1'b0;
-                    tx_frame_rd_count_bin <= tx_frame_rd_count_bin + 1'b1;
+                    // The EOF byte was emitted at the last pace_tick. Hold it (and
+                    // gmii_tx_en_out) for its full pace interval - close out only
+                    // at the NEXT pace_tick, so the final byte occupies `period`
+                    // media cycles like every other byte instead of just one (a
+                    // 1-cycle last byte can be mis-sampled by a paced downstream).
+                    // At 1G pace_tick is always asserted, so this closes out the
+                    // next cycle exactly as before.
+                    if (pace_tick) begin
+                        // Advance past the EOF word: its per-byte advance is
+                        // suppressed above (don't prefetch past EOF), so without
+                        // this the read pointer would be left on the EOF byte and
+                        // the next paced frame would emit that stale byte, see EOF,
+                        // and end immediately - a phantom frame that orphans the
+                        // real frame. Paced modes only: at 1G the every-cycle
+                        // prefetch already realigns the pointer.
+                        if (!is_1g)
+                            tx_rd_en          <= 1'b1;
+                        gmii_tx_en_out        <= 1'b0;
+                        tx_frame_loaded       <= 1'b0;
+                        tx_frame_end          <= 1'b0;
+                        tx_frame_rd_count_bin <= tx_frame_rd_count_bin + 1'b1;
+                    end
                 end else if (!tx_rd_empty) begin
                     if (pace_tick) begin
                         gmii_txd_out   <= tx_rd_data[7:0];
                         gmii_tx_en_out <= 1'b1;
-                        gmii_tx_er_out <= 1'b0;
+                        gmii_tx_er_out <= tx_rd_data[9];  // per-byte error passthrough
                         if (tx_rd_data[8])
                             tx_frame_end <= 1'b1;   // last byte of the frame
                     end

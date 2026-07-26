@@ -24,6 +24,8 @@ class GmiiTxMonitor:
         self.period = period
         self.frames = []
         self.frame_lens = []
+        self.frame_spans = []    # raw tx_en-high cycle span per frame (any speed)
+        self.frame_ers = []      # per-frame list of gmii_tx_er_out (valid at period 1)
         self.count = 0
 
     async def run(self):
@@ -31,6 +33,7 @@ class GmiiTxMonitor:
         prev_en = 0
         span = 0
         cur = bytearray()
+        cur_er = []
         while True:
             await RisingEdge(dut.media_clk)
             await ReadOnly()
@@ -39,6 +42,7 @@ class GmiiTxMonitor:
                 span += 1
                 if self.period == 1:
                     cur.append(int(dut.gmii_txd_out.value) & 0xFF)
+                    cur_er.append(int(dut.gmii_tx_er_out.value))
             elif prev_en:                         # tx_en fell -> span complete
                 # At 100M/10M the DUT briefly asserts tx_en_out for a single cycle
                 # with stale data between frames (a reload artifact - absent at 1G).
@@ -46,11 +50,14 @@ class GmiiTxMonitor:
                 # sub-2-cycle spans. FLAGGED as an observation, not silently hidden.
                 if span > 1:
                     self.count += 1
+                    self.frame_spans.append(span)
                     if self.period == 1:
                         self.frames.append(bytes(cur))
                         self.frame_lens.append(len(cur))
+                        self.frame_ers.append(cur_er)
                     else:
                         self.frame_lens.append((span - 1) // self.period + 1)
                 cur = bytearray()
+                cur_er = []
                 span = 0
             prev_en = en
