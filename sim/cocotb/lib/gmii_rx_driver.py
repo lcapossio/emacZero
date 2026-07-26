@@ -27,17 +27,27 @@ class GmiiRxDriver:
         for _ in range(cycles):
             await self._beat(0, 0, 0)
 
-    async def send_frame(self, payload: bytes, corrupt_fcs=False, align_err=False):
+    async def send_frame(self, payload: bytes, corrupt_fcs=False, align_err=False,
+                         er_wire_idx=None):
         """payload = dst+src+type+data (no preamble/FCS). Returns nothing; the
-        model predicts the expected result from the same descriptor."""
+        model predicts the expected result from the same descriptor.
+
+        er_wire_idx: assert rx_er on an absolute wire-byte index (0..6 = preamble,
+        7 = SFD, 8+ = payload), overriding align_err. Used to test rx_er on
+        preamble/SFD bytes, not just mid-payload."""
         f = bytearray(fcs_bytes(payload))
         if corrupt_fcs:
             f[0] ^= 0xFF                      # guarantees a CRC residue mismatch
         wire = (bytes([PREAMBLE_BYTE]) * PREAMBLE_LEN + bytes([SFD])
                 + payload + bytes(f))
         data_start = PREAMBLE_LEN + 1
-        # Put the alignment error on a mid-payload byte (rx_er is sampled in S_DATA).
-        er_idx = data_start + max(0, len(payload) // 2) if align_err else -1
+        if er_wire_idx is not None:
+            er_idx = er_wire_idx
+        elif align_err:
+            # Alignment error on a mid-payload byte (rx_er is sampled in S_DATA).
+            er_idx = data_start + max(0, len(payload) // 2)
+        else:
+            er_idx = -1
         for i, b in enumerate(wire):
             await self._beat(b, 1, 1 if i == er_idx else 0)
         await self._beat(0, 0, 0)             # dv low -> end of frame

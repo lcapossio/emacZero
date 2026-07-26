@@ -77,6 +77,30 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `eth_mac_rx` framing survives RX-FIFO overflow: the readout reserves headroom
+  so a frame's SOF and closing TLAST words are never the ones dropped when the
+  2 KB FIFO fills. Overrun data is dropped and the frame is flagged `terror`, but
+  it always starts and terminates cleanly - a dropped SOF used to leave the sink
+  unable to delimit and a dropped TLAST merged the frame into the next. New
+  `eth_mac_rx_robust` suite (`overflow_framing`).
+- `eth_mac_rx` runt handling: a frame shorter than 64 wire bytes is now delivered
+  with `terror` (undersize) instead of as a clean frame with a garbage FCS, so
+  the wrapper's error-drop stage discards it. Regression `runt_terror`.
+- `eth_mac_rx` `byte_cnt` no longer wraps: the 14-bit counter saturates at
+  0x3FFF, so a frame past 16383 wire bytes cannot re-enter the `byte_cnt==5`
+  decision, re-capture the dst MAC and inject a phantom SOF that corrupts the
+  following frame. Regression `bytecnt_no_wrap`.
+- `eth_mac_rx` reports `rx_er` asserted on a preamble/SFD byte (was only sampled
+  in `S_DATA`), so such a frame carries `terror` + `stat_err_align`. Regression
+  `preamble_rx_er`.
+- `mii_tx_saf` now fails elaboration if `MAX_FRAME >= FIFO_DEPTH` (an `initial`
+  `$finish`): the oversize cap relies on that invariant, and violating it silently
+  reintroduces the permanent TX wedge.
+- `eth_mac_sys` sizes the MII `mii_tx_saf` frame FIFO from `MAX_FRAME`
+  (`$clog2`-derived) instead of a fixed 4096 entries. The old fixed size wedged
+  the MII TX path on frames between 4096 and `MAX_FRAME` (9018) bytes; the FIFO
+  now holds one whole frame, and a standard build (`MAX_FRAME=1518`) pays only for
+  a 2048-deep FIFO - the jumbo cost is incurred only when jumbo is built.
 - `eth_mac_rx` multicast-hash filter gated on the wrong bit: the hash-admit term
   tested `mac_chk[0]` (LSB of the last dst octet) instead of `mac_chk[40]` (the
   I/G bit, dst byte 0 LSB) - so with `MCAST_HASH_FILTER=1` a genuine group address

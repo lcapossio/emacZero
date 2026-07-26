@@ -33,6 +33,7 @@ sim/cocotb/
   tests/
     test_mii_tx_saf.py       directed boundaries + seed-logged random (TX store-and-forward)
     test_eth_mac_rx.py       filter/error/backpressure + seed-logged random (RX datapath)
+    test_eth_mac_rx_robust.py FIFO-overflow framing, runt, preamble rx_er, byte_cnt wrap
     test_eth_mac_rx_mcast.py multicast hash filter (MCAST_HASH_FILTER=1 build)
     test_gmii_cdc.py         TX+RX CDC across 1G/100M/10M + committed-counter burst probes
   run.py          build + run entry point (SUITES table; Icarus today)
@@ -76,6 +77,15 @@ reference model, and checks the AXIS output + per-frame stat pulses:
 
 Mutation-checked: corrupting the FCS residue constant fails all tests; defeating
 the MAC filter fails exactly the tests that send frames which should be dropped.
+
+A separate `eth_mac_rx_robust` suite covers overflow/edge behavior the main suite
+avoids: a jumbo frame received under held backpressure overruns the RX FIFO yet
+is still terminated with `terror` and does not corrupt the next frame; a runt is
+delivered with `terror`; `rx_er` on the SFD byte is reported; and a frame past
+the 14-bit `byte_cnt` wrap point does not inject a phantom SOF. Every fix is
+mutation-checked (disabling the reserved headroom drops the closing TLAST so the
+overflow frame merges; removing the undersize/`rx_er`/saturation logic fails the
+matching test).
 
 A separate `eth_mac_rx_mcast` suite builds the module with `MCAST_HASH_FILTER=1`
 and drives the 64-bit hash table directly (the default suite runs the filter off,
