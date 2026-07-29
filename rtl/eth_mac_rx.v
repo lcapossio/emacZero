@@ -85,6 +85,7 @@ module eth_mac_rx #(
 
     reg [47:0] dst_mac_captured;
     reg        mac_ok;
+    reg        frame_started;    // this frame's SOF word made it into the FIFO
     reg        rx_er_seen;
     reg        rx_overflow_seen;
     reg        is_bcast_r;
@@ -103,7 +104,7 @@ module eth_mac_rx #(
                          (mac_chk == 48'hFFFFFFFFFFFF) ||
                          promisc || passthrough ||
                          (MCAST_HASH_FILTER &&
-                          mac_chk[0] &&
+                          mac_chk[40] &&
                           mac_chk != 48'hFFFFFFFFFFFF &&
                           mcast_hash_table[mcast_hash_idx]);
 
@@ -115,6 +116,7 @@ module eth_mac_rx #(
     reg       push_last;
     reg       push_err;
     reg       push_sof;
+    reg       data_drop;        // a data byte was dropped for want of FIFO room
     reg       push_en_r;
     reg [7:0] push_data_r;
     reg       push_last_r;
@@ -125,6 +127,16 @@ module eth_mac_rx #(
     wire        fifo_overflow;
     wire [10:0] fifo_rd_data;
     wire        fifo_rd_valid;
+    wire [AXIS_FIFO_ADDR_WIDTH:0] fifo_count;
+
+    // Reserve a few slots so a frame's SOF and closing TLAST words are never the
+    // ones dropped on overflow: once occupancy passes the high-water mark we stop
+    // pushing DATA (dropped bytes just set the overflow/terror flag), but the SOF
+    // that starts a frame and the TLAST that ends it always find room. That keeps
+    // AXIS framing intact under backpressure - a dropped SOF would leave the sink
+    // unable to delimit, and a dropped TLAST would merge this frame into the next.
+    localparam [AXIS_FIFO_ADDR_WIDTH:0] FIFO_HWM = AXIS_FIFO_DEPTH - 4;
+    wire fifo_room = (fifo_count < FIFO_HWM);
 
     sync_fifo #(
         .DATA_WIDTH (11),
@@ -139,7 +151,7 @@ module eth_mac_rx #(
         .rd_valid    (fifo_rd_valid),
         .rd_en       (m_axis_tready),
         .rd_empty    (),
-        .count       (),
+        .count       (fifo_count),
         .wr_overflow (fifo_overflow)
     );
 
@@ -166,6 +178,11 @@ module eth_mac_rx #(
     wire err_overflow_now = rx_overflow_seen;
     wire err_oversize_now = (!jumbo_en && (byte_cnt > MAX_FRAME_STD)) ||
                             (jumbo_en  && (byte_cnt > MAX_FRAME_JUMBO));
+    // Runt: a valid 802.3 frame is >= 64 wire bytes (60 data/pad + 4 FCS).
+    // byte_cnt counts bytes after the SFD, so < 64 is undersized - a collision
+    // fragment or truncated frame. Deliver it with terror instead of as a clean
+    // frame with a garbage FCS, so the wrapper's error-drop stage discards it.
+    wire err_undersize_now = (byte_cnt < 14'd64);
 
     // Combinational push request from the receive FSM. This is registered
     // before sync_fifo so MAC filtering does not directly drive the FIFO CE
@@ -176,23 +193,41 @@ module eth_mac_rx #(
         push_last = 1'b0;
         push_err  = 1'b0;
         push_sof  = 1'b0;
+        data_drop = 1'b0;
         case (state)
             S_DATA: begin
-                if (gmii_rx_dv && (
-                        (byte_cnt == 14'd5 && mac_pass_now) ||
-                        (byte_cnt >= 14'd6 && mac_ok))) begin
-                    push_en   = 1'b1;
-                    push_data = delay_pipe1;
-                    push_sof  = (byte_cnt == 14'd5);
+                if (gmii_rx_dv && byte_cnt == 14'd5 && mac_pass_now) begin
+                    // SOF: start the frame only if it can be buffered. If not,
+                    // frame_started stays 0 and the whole frame is cleanly
+                    // dropped (no partial, so the sink's delimiting is unharmed).
+                    if (fifo_room) begin
+                        push_en   = 1'b1;
+                        push_data = delay_pipe1;
+                        push_sof  = 1'b1;
+                    end
+                end else if (gmii_rx_dv && byte_cnt >= 14'd6 &&
+                             mac_ok && frame_started) begin
+                    // Data byte: push while there is headroom; otherwise drop it
+                    // and flag overflow so the frame is terror'd (its reserved
+                    // SOF/TLAST still bound it correctly).
+                    if (fifo_room) begin
+                        push_en   = 1'b1;
+                        push_data = delay_pipe1;
+                    end else begin
+                        data_drop = 1'b1;
+                    end
                 end
             end
             S_CRC_CHECK: begin
-                if (byte_cnt >= 14'd6 && mac_ok) begin
+                // Always emit the closing word for a started frame - the reserved
+                // headroom guarantees room, so the frame is always terminated.
+                if (byte_cnt >= 14'd6 && mac_ok && frame_started) begin
                     push_en   = 1'b1;
                     push_data = delay_pipe1;
                     push_last = 1'b1;
                     push_err  = err_fcs_now || err_align_now ||
-                                err_overflow_now || err_oversize_now;
+                                err_overflow_now || err_oversize_now ||
+                                err_undersize_now;
                 end
             end
             default: ;
@@ -215,6 +250,7 @@ module eth_mac_rx #(
             delay_pipe5      <= 8'd0;
             dst_mac_captured <= 48'd0;
             mac_ok           <= 1'b0;
+            frame_started    <= 1'b0;
             rx_er_seen       <= 1'b0;
             rx_overflow_seen <= 1'b0;
             is_bcast_r       <= 1'b0;
@@ -242,6 +278,12 @@ module eth_mac_rx #(
             push_err_r        <= push_err;
             push_sof_r        <= push_sof;
 
+            // The frame is "started" once its SOF word is committed to the FIFO;
+            // gates data/TLAST pushes and stat_done so a frame whose SOF could not
+            // be buffered is dropped whole (no partial, no phantom stat).
+            if (push_sof)
+                frame_started <= 1'b1;
+
             case (state)
                 S_IDLE: begin
                     byte_cnt         <= 14'd0;
@@ -254,6 +296,7 @@ module eth_mac_rx #(
                     delay_pipe5      <= 8'd0;
                     dst_mac_captured <= 48'd0;
                     mac_ok           <= 1'b0;
+                    frame_started    <= 1'b0;
                     rx_er_seen       <= 1'b0;
                     rx_overflow_seen <= 1'b0;
                     is_bcast_r       <= 1'b0;
@@ -263,6 +306,11 @@ module eth_mac_rx #(
                 end
 
                 S_PREAMBLE: begin
+                    // A carrier/coding error on a preamble or SFD byte is a valid
+                    // 802.3 error indication; latch it so the frame is delivered
+                    // with terror + stat_err_align, not silently clean.
+                    if (gmii_rx_er)
+                        rx_er_seen <= 1'b1;
                     if (!gmii_rx_dv) begin
                         state <= S_IDLE;
                     end else if (gmii_rxd == 8'hD5) begin
@@ -292,7 +340,7 @@ module eth_mac_rx #(
                                 mac_chk == 48'hFFFFFFFFFFFF ||
                                 promisc || passthrough ||
                                 (MCAST_HASH_FILTER &&
-                                 mac_chk[0] &&
+                                 mac_chk[40] &&
                                  mac_chk != 48'hFFFFFFFFFFFF &&
                                  mcast_hash_table[mcast_hash_idx]))
                                 mac_ok <= 1'b1;
@@ -313,7 +361,14 @@ module eth_mac_rx #(
                         delay_pipe1 <= delay_pipe2;
                         delay_pipe0 <= delay_pipe1;
 
-                        byte_cnt <= byte_cnt + 14'd1;
+                        // Saturate instead of wrapping. byte_cnt gates dst
+                        // capture (<6), the MAC decision (==5) and oversize
+                        // (>MAX_FRAME); a 14-bit wrap at 16384 would re-enter
+                        // byte_cnt==5 mid-frame, re-capturing the dst and firing a
+                        // second SOF. Freezing at 0x3FFF keeps oversize asserted
+                        // (>= jumbo) and cannot re-trigger those decisions.
+                        if (byte_cnt != 14'h3FFF)
+                            byte_cnt <= byte_cnt + 14'd1;
                         if (first_byte)
                             first_byte <= 1'b0;
                     end
@@ -324,7 +379,7 @@ module eth_mac_rx #(
                     // End-of-frame classification pulse for stats.
                     // Only emit when MAC filter passed (i.e. frame was actually
                     // delivered to the AXIS sink), so counts match deliveries.
-                    if (mac_ok) begin
+                    if (mac_ok && frame_started) begin
                         stat_done         <= 1'b1;
                         stat_len          <= byte_cnt;
                         stat_err_fcs      <= err_fcs_now;
@@ -344,8 +399,10 @@ module eth_mac_rx #(
                 default: state <= S_IDLE;
             endcase
 
-            // Sticky overflow flag, latched on any dropped FIFO write.
-            if (fifo_overflow)
+            // Sticky overflow flag: latched on a data byte dropped for want of
+            // headroom (the normal path now - SOF/TLAST are reserved), or on any
+            // raw FIFO overflow as a backstop.
+            if (data_drop || fifo_overflow)
                 rx_overflow_seen <= 1'b1;
         end
     end

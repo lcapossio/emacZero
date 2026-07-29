@@ -77,6 +77,70 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `eth_mac_rx` framing survives RX-FIFO overflow: the readout reserves headroom
+  so a frame's SOF and closing TLAST words are never the ones dropped when the
+  2 KB FIFO fills. Overrun data is dropped and the frame is flagged `terror`, but
+  it always starts and terminates cleanly - a dropped SOF used to leave the sink
+  unable to delimit and a dropped TLAST merged the frame into the next. New
+  `eth_mac_rx_robust` suite (`overflow_framing`).
+- `eth_mac_rx` runt handling: a frame shorter than 64 wire bytes is now delivered
+  with `terror` (undersize) instead of as a clean frame with a garbage FCS, so
+  the wrapper's error-drop stage discards it. Regression `runt_terror`.
+- `eth_mac_rx` `byte_cnt` no longer wraps: the 14-bit counter saturates at
+  0x3FFF, so a frame past 16383 wire bytes cannot re-enter the `byte_cnt==5`
+  decision, re-capture the dst MAC and inject a phantom SOF that corrupts the
+  following frame. Regression `bytecnt_no_wrap`.
+- `eth_mac_rx` reports `rx_er` asserted on a preamble/SFD byte (was only sampled
+  in `S_DATA`), so such a frame carries `terror` + `stat_err_align`. Regression
+  `preamble_rx_er`.
+- `mii_tx_saf` now fails elaboration if `MAX_FRAME >= FIFO_DEPTH` (an `initial`
+  `$finish`): the oversize cap relies on that invariant, and violating it silently
+  reintroduces the permanent TX wedge.
+- `eth_mac_sys` sizes the MII `mii_tx_saf` frame FIFO from `MAX_FRAME`
+  (`$clog2`-derived) instead of a fixed 4096 entries. The old fixed size wedged
+  the MII TX path on frames between 4096 and `MAX_FRAME` (9018) bytes; the FIFO
+  now holds one whole frame, and a standard build (`MAX_FRAME=1518`) pays only for
+  a 2048-deep FIFO - the jumbo cost is incurred only when jumbo is built.
+- `eth_mac_rx` multicast-hash filter gated on the wrong bit: the hash-admit term
+  tested `mac_chk[0]` (LSB of the last dst octet) instead of `mac_chk[40]` (the
+  I/G bit, dst byte 0 LSB) - so with `MCAST_HASH_FILTER=1` a genuine group address
+  whose last octet was even was rejected, and a unicast with an odd last octet and
+  a colliding hash bucket was admitted. Both admit sites now use `mac_chk[40]`,
+  matching the neighboring `is_mcast_r`. Regression suite `eth_mac_rx_mcast`.
+- `gmii_cdc` TX error input was dropped: `gmii_tx_er_in` was never captured and
+  `gmii_tx_er_out` was hard-wired 0, so a MAC-signalled transmit error never
+  reached the media side (the RX path already carried `rx_er`). The TX FIFO word
+  gained a per-byte error lane (9 -> 10 bits) that re-drives `gmii_tx_er_out`.
+  Regression `test_gmii_cdc.tx_error_flag`.
+- `gmii_cdc` paced-TX held the final (EOF) byte for only 1 media cycle instead of
+  the full pace interval at 100M/10M, so a paced downstream could mis-sample the
+  last byte. The frame now closes out at the next `pace_tick`, giving the last
+  byte its full `period`. Regression `test_gmii_cdc.paced_last_byte_hold_100m`.
+- `gmii_cdc` RX multi-frame byte-drop: the sys-side readout returned to idle at
+  each frame's EOF and re-ran its "align" pre-consume on the next frame - correct
+  on a cold start out of empty, but on a frame boundary (next frame already
+  buffered, first-word-fall-through FIFO) it consumed and dropped that frame's
+  first byte. Every frame after the first lost byte 0. The readout now stays in
+  its reading state across the EOF marker so the following frame's first byte is
+  taken by the normal data path. Regression `test_gmii_cdc.rx_directed`.
+- `gmii_cdc` RX committed-frame-counter wrap (same class as the TX/`mii_tx_saf`
+  fixes): a 4-bit `rx_frames_pending` counter aliased once 16 frames buffered, so
+  under a slow sys drain small frames piled up past 16 long before the 4K RX FIFO
+  filled - `rx_frame_ready` read false and the readout stalled. Widened to
+  `ADDR_WIDTH+1` (13) bits. Regression `test_gmii_cdc.rx_burst_wrap_probe`.
+- `gmii_cdc` paced-TX phantom-frame stall: in 100M/10M the read pointer was left
+  parked on a frame's EOF word (its per-byte prefetch is suppressed on EOF), so
+  the next paced frame emitted that stale EOF byte, ended after one cycle, and
+  orphaned the real frame in the FIFO - dropping every frame after the first.
+  The frame close-out now advances the read pointer past the EOF word in the
+  paced modes only (1G's every-cycle prefetch already realigns it). Regression
+  `test_gmii_cdc.directed_100m` / `directed_10m`.
+- `gmii_cdc` paced-TX committed-counter wrap (same class as the `mii_tx_saf` fix
+  below): a 4-bit committed-frame counter aliased once 16 whole frames backed up
+  in the 16 KB TX FIFO, deasserting the store-and-forward start gate and wedging
+  the media side long before the FIFO filled. Widened the counter and its gray
+  CDC to `ADDR_WIDTH+1` (15) bits so the byte FIFO fills first. Regression
+  `test_gmii_cdc.burst_small_frames_100m` (20 small frames).
 - `mii_tx_saf` TX deadlock (committed-frame counter wrap): a 4-bit committed
   frame counter aliased to a false "equal" once 16 frames backed up in the 4 KB
   FIFO, parking the framer in idle. Widened the counter to `FIFO_ADDR_WIDTH+1`

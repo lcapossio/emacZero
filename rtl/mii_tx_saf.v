@@ -150,6 +150,19 @@ module mii_tx_saf #(
 
     // "< one frame of space left" busy hint (matches the old tx_start_ok gate).
     localparam [FIFO_ADDR_WIDTH:0] FIFO_DEPTH = {1'b1, {FIFO_ADDR_WIDTH{1'b0}}};
+
+    // Elaboration guard: the oversize cap and the busy_thresh below both rely on
+    // MAX_FRAME < FIFO_DEPTH. If misconfigured (e.g. FIFO_ADDR_WIDTH too small),
+    // the forced-EOF commit could never find room - reintroducing the permanent
+    // TX wedge - and busy_thresh would underflow. Fail synthesis/sim loudly.
+    initial begin
+        if (MAX_FRAME >= (1 << FIFO_ADDR_WIDTH)) begin
+            $display("FATAL: mii_tx_saf requires MAX_FRAME (%0d) < FIFO_DEPTH (%0d)",
+                     MAX_FRAME, (1 << FIFO_ADDR_WIDTH));
+            $finish;
+        end
+    end
+
     wire [FIFO_ADDR_WIDTH:0] busy_thresh = FIFO_DEPTH - MAX_FRAME[FIFO_ADDR_WIDTH:0];
     assign tx_busy       = (fifo_count > busy_thresh);
     assign tx_fifo_level = fifo_count[12:0];

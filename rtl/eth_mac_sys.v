@@ -436,9 +436,15 @@ module eth_mac_sys #(
 
             // Store-and-forward MII transmit: single frame FIFO + media-clk
             // framer. Drives the MII TX pins and the shared TX status/stats.
+            // Size the frame FIFO from MAX_FRAME so it always holds one whole
+            // frame (mii_tx_saf's oversize cap requires FIFO_DEPTH > MAX_FRAME,
+            // else a MAX_FRAME-sized frame wedges the TX path). A standard build
+            // (MAX_FRAME=1518) gets a 2048-deep FIFO; a jumbo build (9018) gets
+            // 16384 - the jumbo cost is paid only when jumbo is actually built.
             mii_tx_saf #(
                 .MAX_FRAME      (MAX_FRAME),
-                .FIFO_ADDR_WIDTH(12)
+                .FIFO_ADDR_WIDTH(($clog2(MAX_FRAME + 1) > 11)
+                                 ? $clog2(MAX_FRAME + 1) : 11)
             ) u_mii_tx (
                 .clk           (clk),
                 .rst_n         (rst_n),

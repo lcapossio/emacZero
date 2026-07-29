@@ -115,7 +115,14 @@ module gmii_cdc (
     // Frame availability tracking (sys_clk domain)
     (* ASYNC_REG = "TRUE" *) reg rx_toggle_s1, rx_toggle_s2, rx_toggle_s3;
     reg [7:0]  rx_avail_delay;
-    reg [3:0]  rx_frames_pending;
+    // Width = RX FIFO addr width + 1 (RX_CNT_W). A 4-bit counter aliased once 16
+    // frames buffered: under sustained line rate the 125 MHz media_rx side fills
+    // faster than the (slower) sys side drains, so small frames pile up well past
+    // 16 long before the 4K RX FIFO fills - the counter wrapped, rx_frame_ready
+    // read false, and the readout stalled. At ADDR_WIDTH+1 bits the FIFO fills
+    // first, so it cannot alias.
+    localparam RX_CNT_W = 13;   // 12 (RX FIFO ADDR_WIDTH) + 1
+    reg [RX_CNT_W-1:0] rx_frames_pending;
     reg        rx_frame_done_pulse;
     reg        rx_reading;
 
@@ -129,7 +136,7 @@ module gmii_cdc (
             rx_toggle_s2    <= 1'b0;
             rx_toggle_s3    <= 1'b0;
             rx_avail_delay  <= 8'd0;
-            rx_frames_pending <= 4'd0;
+            rx_frames_pending <= {RX_CNT_W{1'b0}};
         end else begin
             rx_toggle_s1 <= rx_frame_toggle;
             rx_toggle_s2 <= rx_toggle_s1;
@@ -137,9 +144,9 @@ module gmii_cdc (
             rx_avail_delay <= {rx_avail_delay[6:0], rx_frame_avail};
 
             case ({rx_frame_avail_d, rx_frame_done_pulse})
-                2'b10: rx_frames_pending <= rx_frames_pending + 4'd1;
-                2'b01: if (rx_frames_pending != 4'd0)
-                           rx_frames_pending <= rx_frames_pending - 4'd1;
+                2'b10: rx_frames_pending <= rx_frames_pending + 1'b1;
+                2'b01: if (rx_frames_pending != {RX_CNT_W{1'b0}})
+                           rx_frames_pending <= rx_frames_pending - 1'b1;
                 default: ;
             endcase
         end
@@ -163,9 +170,16 @@ module gmii_cdc (
             if (rx_reading) begin
                 if (!rx_rd_empty) begin
                     if (rx_rd_data[9]) begin
+                        // EOF marker: end this frame (consume it, do not output).
+                        // Stay in rx_reading so any following frame's first byte
+                        // is read by the normal data path below. Dropping to idle
+                        // here would re-enter the "align" pre-consume at the next
+                        // frame start and skip that frame's byte 0 (the byte-drop
+                        // that only appears once a next frame is already buffered).
                         rx_rd_en            <= 1'b1;
-                        rx_reading          <= 1'b0;
                         rx_frame_done_pulse <= 1'b1;
+                        if (!rx_frame_ready)
+                            rx_reading <= 1'b0;
                     end else begin
                         gmii_rxd_out   <= rx_rd_data[7:0];
                         gmii_rx_dv_out <= 1'b1;
@@ -176,8 +190,11 @@ module gmii_cdc (
                     rx_reading <= 1'b0;
                 end
             end else if (rx_frame_ready && !rx_rd_empty) begin
+                // Cold start out of empty: the FIFO/pointer are not settled for a
+                // direct output, so burn one "align" read; byte 0 falls through to
+                // rx_rd_data next cycle for the reading path above.
                 rx_reading <= 1'b1;
-                rx_rd_en   <= 1'b1;  // align first readable word from behavioral FIFO
+                rx_rd_en   <= 1'b1;
             end
         end
     end
@@ -195,28 +212,33 @@ module gmii_cdc (
     // exactly when tx_data_d1 still holds that last byte.
     reg        tx_en_d1;
     reg  [7:0] tx_data_d1;
+    reg        tx_er_d1;
     reg        tx_valid_d1;
     always @(posedge sys_clk or negedge sys_rst_n) begin
         if (!sys_rst_n) begin
             tx_en_d1    <= 1'b0;
             tx_data_d1  <= 8'd0;
+            tx_er_d1    <= 1'b0;
             tx_valid_d1 <= 1'b0;
         end else begin
             tx_en_d1    <= gmii_tx_en_in;
             tx_data_d1  <= gmii_txd_in;
+            tx_er_d1    <= gmii_tx_er_in;   // rides with its byte through the FIFO
             tx_valid_d1 <= gmii_tx_en_in;
         end
     end
     wire tx_en_fall = tx_en_d1 && !gmii_tx_en_in;
 
-    // FIFO word: [8] = EOF (set on the frame's last byte), [7:0] = data.
-    wire [8:0] tx_wr_data   = {tx_en_fall, tx_data_d1};
+    // FIFO word: [9] = error (per byte), [8] = EOF (set on the frame's last byte),
+    // [7:0] = data. The error bit carries gmii_tx_er_in across the CDC so the
+    // media side can re-drive gmii_tx_er_out, mirroring the RX rx_er path.
+    wire [9:0] tx_wr_data   = {tx_er_d1, tx_en_fall, tx_data_d1};
     wire       tx_wr_en     = tx_valid_d1;
     wire       tx_wr_full;
     wire       tx_wr_accept = tx_wr_en && !tx_wr_full;
     wire       tx_eof_wr    = tx_wr_accept && tx_wr_data[8];
 
-    wire [8:0] tx_rd_data;
+    wire [9:0] tx_rd_data;
     wire       tx_rd_empty;
     reg        tx_rd_en;
 
@@ -231,16 +253,23 @@ module gmii_cdc (
     // Committed-frame counter (sys_clk): increments when a frame's EOF byte is
     // accepted, i.e. a whole frame is now buffered. Gray-coded for the CDC to the
     // media domain, where it gates the start of transmission.
-    reg [3:0] tx_frame_wr_count_bin;
-    reg [3:0] tx_frame_wr_count_gray;
+    // Counter width = FIFO addr width + 1. A narrower counter (was 4 bits)
+    // aliases to a false "equal" once 2**width whole frames back up in the FIFO
+    // (16 for 4 bits) - small frames reach that long before the 16K-byte FIFO
+    // fills - deasserting tx_frame_pending_media and wedging the paced media
+    // side. At ADDR_WIDTH+1 bits the byte FIFO fills first, so it cannot alias.
+    localparam FRAME_CNT_W = 15;   // 14 (ADDR_WIDTH) + 1
+    reg [FRAME_CNT_W-1:0] tx_frame_wr_count_bin;
+    reg [FRAME_CNT_W-1:0] tx_frame_wr_count_gray;
+    wire [FRAME_CNT_W-1:0] tx_frame_wr_count_next = tx_frame_wr_count_bin + 1'b1;
     always @(posedge sys_clk or negedge sys_rst_n) begin
         if (!sys_rst_n) begin
-            tx_frame_wr_count_bin  <= 4'd0;
-            tx_frame_wr_count_gray <= 4'd0;
+            tx_frame_wr_count_bin  <= {FRAME_CNT_W{1'b0}};
+            tx_frame_wr_count_gray <= {FRAME_CNT_W{1'b0}};
         end else if (tx_eof_wr) begin
-            tx_frame_wr_count_bin  <= tx_frame_wr_count_bin + 4'd1;
-            tx_frame_wr_count_gray <= (tx_frame_wr_count_bin + 4'd1) ^
-                                       ((tx_frame_wr_count_bin + 4'd1) >> 1);
+            tx_frame_wr_count_bin  <= tx_frame_wr_count_next;
+            tx_frame_wr_count_gray <= tx_frame_wr_count_next ^
+                                      (tx_frame_wr_count_next >> 1);
         end
     end
 
@@ -251,7 +280,7 @@ module gmii_cdc (
     assign tx_busy       = (tx_fifo_count > TX_START_LIMIT);
 
     // TX data + EOF packet FIFO: sys_clk -> media_clk (16K words for jumbo)
-    async_fifo #(.DATA_WIDTH(9), .ADDR_WIDTH(14)) u_tx_fifo (
+    async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(14)) u_tx_fifo (
         .wr_clk  (sys_clk),
         .wr_rst_n(sys_rst_n),
         .wr_data (tx_wr_data),
@@ -265,13 +294,13 @@ module gmii_cdc (
         .wr_data_count(tx_fifo_count)
     );
 
-    function [3:0] gray4_to_bin;
-        input [3:0] gray;
+    function [FRAME_CNT_W-1:0] gray_to_bin;
+        input [FRAME_CNT_W-1:0] gray;
+        integer i;
         begin
-            gray4_to_bin[3] = gray[3];
-            gray4_to_bin[2] = gray4_to_bin[3] ^ gray[2];
-            gray4_to_bin[1] = gray4_to_bin[2] ^ gray[1];
-            gray4_to_bin[0] = gray4_to_bin[1] ^ gray[0];
+            gray_to_bin[FRAME_CNT_W-1] = gray[FRAME_CNT_W-1];
+            for (i = FRAME_CNT_W-2; i >= 0; i = i - 1)
+                gray_to_bin[i] = gray_to_bin[i+1] ^ gray[i];
         end
     endfunction
 
@@ -301,22 +330,22 @@ module gmii_cdc (
     // Committed-frame counter CDC into the media domain. tx_frame_pending_media
     // asserts once at least one whole frame has been committed to the FIFO but
     // not yet drained - the store-and-forward start gate.
-    (* ASYNC_REG = "TRUE" *) reg [3:0] tx_frame_wr_count_s1;
-    (* ASYNC_REG = "TRUE" *) reg [3:0] tx_frame_wr_count_s2;
-    (* ASYNC_REG = "TRUE" *) reg [3:0] tx_frame_wr_count_s3;
-    reg [3:0] tx_frame_rd_count_bin;
+    (* ASYNC_REG = "TRUE" *) reg [FRAME_CNT_W-1:0] tx_frame_wr_count_s1;
+    (* ASYNC_REG = "TRUE" *) reg [FRAME_CNT_W-1:0] tx_frame_wr_count_s2;
+    (* ASYNC_REG = "TRUE" *) reg [FRAME_CNT_W-1:0] tx_frame_wr_count_s3;
+    reg [FRAME_CNT_W-1:0] tx_frame_rd_count_bin;
     always @(posedge media_clk or negedge media_rst_n_s2) begin
         if (!media_rst_n_s2) begin
-            tx_frame_wr_count_s1 <= 4'd0;
-            tx_frame_wr_count_s2 <= 4'd0;
-            tx_frame_wr_count_s3 <= 4'd0;
+            tx_frame_wr_count_s1 <= {FRAME_CNT_W{1'b0}};
+            tx_frame_wr_count_s2 <= {FRAME_CNT_W{1'b0}};
+            tx_frame_wr_count_s3 <= {FRAME_CNT_W{1'b0}};
         end else begin
             tx_frame_wr_count_s1 <= tx_frame_wr_count_gray;
             tx_frame_wr_count_s2 <= tx_frame_wr_count_s1;
             tx_frame_wr_count_s3 <= tx_frame_wr_count_s2;
         end
     end
-    wire [3:0] tx_frame_wr_count_media = gray4_to_bin(tx_frame_wr_count_s3);
+    wire [FRAME_CNT_W-1:0] tx_frame_wr_count_media = gray_to_bin(tx_frame_wr_count_s3);
     wire       tx_frame_pending_media  =
                    (tx_frame_wr_count_media != tx_frame_rd_count_bin);
 
@@ -346,7 +375,7 @@ module gmii_cdc (
             tx_frame_loaded       <= 1'b0;
             tx_frame_end          <= 1'b0;
             tx_start_delay        <= 6'd0;
-            tx_frame_rd_count_bin <= 4'd0;
+            tx_frame_rd_count_bin <= {FRAME_CNT_W{1'b0}};
             pace_cnt              <= 10'd0;
         end else begin
             tx_rd_en <= 1'b0;
@@ -372,16 +401,33 @@ module gmii_cdc (
                         pace_cnt <= 10'd0;
                     end
                 end else if (tx_frame_end) begin
-                    // Emitted the EOF byte last cycle; close out the frame.
-                    gmii_tx_en_out        <= 1'b0;
-                    tx_frame_loaded       <= 1'b0;
-                    tx_frame_end          <= 1'b0;
-                    tx_frame_rd_count_bin <= tx_frame_rd_count_bin + 4'd1;
+                    // The EOF byte was emitted at the last pace_tick. Hold it (and
+                    // gmii_tx_en_out) for its full pace interval - close out only
+                    // at the NEXT pace_tick, so the final byte occupies `period`
+                    // media cycles like every other byte instead of just one (a
+                    // 1-cycle last byte can be mis-sampled by a paced downstream).
+                    // At 1G pace_tick is always asserted, so this closes out the
+                    // next cycle exactly as before.
+                    if (pace_tick) begin
+                        // Advance past the EOF word: its per-byte advance is
+                        // suppressed above (don't prefetch past EOF), so without
+                        // this the read pointer would be left on the EOF byte and
+                        // the next paced frame would emit that stale byte, see EOF,
+                        // and end immediately - a phantom frame that orphans the
+                        // real frame. Paced modes only: at 1G the every-cycle
+                        // prefetch already realigns the pointer.
+                        if (!is_1g)
+                            tx_rd_en          <= 1'b1;
+                        gmii_tx_en_out        <= 1'b0;
+                        tx_frame_loaded       <= 1'b0;
+                        tx_frame_end          <= 1'b0;
+                        tx_frame_rd_count_bin <= tx_frame_rd_count_bin + 1'b1;
+                    end
                 end else if (!tx_rd_empty) begin
                     if (pace_tick) begin
                         gmii_txd_out   <= tx_rd_data[7:0];
                         gmii_tx_en_out <= 1'b1;
-                        gmii_tx_er_out <= 1'b0;
+                        gmii_tx_er_out <= tx_rd_data[9];  // per-byte error passthrough
                         if (tx_rd_data[8])
                             tx_frame_end <= 1'b1;   // last byte of the frame
                     end

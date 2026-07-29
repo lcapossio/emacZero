@@ -153,15 +153,17 @@ module tb_gmii_cdc_10m;
         end
 
         // ---------------------------------------------------------------------
-        // Verify pacing: tx_en spans first pace_tick to last + 1, so
-        // (N-1)*K + 1 = 7*100 + 1 = 701. Allow 690..720 sanity range.
+        // Verify pacing: every byte - including the last (EOF) byte - occupies a
+        // full pace interval, so tx_en is high for N*K = 8*100 = 800 cycles.
+        // (An earlier revision released the last byte after 1 cycle, giving
+        // (N-1)*K+1 = 701; that was a bug - the final byte was mis-paced.)
         // ---------------------------------------------------------------------
-        if (media_tx_cycles_high >= 690 && media_tx_cycles_high <= 720) begin
-            $display("PASS: 10M media TX active %0d cycles (~701 expected)",
+        if (media_tx_cycles_high >= 790 && media_tx_cycles_high <= 810) begin
+            $display("PASS: 10M media TX active %0d cycles (~800 expected)",
                      media_tx_cycles_high);
             pass_cnt = pass_cnt + 1;
         end else begin
-            $display("FAIL: 10M media TX active %0d cycles, expected ~701",
+            $display("FAIL: 10M media TX active %0d cycles, expected ~800",
                      media_tx_cycles_high);
             fail_cnt = fail_cnt + 1;
         end
