@@ -439,4 +439,4 @@ Apache-2.0. See [LICENSE](LICENSE) for details.
 
 ## Author
 
-Leonardo Capossio - [bard0 design](www.bard0.com) - hello@bard0.com
+Leonardo Capossio - [bard0 design](https://www.bard0.com) - hello@bard0.com
