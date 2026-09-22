@@ -151,9 +151,13 @@ module tb_gmii_loopback;
     );
 
     // =========================================================================
-    // Pin-level GMII loopback (one-cycle PHY delay, 125 MHz)
+    // Pin-level GMII loopback: a stand-in PHY
     // =========================================================================
-    always @(posedge clk_125 or negedge rst_n) begin
+    // The PHY captures TXD/TX_EN/TX_ER on the RISING EDGE OF GTX_CLK, exactly
+    // as IEEE 802.3 Clause 35 specifies. Sampling on clk_125 instead would let
+    // a stuck, mis-phased or wrong-frequency GTX_CLK still carry data through
+    // the loopback and pass every datapath check in this file.
+    always @(posedge gmii_gtx_clk or negedge rst_n) begin
         if (!rst_n) begin
             gmii_rxd   <= 8'd0;
             gmii_rx_dv <= 1'b0;
@@ -194,6 +198,46 @@ module tb_gmii_loopback;
             if ((gtx_offset < 2.5) || (gtx_offset > 7.5))
                 gtx_phase_viol = gtx_phase_viol + 1;
         end
+    end
+
+    // -------------------------------------------------------------------------
+    // GTX_CLK integrity: continuity, frequency and duty cycle
+    // -------------------------------------------------------------------------
+    // The phase check alone cannot catch a clock that runs at the wrong rate,
+    // stops part-way, or has a legal-phase but illegal-width pulse. Count
+    // clk_125 edges over the same window and require GTX_CLK to keep up, and
+    // check both pulse widths against Clause 35's 35%-75% duty allowance
+    // (2.8 ns to 6.0 ns of the 8 ns period).
+    integer clk125_edges;
+    real    gtx_last_rise;
+    real    gtx_last_fall;
+    integer gtx_width_viol;
+
+    initial begin
+        clk125_edges   = 0;
+        gtx_last_rise  = -1000.0;
+        gtx_last_fall  = -1000.0;
+        gtx_width_viol = 0;
+    end
+
+    always @(posedge clk_125) if (rst_n) clk125_edges = clk125_edges + 1;
+
+    always @(posedge gmii_gtx_clk) begin
+        if (rst_n && (gtx_last_fall > 0.0)) begin
+            if ((($realtime - gtx_last_fall) < 2.8) ||
+                (($realtime - gtx_last_fall) > 6.0))
+                gtx_width_viol = gtx_width_viol + 1;   // low time out of range
+        end
+        gtx_last_rise = $realtime;
+    end
+
+    always @(negedge gmii_gtx_clk) begin
+        if (rst_n && (gtx_last_rise > 0.0)) begin
+            if ((($realtime - gtx_last_rise) < 2.8) ||
+                (($realtime - gtx_last_rise) > 6.0))
+                gtx_width_viol = gtx_width_viol + 1;   // high time out of range
+        end
+        gtx_last_fall = $realtime;
     end
 
     // ---- AXI4-Lite BFM ----
@@ -409,14 +453,20 @@ module tb_gmii_loopback;
 
         // Test 8: GTX_CLK is alive and correctly phased. Without this, a stuck
         // or edge-aligned GTX_CLK passes every other check in this file.
-        if (gtx_edges > 1000) begin
-            $display("PASS: GTX_CLK toggling (%0d rising edges)", gtx_edges);
+        // Edge-for-edge with clk_125: catches a stopped, halved or doubled
+        // GTX_CLK, which a bare "did it toggle at all" check would not.
+        if ((gtx_edges <= clk125_edges + 2) && (gtx_edges + 2 >= clk125_edges)
+            && (clk125_edges > 1000)) begin
+            $display("PASS: GTX_CLK tracks clk_125 (%0d vs %0d rising edges)",
+                     gtx_edges, clk125_edges);
             pass_cnt = pass_cnt + 1;
         end else begin
-            $display("FAIL: GTX_CLK only %0d rising edges - stuck or undriven", gtx_edges);
+            $display("FAIL: GTX_CLK %0d rising edges vs clk_125 %0d - stuck, halted or wrong rate",
+                     gtx_edges, clk125_edges);
             fail_cnt = fail_cnt + 1;
         end
         check_int("GTX_CLK phase violations", gtx_phase_viol, 0);
+        check_int("GTX_CLK pulse-width violations", gtx_width_viol, 0);
 
         // Test 9: the oversize gate works on the GMII path. Clear jumbo_en and
         // resend the same jumbo frame - it must now be delivered with terror
