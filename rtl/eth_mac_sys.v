@@ -92,7 +92,8 @@ module eth_mac_sys #(
 
     // ---- GMII PHY pins (active when PHY_INTERFACE="GMII") ----
     // Prefixed phy_gmii_* to stay distinct from the internal GMII bus wires
-    // below. Reuses clk_125 / clk_125_90 from the RGMII clock group above.
+    // below. Uses clk_125 from the RGMII clock group above; clk_125_90,
+    // clk_25 and clk_2_5 are RGMII-only and unused on the GMII branch.
     output wire [7:0]  phy_gmii_txd,
     output wire        phy_gmii_tx_en,
     output wire        phy_gmii_tx_er,

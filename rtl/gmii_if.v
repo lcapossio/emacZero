@@ -17,9 +17,12 @@
 //                is forwarded from it INVERTED (see below).
 //   gmii_rx_clk- 125 MHz RX clock sourced by the PHY.
 //
-// GTX_CLK phase. IEEE 802.3 GMII requires 2.5 ns setup / 0.5 ns hold at the
-// PHY pins, against an 8 ns data window. The forwarded clock's RISING edge must
-// therefore sit near the centre of that window, not near its start:
+// GTX_CLK phase. IEEE 802.3 Clause 35.5.2 requires 2.5 ns setup / 0.5 ns hold
+// AT THE SIGNAL SOURCE - i.e. at this MAC's own output pins, which is what this
+// module controls - against an 8 ns data window. Those relax to 2.0 ns / 0 ns
+// at the receiver (the PHY pins); the 500 ps difference is the board
+// length-matching budget. The forwarded clock's RISING edge must therefore sit
+// near the centre of the data window, not near its start:
 //
 //   clk_125    __|""""|____|""""|____   data launches on each rising edge
 //   TXD        XXXX<   byte N    >XXXX
@@ -33,9 +36,12 @@
 //
 // Do NOT forward clk_125_90 here: that is the RGMII convention (where the
 // ~2 ns offset satisfies RGMII's own internal-delay requirement), and 2 ns is
-// BELOW GMII's 2.5 ns setup requirement before any skew is subtracted.
-// Likewise do not forward clk_125 with d1=1/d2=0: that is edge-aligned and
-// leaves no hold margin.
+// below the 2.5 ns setup GMII requires at the source, before any skew is
+// subtracted. Likewise do not forward clk_125 with d1=1/d2=0: that is
+// edge-aligned and leaves no deliberate phase margin in either direction.
+//
+// GTX_CLK duty cycle: Clause 35 allows 35%-75%. The inverted DDR waveform is
+// 50% by construction, so it is compliant with margin.
 //
 // I/O packing: the TX output and RX input registers below are written as plain
 // single-stage flops so the tool can pack them into the IOB. Constrain with
@@ -108,7 +114,7 @@ module gmii_if (
     // =========================================================================
     // rst_n is asynchronous to gmii_rx_clk (a PHY-sourced clock). Async assert,
     // 2-FF sync deassert, matching the rgmii_if / gmii_cdc reset style.
-    reg rx_rst_n_s1, rx_rst_n_s2;
+    (* ASYNC_REG = "TRUE" *) reg rx_rst_n_s1, rx_rst_n_s2;
     always @(posedge gmii_rx_clk or negedge rst_n) begin
         if (!rst_n) {rx_rst_n_s2, rx_rst_n_s1} <= 2'b00;
         else        {rx_rst_n_s2, rx_rst_n_s1} <= {rx_rst_n_s1, 1'b1};
