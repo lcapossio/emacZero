@@ -13,9 +13,12 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] Ethernet FCS generation on TX
 - [x] Ethernet FCS validation on RX with `m_axis_terror`
 - [x] RX error tagging for FCS, receive error, FIFO overflow, and oversize
-- [x] Jumbo-frame gate up to `MAX_FRAME` (RGMII path only; the MII 10/100
+- [x] Jumbo-frame TX gate up to `MAX_FRAME` (GMII and RGMII paths; the MII 10/100
       path is standard-MTU only — its TX FIFO and RX replay buffer are 4096
-      bytes and cannot hold a jumbo frame, so jumbo TX/RX requires RGMII)
+      bytes and cannot hold a jumbo frame, so jumbo TX requires GMII or RGMII).
+      **Jumbo RX is capped at ~4083 bytes on BOTH the GMII and RGMII paths** by
+      `gmii_cdc`'s fixed 4096-word RX CDC FIFO - measured, pre-existing, and
+      tracked as a known bug
 - [x] 802.3x PAUSE frame parse and TX gating
 - [x] Firmware-triggered PAUSE frame transmit through `PAUSE_CTRL`
 - [x] Single primary unicast MAC address filter
@@ -33,7 +36,7 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 
 ## PHY / Line Side
 
-- [x] MII 10/100 path (standard MTU only; jumbo requires the RGMII path)
+- [x] MII 10/100 path (standard MTU only; jumbo TX requires GMII or RGMII)
 - [x] MII and RGMII (`gmii_cdc`) store-and-forward CDCs use EOF-sideband frame
       markers with a committed-frame counter, without separate length FIFOs
 - [x] RGMII 10/100/1G path with runtime speed selection
@@ -41,11 +44,13 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] MDIO clause-22
 - [x] MDIO clause-45 through `MDIO_CMD[12]` and `MDIO_CMD[14:13]`
 - [x] Pure GMII top-level path (`PHY_INTERFACE="GMII"`, `rtl/gmii_if.v`):
-      1000 Mbps only, registered SDR I/O, GTX_CLK forwarded from `clk_125_90`.
+      1000 Mbps only, registered SDR I/O, GTX_CLK forwarded from `clk_125`
+      inverted (180 deg), placing its rising edge mid data-window.
       GMII is gigabit-only by definition - a tri-speed PHY exposing GMII
       reverts to 4-bit MII at 10/100, which is the existing `"MII"` mode - so
       this path pins `gmii_cdc` pacing to 1G and ignores the `cfg_speed` speed
-      field. Jumbo frames work here as on RGMII. Chief use: feeding a vendor
+      field. Jumbo TX works here as on RGMII (RX shares the cap noted
+      above). Chief use: feeding a vendor
       1G PCS/PMA core, which presents GMII rather than PHY pins
 - [ ] SGMII (reachable by attaching a vendor 1G PCS/PMA core to the GMII path
       above; no native serdes implementation in this repo)

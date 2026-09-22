@@ -32,14 +32,17 @@ This project does not yet maintain long-lived release branches.
     GTX_CLK is forwarded out of a DDR cell driven by `clk_125` with the
     waveform inverted (`d1=0`/`d2=1`), putting its rising edge at `clk_125`'s
     falling edge - ~4 ns into the 8 ns data window, leaving ~4 ns each of setup
-    and hold against the IEEE 802.3 GMII requirement of 2.5 ns setup / 0.5 ns
-    hold. (Forwarding `clk_125_90` is the RGMII convention and gives only ~2 ns,
-    below GMII's setup requirement; an edge-aligned `d1=1`/`d2=0` leaves no hold
-    margin.) Board trace skew still has to be budgeted in the XDC, and the I/O
-    registers are plain single-stage flops so `set_property IOB TRUE` can pack
-    them. The TX output registers use an async-assert / sync-deassert reset
-    synchroniser into `clk_125`, since `rst_n` is generated in the system-clock
-    domain.
+    and hold against the IEEE 802.3 Clause 35.5.2 requirement of 2.5 ns setup /
+    0.5 ns hold **at the signal source** (this MAC's own pins), which relaxes to
+    2.0 ns / 0 ns at the PHY after the 500 ps board length-matching budget.
+    (Forwarding `clk_125_90` is the RGMII convention and gives only ~2 ns, below
+    the 2.5 ns required at the source; an edge-aligned `d1=1`/`d2=0` leaves no
+    deliberate phase margin either way. The inverted waveform is 50% duty, well
+    inside Clause 35's 35%-75%.) Board trace skew still has to be
+    budgeted in the XDC, and the I/O registers are plain single-stage flops so
+    `set_property IOB TRUE` can pack them. The TX output registers use an
+    async-assert / sync-deassert reset synchroniser into `clk_125`, since
+    `rst_n` is generated in the system-clock domain.
   - `eth_pause`'s speed-dependent prescaler is fed a forced `2'b00` on the GMII
     branch (`cfg_speed_eff`), so a CSR write selecting 10M cannot stretch
     received PAUSE quanta ~100x while the datapath keeps running at 1G.
@@ -48,17 +51,22 @@ This project does not yet maintain long-lived release branches.
   - The `"MII"` and `"RGMII"` branches are untouched, including their
     hierarchical instance names (`gen_mii.*`, `gen_rgmii.*`), which existing
     testbenches and debug probes reference by path.
-- `sim/tb/tb_gmii_loopback.v` (`GMII-LOOPBACK`, 17 checks). Closes the loop at
+- `sim/tb/tb_gmii_loopback.v` (`GMII-LOOPBACK`, 20 checks). Closes the loop at
   the actual GMII pins rather than forcing internal `gmii_cdc` nets - GMII is
   single-data-rate, so no DDR behavioural model sits in the path and
   `gmii_if` itself is covered. Verifies byte-exact payload and FCS-stripped
   length for small (64 B), standard-MTU (1514 B) and jumbo (4014 B) frames,
   zero CRC errors, stats counters, and that clearing `jumbo_en` makes the same
   jumbo frame arrive flagged with `terror` and counted in `RX_ERR_OVERSIZE`.
-  The RX clock is a separate net deliberately offset 2 ns from `clk_125`, and a
-  GTX_CLK phase monitor measures every forwarded clock edge against the GMII
-  setup/hold budget - that check reports ~907k violations against an
-  edge-aligned GTX_CLK and zero against the shipped one, so it is not vacuous.
+  The stand-in PHY captures the TX pins on the **rising edge of GTX_CLK**, as
+  Clause 35 specifies, so a stuck or mis-clocked GTX_CLK breaks the datapath
+  rather than being bypassed. GTX_CLK is additionally checked for phase (each
+  rising edge must land 2.5-7.5 ns after the clk_125 that launched the data),
+  for continuity against a clk_125 edge count, and for pulse widths within
+  Clause 35's 35%-75% duty allowance. Validated against two mutants: an
+  edge-aligned GTX_CLK scores ~907k phase violations, and a 62.5 MHz GTX_CLK
+  that is correctly phased - which the phase check alone passes - is caught by
+  the edge-count and pulse-width checks.
 - `rtl/gmii_if.v` added to `emaczero.core`'s `rtl_core` fileset, so the
   published FuseSoC core can actually elaborate `PHY_INTERFACE="GMII"`.
 

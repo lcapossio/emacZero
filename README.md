@@ -29,7 +29,7 @@ responder, and optional IPv4/UDP TX checksum offload.
 - **AXI4-Stream TX/RX** - standard streaming interface for packet data with buffered RX backpressure
 - **AXI4-Lite CSR** - control/status block with runtime MAC address, TX/RX enable, promiscuous mode, **runtime speed select (10/100/1G)**, full-duplex, jumbo-enable, TX-csum-offload
 - **MII PHY interface** - 10/100 Mbps with store-and-forward async FIFOs
-  (standard MTU only; jumbo frames require the RGMII path)
+  (standard MTU only; jumbo TX requires the GMII or RGMII path)
 - **GMII PHY interface** - 1000 Mbps, registered SDR I/O with forwarded GTX_CLK
   (`PHY_INTERFACE="GMII"`, `rtl/gmii_if.v`). GMII is gigabit-only by definition -
   a tri-speed PHY exposing GMII falls back to 4-bit MII at 10/100, which is the
@@ -148,10 +148,10 @@ module eth_mac_sys #(
     input  wire [3:0]  rgmii_rxd,
     input  wire        rgmii_rx_ctl, rgmii_rxc,
 
-    // GMII PHY pins (PHY_INTERFACE="GMII"; reuses clk_125 / clk_125_90 above)
+    // GMII PHY pins (PHY_INTERFACE="GMII"; uses clk_125 above, not clk_125_90)
     output wire [7:0]  phy_gmii_txd,
     output wire        phy_gmii_tx_en, phy_gmii_tx_er,
-    output wire        phy_gmii_gtx_clk, // forwarded from clk_125_90
+    output wire        phy_gmii_gtx_clk, // clk_125, inverted (180 deg)
     input  wire        phy_gmii_rx_clk,  // 125 MHz, PHY-sourced
     input  wire [7:0]  phy_gmii_rxd,
     input  wire        phy_gmii_rx_dv, phy_gmii_rx_er,
@@ -277,7 +277,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-CDC-10M | 10M rate adaptation pacing in gmii_cdc | 4 |
 | RGMII-IF-VARIANTS | RGMII speed/DDR variant handling | 6 |
 | RGMII-LOOPBACK | Full system + RGMII PHY loopback at 1G | 5 |
-| GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/jumbo byte-exact, oversize gate, GTX_CLK phase | 19 |
+| GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/jumbo byte-exact, oversize gate, GTX_CLK integrity | 20 |
 
 ## Hardware Test (Arty A7-100T)
 
