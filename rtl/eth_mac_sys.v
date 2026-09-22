@@ -2,17 +2,24 @@
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
 // eth_mac_sys.v - Ethernet MAC System Wrapper
-// Integrates eth_mac + AXI4-Lite CSR + statistics + MDIO + MII/RGMII selection
+// Integrates eth_mac + AXI4-Lite CSR + statistics + MDIO + PHY selection
 // Verilog 2001
 // =============================================================================
 //
-// PHY_INTERFACE parameter selects between "MII" (10/100) and "RGMII" (gigabit).
-// MII mode: uses mii_if.v (existing CDC + nibble conversion).
-// RGMII mode: uses gmii_cdc.v + rgmii_if.v (CDC + DDR I/O).
+// PHY_INTERFACE selects the media interface:
+//   "MII"   10/100 only.   mii_if.v + mii_tx_saf.v (CDC + nibble conversion).
+//   "GMII"  1000 Mbps only. gmii_cdc.v + gmii_if.v (CDC + registered SDR I/O).
+//   "RGMII" 10/100/1G.     gmii_cdc.v + rgmii_if.v (CDC + DDR I/O).
+//
+// GMII is a 1000 Mbps-only interface by definition - a tri-speed PHY exposing
+// GMII falls back to 4-bit MII at 10/100, which is the "MII" mode above. The
+// GMII branch therefore pins gmii_cdc's pacing to 1G and ignores cfg_speed's
+// speed field. Its main use is feeding a vendor 1G PCS/PMA core (SGMII /
+// 1000BASE-X), which presents a GMII bus rather than PHY pins.
 // =============================================================================
 
 module eth_mac_sys #(
-    parameter PHY_INTERFACE     = "MII",  // "MII" or "RGMII"
+    parameter PHY_INTERFACE     = "MII",  // "MII", "GMII" or "RGMII"
     parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash filter
     parameter MAX_FRAME         = 9018,   // jumbo MTU + headers; 1518 standard
     // RX AXIS buffer depth (address width). Defaults to hold one full
@@ -82,6 +89,18 @@ module eth_mac_sys #(
     input  wire [3:0]  rgmii_rxd,
     input  wire        rgmii_rx_ctl,
     input  wire        rgmii_rxc,
+
+    // ---- GMII PHY pins (active when PHY_INTERFACE="GMII") ----
+    // Prefixed phy_gmii_* to stay distinct from the internal GMII bus wires
+    // below. Reuses clk_125 / clk_125_90 from the RGMII clock group above.
+    output wire [7:0]  phy_gmii_txd,
+    output wire        phy_gmii_tx_en,
+    output wire        phy_gmii_tx_er,
+    output wire        phy_gmii_gtx_clk,
+    input  wire        phy_gmii_rx_clk,
+    input  wire [7:0]  phy_gmii_rxd,
+    input  wire        phy_gmii_rx_dv,
+    input  wire        phy_gmii_rx_er,
 
     // ---- MDIO ----
     output wire        mdc,
@@ -312,11 +331,18 @@ module eth_mac_sys #(
     // =========================================================================
     // 802.3x PAUSE flow control
     // =========================================================================
+    // GMII is 1000 Mbps only, so the writable CSR speed field must not reach
+    // speed-dependent logic on that branch. eth_pause scales its pause-quantum
+    // prescaler from cfg_speed; a CSR write selecting 10M would otherwise
+    // stretch received PAUSE quanta ~100x while the datapath keeps running at
+    // 1G. The GMII branch ties gmii_cdc's pacing to 1G for the same reason.
+    wire [1:0] cfg_speed_eff = (PHY_INTERFACE == "GMII") ? 2'b00 : cfg_speed;
+
     eth_pause u_pause (
         .clk                 (clk),
         .rst_n               (rst_n),
         .our_mac             (cfg_mac_addr),
-        .cfg_speed           (cfg_speed),
+        .cfg_speed           (cfg_speed_eff),
         .cfg_pause_rx_en     (cfg_pause_rx_en),
         .cfg_pause_tx_send   (cfg_pause_tx_send),
         .cfg_pause_tx_quanta (cfg_pause_tx_quanta),
@@ -468,6 +494,113 @@ module eth_mac_sys #(
             assign rgmii_txd   = 4'd0;
             assign rgmii_tx_ctl = 1'b0;
             assign rgmii_txc   = 1'b0;
+
+            // Tie off GMII outputs
+            assign phy_gmii_txd      = 8'd0;
+            assign phy_gmii_tx_en    = 1'b0;
+            assign phy_gmii_tx_er    = 1'b0;
+            assign phy_gmii_gtx_clk  = 1'b0;
+        end else if (PHY_INTERFACE == "GMII") begin : gen_gmii
+            // 1000 Mbps only. Structurally this is the RGMII branch with the
+            // DDR stage replaced by registered SDR I/O: same cut-through
+            // eth_mac_tx framer, same gmii_cdc store-and-forward CDC, so jumbo
+            // frames work here exactly as they do on RGMII.
+            wire [7:0] media_gmii_txd;
+            wire       media_gmii_tx_en;
+            wire       media_gmii_tx_er;
+            wire [7:0] media_gmii_rxd;
+            wire       media_gmii_rx_dv;
+            wire       media_gmii_rx_er;
+
+            wire [11:0] gmii_tx_fifo_level;
+
+            wire [7:0] gmii_txd_mac;
+            wire       gmii_tx_en_mac;
+            wire       gmii_tx_er_mac;
+            wire       mac_tx_active;
+            eth_mac_tx #(.MAX_FRAME(MAX_FRAME)) u_mac_tx (
+                .clk           (clk),
+                .rst_n         (rst_n),
+                .tx_start_ok   (~tx_fifo_busy & ~tx_paused),
+                .gmii_txd      (gmii_txd_mac),
+                .gmii_tx_en    (gmii_tx_en_mac),
+                .gmii_tx_er    (gmii_tx_er_mac),
+                .s_axis_tdata  (mac_tx_in_tdata),
+                .s_axis_tvalid (mac_tx_in_tvalid),
+                .s_axis_tready (s_axis_tready_mac),
+                .s_axis_tkeep  (1'b1),
+                .s_axis_tlast  (mac_tx_in_tlast),
+                .tx_active     (mac_tx_active),
+                .dbg_state     (),
+                .dbg_stall_cnt ()
+            );
+
+            // TX stats events: one byte per cycle while tx_en is high, plus a
+            // frame-done pulse on its falling edge.
+            reg gmii_tx_en_mac_d1;
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) gmii_tx_en_mac_d1 <= 1'b0;
+                else        gmii_tx_en_mac_d1 <= gmii_tx_en_mac;
+            end
+            assign tx_byte_ev       = gmii_tx_en_mac;
+            assign tx_frame_done_ev = gmii_tx_en_mac_d1 & ~gmii_tx_en_mac;
+            assign tx_active        = mac_tx_active;
+
+            // cfg_speed is pinned to 2'b00 (1G): GMII has no 10/100 mode, so
+            // gmii_cdc must never engage its byte-pacing dividers here. A CSR
+            // write selecting 100M/10M is ignored on this branch by design.
+            gmii_cdc u_gmii_cdc (
+                .sys_clk        (clk),
+                .sys_rst_n      (rst_n),
+                .media_clk      (clk_125),
+                .media_rx_clk   (phy_gmii_rx_clk),
+                .cfg_speed      (2'b00),
+                .gmii_txd_in    (gmii_txd_mac),
+                .gmii_tx_en_in  (gmii_tx_en_mac),
+                .gmii_tx_er_in  (gmii_tx_er_mac),
+                .gmii_rxd_out   (gmii_rxd),
+                .gmii_rx_dv_out (gmii_rx_dv),
+                .gmii_rx_er_out (gmii_rx_er),
+                .gmii_txd_out   (media_gmii_txd),
+                .gmii_tx_en_out (media_gmii_tx_en),
+                .gmii_tx_er_out (media_gmii_tx_er),
+                .gmii_rxd_in    (media_gmii_rxd),
+                .gmii_rx_dv_in  (media_gmii_rx_dv),
+                .gmii_rx_er_in  (media_gmii_rx_er),
+                .tx_busy        (tx_fifo_busy),
+                .tx_fifo_level  (gmii_tx_fifo_level)
+            );
+
+            assign tx_fifo_level = {1'b0, gmii_tx_fifo_level};
+
+            gmii_if u_gmii_if (
+                .clk_125        (clk_125),
+                .rst_n          (rst_n),
+                .gmii_txd       (phy_gmii_txd),
+                .gmii_tx_en     (phy_gmii_tx_en),
+                .gmii_tx_er     (phy_gmii_tx_er),
+                .gmii_gtx_clk   (phy_gmii_gtx_clk),
+                .gmii_rx_clk    (phy_gmii_rx_clk),
+                .gmii_rxd       (phy_gmii_rxd),
+                .gmii_rx_dv     (phy_gmii_rx_dv),
+                .gmii_rx_er     (phy_gmii_rx_er),
+                .gmii_txd_int   (media_gmii_txd),
+                .gmii_tx_en_int (media_gmii_tx_en),
+                .gmii_tx_er_int (media_gmii_tx_er),
+                .gmii_rxd_int   (media_gmii_rxd),
+                .gmii_rx_dv_int (media_gmii_rx_dv),
+                .gmii_rx_er_int (media_gmii_rx_er)
+            );
+
+            // Tie off MII outputs
+            assign mii_txd   = 4'd0;
+            assign mii_tx_en = 1'b0;
+            assign dbg_mii_tx_saf = 16'd0;
+
+            // Tie off RGMII outputs
+            assign rgmii_txd    = 4'd0;
+            assign rgmii_tx_ctl = 1'b0;
+            assign rgmii_txc    = 1'b0;
         end else begin : gen_rgmii
             // GMII-level signals between CDC and RGMII interface
             wire [7:0] media_gmii_txd;
@@ -564,6 +697,12 @@ module eth_mac_sys #(
             assign mii_txd   = 4'd0;
             assign mii_tx_en = 1'b0;
             assign dbg_mii_tx_saf = 16'd0;
+
+            // Tie off GMII outputs
+            assign phy_gmii_txd     = 8'd0;
+            assign phy_gmii_tx_en   = 1'b0;
+            assign phy_gmii_tx_er   = 1'b0;
+            assign phy_gmii_gtx_clk = 1'b0;
         end
     endgenerate
 
