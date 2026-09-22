@@ -30,10 +30,14 @@ responder, and optional IPv4/UDP TX checksum offload.
 - **MII PHY interface** - 10/100 Mbps with store-and-forward async FIFOs
   (standard MTU only; jumbo frames require the RGMII path)
 - **RGMII PHY interface** - 10/100/1G with **runtime speed selection** via `cfg_speed[1:0]` and parameterizable `RGMII_SPEEDS = "ALL" | "1G_ONLY" | "10_100"` for resource-conscious builds
-- **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`) on the
-  **RGMII** path. The MII 10/100 path is standard-MTU only: its 4096-byte TX
-  FIFO and RX replay buffer cannot buffer a jumbo frame while the slow MII side
-  drains it, so set `MAX_FRAME=1518` for MII builds.
+- **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`) on TX for
+  the **RGMII** path. **RX caveat:** `gmii_cdc`'s RX CDC FIFO is fixed at 4096
+  words, so received frames above ~4083 bytes are truncated on the RGMII path
+  (measured). Jumbo RX is therefore not usable above that size yet - jumbo TX
+  is unaffected.
+  The MII 10/100 path is standard-MTU only: its 4096-byte TX FIFO and RX replay
+  buffer cannot buffer a jumbo frame while the slow MII side drains it, so set
+  `MAX_FRAME=1518` for MII builds.
 - **TX checksum offload** - optional IPv4 header + UDP checksum patcher (`TX_CSUM_OFFLOAD=1`, `rtl/net/tx_csum_off.v`)
 - **CRC-32** - IEEE 802.3 FCS generation (TX) and validation (RX)
 - **MDIO master** - PHY register read/write, accessible through AXI4-Lite CSR
