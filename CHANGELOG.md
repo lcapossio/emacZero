@@ -26,8 +26,13 @@ This project does not yet maintain long-lived release branches.
     reverts to 4-bit MII at 10/100, and that is the existing `"MII"` mode. The
     branch therefore pins `gmii_cdc` pacing to 1G and **ignores the `cfg_speed`
     speed field**; a CSR write selecting 100M/10M has no effect here.
-  - New pins `phy_gmii_txd/tx_en/tx_er/gtx_clk` and
-    `phy_gmii_rx_clk/rxd/rx_dv/rx_er`. Reuses the existing `clk_125` /
+  - New pins `phy_gmii_txd/tx_en/tx_er/txc` and
+    `phy_gmii_rx_clk/rxd/rx_dv/rx_er`. The transmit clock is the signal IEEE
+    802.3 Clause 35 calls GTX_CLK, but the port is named `txc` rather than
+    `gtx_clk`: "gtx" collides with the Xilinx GTX serial transceivers, so a
+    wildcard constraint such as `[get_ports *gtx*]` aimed at those would
+    otherwise pick up this Ethernet pin. It also matches the existing
+    `rgmii_txc`. Reuses the existing `clk_125` /
     `clk_125_90` inputs; `clk_25` / `clk_2_5` are unused on this branch.
     GTX_CLK is forwarded out of a DDR cell driven by `clk_125` with the
     waveform inverted (`d1=0`/`d2=1`), putting its rising edge at `clk_125`'s

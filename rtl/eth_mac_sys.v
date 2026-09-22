@@ -97,7 +97,7 @@ module eth_mac_sys #(
     output wire [7:0]  phy_gmii_txd,
     output wire        phy_gmii_tx_en,
     output wire        phy_gmii_tx_er,
-    output wire        phy_gmii_gtx_clk,
+    output wire        phy_gmii_txc,
     input  wire        phy_gmii_rx_clk,
     input  wire [7:0]  phy_gmii_rxd,
     input  wire        phy_gmii_rx_dv,
@@ -500,7 +500,7 @@ module eth_mac_sys #(
             assign phy_gmii_txd      = 8'd0;
             assign phy_gmii_tx_en    = 1'b0;
             assign phy_gmii_tx_er    = 1'b0;
-            assign phy_gmii_gtx_clk  = 1'b0;
+            assign phy_gmii_txc  = 1'b0;
         end else if (PHY_INTERFACE == "GMII") begin : gen_gmii
             // 1000 Mbps only. Structurally this is the RGMII branch with the
             // DDR stage replaced by registered SDR I/O: same cut-through
@@ -580,7 +580,7 @@ module eth_mac_sys #(
                 .gmii_txd       (phy_gmii_txd),
                 .gmii_tx_en     (phy_gmii_tx_en),
                 .gmii_tx_er     (phy_gmii_tx_er),
-                .gmii_gtx_clk   (phy_gmii_gtx_clk),
+                .gmii_txc   (phy_gmii_txc),
                 .gmii_rx_clk    (phy_gmii_rx_clk),
                 .gmii_rxd       (phy_gmii_rxd),
                 .gmii_rx_dv     (phy_gmii_rx_dv),
@@ -703,7 +703,7 @@ module eth_mac_sys #(
             assign phy_gmii_txd     = 8'd0;
             assign phy_gmii_tx_en   = 1'b0;
             assign phy_gmii_tx_er   = 1'b0;
-            assign phy_gmii_gtx_clk = 1'b0;
+            assign phy_gmii_txc = 1'b0;
         end
     endgenerate
 

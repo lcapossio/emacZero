@@ -2,9 +2,18 @@
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
 // gmii_if.v - GMII PHY interface (vendor-agnostic), 1000 Mbps
-// Registers the internal 8-bit GMII bus onto the GMII pins and forwards
-// GTX_CLK to the PHY.
+// Registers the internal 8-bit GMII bus onto the GMII pins and forwards the
+// transmit clock to the PHY.
 // Verilog 2001
+// =============================================================================
+// Naming. IEEE 802.3 Clause 35 calls the MAC-sourced transmit clock GTX_CLK,
+// and PHY datasheets label the pin that way. This port is nevertheless named
+// `gmii_txc` (`phy_gmii_txc` at the top level): "gtx" collides with the Xilinx
+// GTX serial transceivers, so a wildcard constraint aimed at those - e.g.
+// `[get_ports *gtx*]` - would otherwise sweep up this Ethernet pin. `txc` also
+// matches the existing `rgmii_txc` in this repo. Comments below keep saying
+// GTX_CLK where they refer to the standard's signal, for traceability against
+// PHY documentation.
 // =============================================================================
 // GMII is a 1000 Mbps-only interface: 8 bits per clock at 125 MHz. A tri-speed
 // PHY that exposes GMII reverts to 4-bit MII at 10/100, where the PHY - not the
@@ -57,7 +66,7 @@ module gmii_if (
     output reg  [7:0]  gmii_txd,
     output reg         gmii_tx_en,
     output reg         gmii_tx_er,
-    output wire        gmii_gtx_clk,
+    output wire        gmii_txc,        // IEEE 802.3 Clause 35 GTX_CLK
     input  wire        gmii_rx_clk,
     input  wire [7:0]  gmii_rxd,
     input  wire        gmii_rx_dv,
@@ -98,15 +107,15 @@ module gmii_if (
         end
     end
 
-    // GTX_CLK forwarding. Driving the clock out of a DDR cell (rather than
+    // GTX_CLK (`gmii_txc`) forwarding. Driving the clock out of a DDR cell (rather than
     // routing a clock to a pin directly) keeps it on the clock network to the
     // IOB. d1=0/d2=1 inverts the waveform so the rising edge lands mid-window;
     // see the phase discussion in the header.
-    ddr_output u_gtx_clk (
+    ddr_output u_txc (
         .clk (clk_125),
         .d1  (1'b0),
         .d2  (1'b1),
-        .q   (gmii_gtx_clk)
+        .q   (gmii_txc)
     );
 
     // =========================================================================

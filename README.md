@@ -79,7 +79,7 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 | `sync_fifo.v` | Synchronous FIFO used by MAC RX/TX buffering |
 | `gmii_cdc.v` | GMII clock domain crossing bridge (GMII and RGMII modes) |
 | `rgmii_if.v` | RGMII DDR interface using vendor-agnostic wrappers |
-| `gmii_if.v` | GMII pin interface: registered SDR I/O + GTX_CLK forwarding |
+| `gmii_if.v` | GMII pin interface: registered SDR I/O + transmit-clock (GTX_CLK) forwarding |
 | `ddr_output.v` | Vendor-agnostic DDR output (Xilinx ODDR / Intel / behavioral) |
 | `ddr_input.v` | Vendor-agnostic DDR input (Xilinx IDDR / Intel / behavioral) |
 | `crc32.v` | IEEE 802.3 CRC-32 (reflected polynomial 0xEDB88320) |
@@ -151,7 +151,7 @@ module eth_mac_sys #(
     // GMII PHY pins (PHY_INTERFACE="GMII"; uses clk_125 above, not clk_125_90)
     output wire [7:0]  phy_gmii_txd,
     output wire        phy_gmii_tx_en, phy_gmii_tx_er,
-    output wire        phy_gmii_gtx_clk, // clk_125, inverted (180 deg)
+    output wire        phy_gmii_txc,     // GTX_CLK: clk_125, inverted (180 deg)
     input  wire        phy_gmii_rx_clk,  // 125 MHz, PHY-sourced
     input  wire [7:0]  phy_gmii_rxd,
     input  wire        phy_gmii_rx_dv, phy_gmii_rx_er,

@@ -69,7 +69,7 @@ module tb_gmii_loopback;
     wire [7:0]  gmii_txd;
     wire        gmii_tx_en;
     wire        gmii_tx_er;
-    wire        gmii_gtx_clk;
+    wire        gmii_txc;
 
     reg  [7:0]  gmii_rxd;
     reg         gmii_rx_dv;
@@ -136,7 +136,7 @@ module tb_gmii_loopback;
         .phy_gmii_txd     (gmii_txd),
         .phy_gmii_tx_en   (gmii_tx_en),
         .phy_gmii_tx_er   (gmii_tx_er),
-        .phy_gmii_gtx_clk (gmii_gtx_clk),
+        .phy_gmii_txc (gmii_txc),
         .phy_gmii_rx_clk  (rx_clk),
         .phy_gmii_rxd     (gmii_rxd),
         .phy_gmii_rx_dv   (gmii_rx_dv),
@@ -157,7 +157,7 @@ module tb_gmii_loopback;
     // as IEEE 802.3 Clause 35 specifies. Sampling on clk_125 instead would let
     // a stuck, mis-phased or wrong-frequency GTX_CLK still carry data through
     // the loopback and pass every datapath check in this file.
-    always @(posedge gmii_gtx_clk or negedge rst_n) begin
+    always @(posedge gmii_txc or negedge rst_n) begin
         if (!rst_n) begin
             gmii_rxd   <= 8'd0;
             gmii_rx_dv <= 1'b0;
@@ -173,30 +173,30 @@ module tb_gmii_loopback;
     // GTX_CLK phase monitor
     // =========================================================================
     // TXD is launched on posedge clk_125, so the PHY's sampling edge (posedge
-    // gmii_gtx_clk) must land inside that 8 ns data window with at least 2.5 ns
+    // gmii_txc) must land inside that 8 ns data window with at least 2.5 ns
     // setup and 0.5 ns hold - the IEEE 802.3 GMII TX requirement at the PHY
     // pins. Measuring the offset directly catches a GTX_CLK that is stuck,
     // edge-aligned with the data, or forwarded from the wrong phase.
     real    last_txclk_edge;
-    real    gtx_offset;
-    integer gtx_edges;
-    integer gtx_phase_viol;
+    real    txc_offset;
+    integer txc_edges;
+    integer txc_phase_viol;
 
     initial begin
         last_txclk_edge = -1000.0;
-        gtx_edges       = 0;
-        gtx_phase_viol  = 0;
+        txc_edges       = 0;
+        txc_phase_viol  = 0;
     end
 
     always @(posedge clk_125) last_txclk_edge = $realtime;
 
-    always @(posedge gmii_gtx_clk) begin
+    always @(posedge gmii_txc) begin
         if (rst_n) begin
-            gtx_edges = gtx_edges + 1;
+            txc_edges = txc_edges + 1;
             #0.1;   // settle past any same-timestamp delta ordering
-            gtx_offset = ($realtime - 0.1) - last_txclk_edge;
-            if ((gtx_offset < 2.5) || (gtx_offset > 7.5))
-                gtx_phase_viol = gtx_phase_viol + 1;
+            txc_offset = ($realtime - 0.1) - last_txclk_edge;
+            if ((txc_offset < 2.5) || (txc_offset > 7.5))
+                txc_phase_viol = txc_phase_viol + 1;
         end
     end
 
@@ -209,35 +209,35 @@ module tb_gmii_loopback;
     // check both pulse widths against Clause 35's 35%-75% duty allowance
     // (2.8 ns to 6.0 ns of the 8 ns period).
     integer clk125_edges;
-    real    gtx_last_rise;
-    real    gtx_last_fall;
-    integer gtx_width_viol;
+    real    txc_last_rise;
+    real    txc_last_fall;
+    integer txc_width_viol;
 
     initial begin
         clk125_edges   = 0;
-        gtx_last_rise  = -1000.0;
-        gtx_last_fall  = -1000.0;
-        gtx_width_viol = 0;
+        txc_last_rise  = -1000.0;
+        txc_last_fall  = -1000.0;
+        txc_width_viol = 0;
     end
 
     always @(posedge clk_125) if (rst_n) clk125_edges = clk125_edges + 1;
 
-    always @(posedge gmii_gtx_clk) begin
-        if (rst_n && (gtx_last_fall > 0.0)) begin
-            if ((($realtime - gtx_last_fall) < 2.8) ||
-                (($realtime - gtx_last_fall) > 6.0))
-                gtx_width_viol = gtx_width_viol + 1;   // low time out of range
+    always @(posedge gmii_txc) begin
+        if (rst_n && (txc_last_fall > 0.0)) begin
+            if ((($realtime - txc_last_fall) < 2.8) ||
+                (($realtime - txc_last_fall) > 6.0))
+                txc_width_viol = txc_width_viol + 1;   // low time out of range
         end
-        gtx_last_rise = $realtime;
+        txc_last_rise = $realtime;
     end
 
-    always @(negedge gmii_gtx_clk) begin
-        if (rst_n && (gtx_last_rise > 0.0)) begin
-            if ((($realtime - gtx_last_rise) < 2.8) ||
-                (($realtime - gtx_last_rise) > 6.0))
-                gtx_width_viol = gtx_width_viol + 1;   // high time out of range
+    always @(negedge gmii_txc) begin
+        if (rst_n && (txc_last_rise > 0.0)) begin
+            if ((($realtime - txc_last_rise) < 2.8) ||
+                (($realtime - txc_last_rise) > 6.0))
+                txc_width_viol = txc_width_viol + 1;   // high time out of range
         end
-        gtx_last_fall = $realtime;
+        txc_last_fall = $realtime;
     end
 
     // ---- AXI4-Lite BFM ----
@@ -455,18 +455,18 @@ module tb_gmii_loopback;
         // or edge-aligned GTX_CLK passes every other check in this file.
         // Edge-for-edge with clk_125: catches a stopped, halved or doubled
         // GTX_CLK, which a bare "did it toggle at all" check would not.
-        if ((gtx_edges <= clk125_edges + 2) && (gtx_edges + 2 >= clk125_edges)
+        if ((txc_edges <= clk125_edges + 2) && (txc_edges + 2 >= clk125_edges)
             && (clk125_edges > 1000)) begin
             $display("PASS: GTX_CLK tracks clk_125 (%0d vs %0d rising edges)",
-                     gtx_edges, clk125_edges);
+                     txc_edges, clk125_edges);
             pass_cnt = pass_cnt + 1;
         end else begin
             $display("FAIL: GTX_CLK %0d rising edges vs clk_125 %0d - stuck, halted or wrong rate",
-                     gtx_edges, clk125_edges);
+                     txc_edges, clk125_edges);
             fail_cnt = fail_cnt + 1;
         end
-        check_int("GTX_CLK phase violations", gtx_phase_viol, 0);
-        check_int("GTX_CLK pulse-width violations", gtx_width_viol, 0);
+        check_int("GTX_CLK phase violations", txc_phase_viol, 0);
+        check_int("GTX_CLK pulse-width violations", txc_width_viol, 0);
 
         // Test 9: the oversize gate works on the GMII path. Clear jumbo_en and
         // resend the same jumbo frame - it must now be delivered with terror

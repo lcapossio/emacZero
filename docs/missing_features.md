@@ -44,7 +44,7 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] MDIO clause-22
 - [x] MDIO clause-45 through `MDIO_CMD[12]` and `MDIO_CMD[14:13]`
 - [x] Pure GMII top-level path (`PHY_INTERFACE="GMII"`, `rtl/gmii_if.v`):
-      1000 Mbps only, registered SDR I/O, GTX_CLK forwarded from `clk_125`
+      1000 Mbps only, registered SDR I/O, GTX_CLK (`phy_gmii_txc`) forwarded from `clk_125`
       inverted (180 deg), placing its rising edge mid data-window.
       GMII is gigabit-only by definition - a tri-speed PHY exposing GMII
       reverts to 4-bit MII at 10/100, which is the existing `"MII"` mode - so
