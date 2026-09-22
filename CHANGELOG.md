@@ -16,6 +16,51 @@ This project does not yet maintain long-lived release branches.
   point no Arty bitstream could be built. The phase is SKIPPED, not failed,
   where Vivado is not on PATH, so CI and contributors without the toolchain
   still get the rest of the suite.
+- **GMII PHY interface** (`PHY_INTERFACE="GMII"`, new `rtl/gmii_if.v`). A third
+  media option alongside `"MII"` and `"RGMII"`, structurally the RGMII branch
+  with the DDR stage replaced by registered SDR I/O: the same cut-through
+  `eth_mac_tx` framer and the same `gmii_cdc` store-and-forward CDC, so jumbo
+  TX works exactly as it does on RGMII. (Jumbo RX is capped on both paths by a
+  pre-existing `gmii_cdc` RX FIFO limit - see the jumbo note in README.md.)
+  - 1000 Mbps only, which is what GMII means - a tri-speed PHY exposing GMII
+    reverts to 4-bit MII at 10/100, and that is the existing `"MII"` mode. The
+    branch therefore pins `gmii_cdc` pacing to 1G and **ignores the `cfg_speed`
+    speed field**; a CSR write selecting 100M/10M has no effect here.
+  - New pins `phy_gmii_txd/tx_en/tx_er/gtx_clk` and
+    `phy_gmii_rx_clk/rxd/rx_dv/rx_er`. Reuses the existing `clk_125` /
+    `clk_125_90` inputs; `clk_25` / `clk_2_5` are unused on this branch.
+    GTX_CLK is forwarded out of a DDR cell driven by `clk_125` with the
+    waveform inverted (`d1=0`/`d2=1`), putting its rising edge at `clk_125`'s
+    falling edge - ~4 ns into the 8 ns data window, leaving ~4 ns each of setup
+    and hold against the IEEE 802.3 GMII requirement of 2.5 ns setup / 0.5 ns
+    hold. (Forwarding `clk_125_90` is the RGMII convention and gives only ~2 ns,
+    below GMII's setup requirement; an edge-aligned `d1=1`/`d2=0` leaves no hold
+    margin.) Board trace skew still has to be budgeted in the XDC, and the I/O
+    registers are plain single-stage flops so `set_property IOB TRUE` can pack
+    them. The TX output registers use an async-assert / sync-deassert reset
+    synchroniser into `clk_125`, since `rst_n` is generated in the system-clock
+    domain.
+  - `eth_pause`'s speed-dependent prescaler is fed a forced `2'b00` on the GMII
+    branch (`cfg_speed_eff`), so a CSR write selecting 10M cannot stretch
+    received PAUSE quanta ~100x while the datapath keeps running at 1G.
+  - Principal use is feeding a vendor 1G PCS/PMA core for SGMII / 1000BASE-X,
+    which presents a GMII bus rather than PHY pins.
+  - The `"MII"` and `"RGMII"` branches are untouched, including their
+    hierarchical instance names (`gen_mii.*`, `gen_rgmii.*`), which existing
+    testbenches and debug probes reference by path.
+- `sim/tb/tb_gmii_loopback.v` (`GMII-LOOPBACK`, 17 checks). Closes the loop at
+  the actual GMII pins rather than forcing internal `gmii_cdc` nets - GMII is
+  single-data-rate, so no DDR behavioural model sits in the path and
+  `gmii_if` itself is covered. Verifies byte-exact payload and FCS-stripped
+  length for small (64 B), standard-MTU (1514 B) and jumbo (4014 B) frames,
+  zero CRC errors, stats counters, and that clearing `jumbo_en` makes the same
+  jumbo frame arrive flagged with `terror` and counted in `RX_ERR_OVERSIZE`.
+  The RX clock is a separate net deliberately offset 2 ns from `clk_125`, and a
+  GTX_CLK phase monitor measures every forwarded clock edge against the GMII
+  setup/hold budget - that check reports ~907k violations against an
+  edge-aligned GTX_CLK and zero against the shipped one, so it is not vacuous.
+- `rtl/gmii_if.v` added to `emaczero.core`'s `rtl_core` fileset, so the
+  published FuseSoC core can actually elaborate `PHY_INTERFACE="GMII"`.
 
 - `mii_tx_saf`: a fully store-and-forward MII transmit path built on a **single**
   async frame FIFO (`{tlast,data}`) feeding a media-side framer (preamble/SFD/

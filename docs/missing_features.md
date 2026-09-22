@@ -40,8 +40,15 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] RGMII build-time speed trimming through `RGMII_SPEEDS`
 - [x] MDIO clause-22
 - [x] MDIO clause-45 through `MDIO_CMD[12]` and `MDIO_CMD[14:13]`
-- [ ] Pure GMII top-level path
-- [ ] SGMII
+- [x] Pure GMII top-level path (`PHY_INTERFACE="GMII"`, `rtl/gmii_if.v`):
+      1000 Mbps only, registered SDR I/O, GTX_CLK forwarded from `clk_125_90`.
+      GMII is gigabit-only by definition - a tri-speed PHY exposing GMII
+      reverts to 4-bit MII at 10/100, which is the existing `"MII"` mode - so
+      this path pins `gmii_cdc` pacing to 1G and ignores the `cfg_speed` speed
+      field. Jumbo frames work here as on RGMII. Chief use: feeding a vendor
+      1G PCS/PMA core, which presents GMII rather than PHY pins
+- [ ] SGMII (reachable by attaching a vendor 1G PCS/PMA core to the GMII path
+      above; no native serdes implementation in this repo)
 - [ ] RMII
 
 ## Network Layer (`rtl/net/`)
@@ -79,7 +86,7 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 ## Verification
 
 - [x] Directed Icarus regression (`python build_and_test.py --sim-only`)
-- [x] 45 directed simulation tests
+- [x] 46 directed simulation tests
 - [x] Verilator lint in `build_and_test.py` and CI for `rtl/eth_mac_sys.f`
       with style waivers
 - [x] Vivado RTL elaboration gate in `build_and_test.py` (skipped where

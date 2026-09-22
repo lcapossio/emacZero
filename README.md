@@ -3,7 +3,8 @@
 [![sim](https://github.com/lcapossio/emacZero/actions/workflows/sim.yml/badge.svg?branch=main)](https://github.com/lcapossio/emacZero/actions/workflows/sim.yml?query=branch%3Amain)
 
 Open-source Ethernet MAC in Verilog 2001. Supports 10/100/1G operation through
-either MII (10/100 only) or RGMII (10/100/1G with runtime speed selection).
+MII (10/100 only), GMII (1000 Mbps only), or RGMII (10/100/1G with runtime
+speed selection).
 Provides AXI4-Stream interfaces, AXI4-Lite register control, MDIO management,
 hardware statistics counters, jumbo-frame support, optional ICMP echo
 responder, and optional IPv4/UDP TX checksum offload.
@@ -29,12 +30,19 @@ responder, and optional IPv4/UDP TX checksum offload.
 - **AXI4-Lite CSR** - control/status block with runtime MAC address, TX/RX enable, promiscuous mode, **runtime speed select (10/100/1G)**, full-duplex, jumbo-enable, TX-csum-offload
 - **MII PHY interface** - 10/100 Mbps with store-and-forward async FIFOs
   (standard MTU only; jumbo frames require the RGMII path)
+- **GMII PHY interface** - 1000 Mbps, registered SDR I/O with forwarded GTX_CLK
+  (`PHY_INTERFACE="GMII"`, `rtl/gmii_if.v`). GMII is gigabit-only by definition -
+  a tri-speed PHY exposing GMII falls back to 4-bit MII at 10/100, which is the
+  `"MII"` mode above - so this path pins the internal pacing to 1G and ignores
+  the `cfg_speed` speed field. Its main use is driving a vendor 1G PCS/PMA core
+  for **SGMII / 1000BASE-X**, which presents a GMII bus rather than PHY pins.
+  Jumbo TX works here as on RGMII; see the RX caveat in the jumbo bullet below.
 - **RGMII PHY interface** - 10/100/1G with **runtime speed selection** via `cfg_speed[1:0]` and parameterizable `RGMII_SPEEDS = "ALL" | "1G_ONLY" | "10_100"` for resource-conscious builds
 - **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`) on TX for
-  the **RGMII** path. **RX caveat:** `gmii_cdc`'s RX CDC FIFO is fixed at 4096
-  words, so received frames above ~4083 bytes are truncated on the RGMII path
-  (measured). Jumbo RX is therefore not usable above that size yet - jumbo TX
-  is unaffected.
+  the **GMII** and **RGMII** paths. **RX caveat:** `gmii_cdc`'s RX CDC FIFO is
+  fixed at 4096 words, so received frames above ~4083 bytes are truncated on
+  both the GMII and RGMII paths (measured; tracked as a known bug). Jumbo RX is
+  therefore not usable above that size yet - jumbo TX is unaffected.
   The MII 10/100 path is standard-MTU only: its 4096-byte TX FIFO and RX replay
   buffer cannot buffer a jumbo frame while the slow MII side drains it, so set
   `MAX_FRAME=1518` for MII builds.
@@ -69,8 +77,9 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 | `eth_mac_rx.v` | RX path: preamble detect, data, CRC check, MAC filter |
 | `mii_if.v` | MII PHY interface with store-and-forward CDC FIFOs |
 | `sync_fifo.v` | Synchronous FIFO used by MAC RX/TX buffering |
-| `gmii_cdc.v` | GMII clock domain crossing bridge (for RGMII mode) |
+| `gmii_cdc.v` | GMII clock domain crossing bridge (GMII and RGMII modes) |
 | `rgmii_if.v` | RGMII DDR interface using vendor-agnostic wrappers |
+| `gmii_if.v` | GMII pin interface: registered SDR I/O + GTX_CLK forwarding |
 | `ddr_output.v` | Vendor-agnostic DDR output (Xilinx ODDR / Intel / behavioral) |
 | `ddr_input.v` | Vendor-agnostic DDR input (Xilinx IDDR / Intel / behavioral) |
 | `crc32.v` | IEEE 802.3 CRC-32 (reflected polynomial 0xEDB88320) |
@@ -91,7 +100,7 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 
 ```verilog
 module eth_mac_sys #(
-    parameter PHY_INTERFACE     = "MII",  // "MII" or "RGMII"
+    parameter PHY_INTERFACE     = "MII",  // "MII", "GMII" or "RGMII"
     parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash
     parameter MAX_FRAME         = 9018,   // jumbo MTU + Ethernet headers
     // RX AXIS buffer depth (address width). Defaults to one full MAX_FRAME
@@ -138,6 +147,14 @@ module eth_mac_sys #(
     output wire        rgmii_tx_ctl, rgmii_txc,
     input  wire [3:0]  rgmii_rxd,
     input  wire        rgmii_rx_ctl, rgmii_rxc,
+
+    // GMII PHY pins (PHY_INTERFACE="GMII"; reuses clk_125 / clk_125_90 above)
+    output wire [7:0]  phy_gmii_txd,
+    output wire        phy_gmii_tx_en, phy_gmii_tx_er,
+    output wire        phy_gmii_gtx_clk, // forwarded from clk_125_90
+    input  wire        phy_gmii_rx_clk,  // 125 MHz, PHY-sourced
+    input  wire [7:0]  phy_gmii_rxd,
+    input  wire        phy_gmii_rx_dv, phy_gmii_rx_er,
 
     // MDIO
     output wire        mdc,
@@ -260,6 +277,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-CDC-10M | 10M rate adaptation pacing in gmii_cdc | 4 |
 | RGMII-IF-VARIANTS | RGMII speed/DDR variant handling | 6 |
 | RGMII-LOOPBACK | Full system + RGMII PHY loopback at 1G | 5 |
+| GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/jumbo byte-exact, oversize gate, GTX_CLK phase | 19 |
 
 ## Hardware Test (Arty A7-100T)
 
