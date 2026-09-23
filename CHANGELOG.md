@@ -7,6 +7,16 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- Vivado RTL elaboration gate in the regression (`PHASE 0c`, via
+  `fpga/arty_a7/scripts/elab_check.tcl`). It elaborates the Arty top - which
+  pulls in the whole MAC and the optional L3 helpers - without synthesizing,
+  placing or routing, in about 30 seconds. Neither linter covers this class of
+  defect: an out-of-range part-select passed `iverilog -Wall` and Verilator for
+  two months and surfaced only when Vivado refused to elaborate it, by which
+  point no Arty bitstream could be built. The phase is SKIPPED, not failed,
+  where Vivado is not on PATH, so CI and contributors without the toolchain
+  still get the rest of the suite.
+
 - `mii_tx_saf`: a fully store-and-forward MII transmit path built on a **single**
   async frame FIFO (`{tlast,data}`) feeding a media-side framer (preamble/SFD/
   CRC/pad/FCS/IFG + nibble output). The framer starts only once a whole frame is
@@ -89,9 +99,12 @@ This project does not yet maintain long-lived release branches.
   58 Mbps) before the fix and 20000/20000 (0 loss, 95.69 Mbps - the theoretical
   UDP payload maximum) after; the 60 s bidirectional stress went from 31 gaps
   to 0. The defect was rate-dependent and invisible to a never-stalling sink,
-  so every existing testbench passed. `UDP-BLAST-BACKPRESSURE` now sweeps a
-  one-cycle sink stall across every beat position of the frame and fails on the
-  merged 2x-length frame.
+  so every existing testbench passed. Four new testbenches close that blind
+  spot - `UDP-BLAST-BACKPRESSURE`, `ICMP-ECHO-BACKPRESSURE`,
+  `UDP-ECHO-BACKPRESSURE` and `UDP-STATS-REPLY-BACKPRESSURE` - each sweeping a
+  one-cycle sink stall across every beat position of the frame (386 checks).
+  Without the fix each one fails precisely at the beat where `src_last` is
+  armed. `udp_echo` had no directed testbench at all before this.
 
 - `mii_tx_saf` synthesizes again: `tx_fifo_level` sliced `fifo_count[12:0]` from
   a counter whose width is `FIFO_ADDR_WIDTH+1`, so Vivado rejected it with

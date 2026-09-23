@@ -23,6 +23,8 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 IVERILOG_BIN = "iverilog"
 VVP_BIN = "vvp"
 VERILATOR_BIN = "verilator"
+VIVADO_BIN = "vivado"
+ELAB_TCL = "fpga/arty_a7/scripts/elab_check.tcl"
 
 # rtl/ holds version.vh (single source of truth, included by axilite_regs.v).
 IVERILOG_INCDIRS = ["rtl"]
@@ -315,6 +317,45 @@ def run_verilator_lint():
     return True
 
 
+def _find_vivado():
+    """vivado is a .bat on Windows; try both spellings."""
+    for cand in (VIVADO_BIN, VIVADO_BIN + ".bat"):
+        found = shutil.which(cand)
+        if found:
+            return found
+    return None
+
+
+def run_vivado_elab():
+    """Elaborate the Arty top in Vivado without synthesizing.
+
+    Neither linter covers elaboration-time errors: an out-of-range part-select
+    passed iverilog -Wall and Verilator for two months and was only caught when
+    Vivado refused to elaborate it, by which point no bitstream could be built.
+    Skipped (not failed) where Vivado is unavailable, so CI and contributors
+    without the toolchain still get the rest of the suite.
+    """
+    header("PHASE 0c: Vivado RTL elaboration")
+    vivado = _find_vivado()
+    if not vivado:
+        print(f"  {C.YELLOW}SKIP{C.END} Vivado not found on PATH - "
+              "elaboration-only errors are NOT covered by this run")
+        return True
+
+    cmd = f'"{vivado}" -mode batch -source "{ELAB_TCL}" -nojournal -nolog'
+    rc, stdout, stderr = run_cmd(cmd, cwd=PROJECT_DIR, timeout=1200)
+    if rc != 0:
+        fail("Vivado RTL elaboration failed")
+        output = "\n".join(x for x in [stdout.strip(), stderr.strip()] if x)
+        errors = [ln for ln in output.splitlines() if "ERROR" in ln]
+        for line in (errors or output.splitlines())[:20]:
+            print(f"    {line}")
+        return False
+
+    ok("Vivado RTL elaboration: clean")
+    return True
+
+
 def run_lint():
     header("PHASE 0: Lint (iverilog -Wall)")
     srcs = " ".join(os.path.join(PROJECT_DIR, s) for s in LINT_SOURCES)
@@ -541,6 +582,22 @@ TESTS = [
         "out": "sim/tb_udp_blast_backpressure.vvp",
     },
     {
+        "name": "ICMP-ECHO-BACKPRESSURE",
+        "srcs": ["rtl/net/icmp_echo.v", "sim/tb/tb_icmp_echo_backpressure.v"],
+        "out": "sim/tb_icmp_echo_backpressure.vvp",
+    },
+    {
+        "name": "UDP-ECHO-BACKPRESSURE",
+        "srcs": ["rtl/net/udp_echo.v", "sim/tb/tb_udp_echo_backpressure.v"],
+        "out": "sim/tb_udp_echo_backpressure.vvp",
+    },
+    {
+        "name": "UDP-STATS-REPLY-BACKPRESSURE",
+        "srcs": ["rtl/net/udp_stats_reply.v",
+                 "sim/tb/tb_udp_stats_reply_backpressure.v"],
+        "out": "sim/tb_udp_stats_reply_backpressure.vvp",
+    },
+    {
         "name": "ARTY-TX-ARBITER",
         "srcs": ["fpga/arty_a7/rtl/arty_tx_arbiter.v", "sim/tb/tb_arty_tx_arbiter.v"],
         "out": "sim/tb_arty_tx_arbiter.vvp",
@@ -735,10 +792,12 @@ def main():
     version_ok = run_version_check()
     lint_ok = run_lint()
     verilator_ok = run_verilator_lint()
+    elab_ok = run_vivado_elab()
     sim_ok = run_simulation()
     cocotb_ok = run_cocotb()
 
-    if version_ok and lint_ok and verilator_ok and sim_ok and cocotb_ok:
+    if (version_ok and lint_ok and verilator_ok and elab_ok
+            and sim_ok and cocotb_ok):
         print(f"\n{C.GREEN}{C.BOLD}All tests passed.{C.END}")
         sys.exit(0)
     else:
