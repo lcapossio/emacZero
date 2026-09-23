@@ -77,6 +77,19 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `mii_tx_saf` synthesizes again: `tx_fifo_level` sliced `fifo_count[12:0]` from
+  a counter whose width is `FIFO_ADDR_WIDTH+1`, so Vivado rejected it with
+  `[Synth 8-524] part-select [12:0] out of range` and **no Arty A7 bitstream
+  could be built**. The slice had been exact while `eth_mac_sys` bound
+  `FIFO_ADDR_WIDTH(12)`; deriving the width from `MAX_FRAME` made it 11 for
+  `MAX_FRAME=1518` (12-bit counter, slice out of range) and 14 for the 9018
+  default (15-bit counter, silently truncated). The count is now zero-padded to
+  a width that keeps both part-selects in range for any `FIFO_ADDR_WIDTH`, and
+  saturates at `13'h1FFF` rather than truncating - a truncated occupancy of
+  8192 would have been reported as 0, matching the `gmii_cdc` convention.
+  Both linters accept the old form, so only a Vivado elaboration catches this
+  class of defect; the simulation suite was green throughout.
+
 - `eth_mac_rx` framing survives RX-FIFO overflow: the readout reserves headroom
   so a frame's SOF and closing TLAST words are never the ones dropped when the
   2 KB FIFO fills. Overrun data is dropped and the frame is flagged `terror`, but

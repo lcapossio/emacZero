@@ -165,7 +165,15 @@ module mii_tx_saf #(
 
     wire [FIFO_ADDR_WIDTH:0] busy_thresh = FIFO_DEPTH - MAX_FRAME[FIFO_ADDR_WIDTH:0];
     assign tx_busy       = (fifo_count > busy_thresh);
-    assign tx_fifo_level = fifo_count[12:0];
+    // tx_fifo_level is a fixed 13-bit telemetry field, but fifo_count is
+    // FIFO_ADDR_WIDTH+1 bits and straddles that width: MAX_FRAME=1518 gives 12
+    // bits, the 9018 default gives 15. Padding 13 zeros on top keeps both
+    // part-selects in range for any FIFO_ADDR_WIDTH and avoids an implicit
+    // width conversion. Saturate rather than truncate, as gmii_cdc does: a
+    // truncated occupancy of 8192 would be reported as 0.
+    wire [FIFO_ADDR_WIDTH+13:0] fifo_count_pad = {13'b0, fifo_count};
+    assign tx_fifo_level = (|fifo_count_pad[FIFO_ADDR_WIDTH+13:13])
+                           ? 13'h1FFF : fifo_count_pad[12:0];
 
     wire [8:0] rd_data;
     wire       rd_empty;
