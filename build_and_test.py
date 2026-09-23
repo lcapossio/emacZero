@@ -536,6 +536,11 @@ TESTS = [
         "out": "sim/tb_udp_blast_start_delay.vvp",
     },
     {
+        "name": "UDP-BLAST-BACKPRESSURE",
+        "srcs": ["rtl/net/udp_blast.v", "sim/tb/tb_udp_blast_backpressure.v"],
+        "out": "sim/tb_udp_blast_backpressure.vvp",
+    },
+    {
         "name": "ARTY-TX-ARBITER",
         "srcs": ["fpga/arty_a7/rtl/arty_tx_arbiter.v", "sim/tb/tb_arty_tx_arbiter.v"],
         "out": "sim/tb_arty_tx_arbiter.vvp",

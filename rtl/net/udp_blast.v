@@ -157,7 +157,14 @@ module udp_blast #(
             pkt_done_pulse <= 1'b0;
             if (tx_ready && tx_valid)
                 tx_start <= 1'b0;
-            src_last <= 1'b0;
+            // src_last must survive until the output slice actually captures it.
+            // The slice samples src_* only while src_ready is high, so clearing
+            // tlast unconditionally lets it evaporate whenever the sink stalls on
+            // exactly that beat. The frame then merges with the next one, the MAC's
+            // oversize guard truncates the pair, and one frame goes out for every
+            // two generated - the rate-dependent every-other-packet TX loss.
+            if (src_ready)
+                src_last <= 1'b0;
 
             if (!enable) begin
                 start_delay_cnt <= 32'd0;

@@ -265,14 +265,14 @@ UDP blast, host-to-FPGA iperf sink, bidirectional UDP, regression profile, and
 troubleshooting details are canonical in
 [fpga/arty_a7/README.md](fpga/arty_a7/README.md).
 
-Current Arty A7-100T hardware throughput, re-validated on 2026-06-14 (after the
-RTL review fixes) with the DP83848J MII PHY at 100 Mbps full duplex and
+Current Arty A7-100T hardware throughput, re-validated on 2026-09-23 (after the
+`tlast` back-pressure fix) with the DP83848J MII PHY at 100 Mbps full duplex and
 1472-byte UDP payloads:
 
 | Test | Result |
 |------|--------|
-| 5 s bidirectional smoke | PASS, FPGA->host 95.16 Mbps, host->FPGA 70.00 Mbps, 0 gaps |
-| 60 s bidirectional stress | PASS, FPGA->host 95.14 Mbps, host->FPGA 95.72 Mbps, 31 FPGA->host gaps, 0 host->FPGA gaps |
+| 5 s bidirectional smoke | PASS, FPGA->host 95.68 Mbps, host->FPGA 70.00 Mbps, 0 gaps |
+| 60 s bidirectional stress | PASS, FPGA->host 95.68 Mbps, host->FPGA 95.78 Mbps, 0 gaps both directions |
 
 These are UDP payload Mbps, not raw wire Mbps. Around 95 Mbps payload is
 expected on a 100 Mbps Ethernet link once preamble, IFG, headers, and FCS are

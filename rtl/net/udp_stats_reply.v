@@ -204,7 +204,11 @@ module udp_stats_reply (
         end else begin
             if (tx_ready && tx_valid)
                 tx_start <= 1'b0;
-            src_last <= 1'b0;
+            // Hold tlast until the output slice captures it: the slice samples
+            // src_* only while src_ready is high, so an unconditional clear drops
+            // tlast when the sink stalls on that beat and merges two frames.
+            if (src_ready)
+                src_last <= 1'b0;
 
             case (tx_state)
                 TX_IDLE: begin

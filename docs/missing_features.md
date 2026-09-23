@@ -84,11 +84,12 @@ present in this repo. Unchecked items are not implemented yet. Items marked
       with style waivers
 - [x] Arty A7 UDP throughput tests
 - [x] Recent 100 Mbps MII measurements:
-      95.14 Mbps FPGA-to-host UDP payload with 0 loss;
+      95.68 Mbps FPGA-to-host UDP payload with 0 loss;
       94.2 Mbit/s host-to-FPGA iperf2 traffic with FPGA-side counters;
-      95.14/95.73 Mbps simultaneous bidirectional payload over 60 s after
-      the MII EOF-sideband FIFO cleanup, XPM FIFO advanced-feature trim, and
-      13-bit TX FIFO count fix
+      95.68/95.78 Mbps simultaneous bidirectional payload over 60 s with 0 gaps
+      in both directions, after the MII EOF-sideband FIFO cleanup, XPM FIFO
+      advanced-feature trim, 13-bit TX FIFO count fix, and the AXIS `tlast`
+      back-pressure fix in the L3 frame generators
 - [ ] Cocotb packet-level harness
 - [ ] UVM environment
 - [ ] Formal AXIS/FSM stall properties

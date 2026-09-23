@@ -77,6 +77,22 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **Half of all FPGA-to-host frames were dropped at line rate.** `udp_blast`,
+  `udp_echo`, `udp_stats_reply` and `icmp_echo` arm `src_last` one cycle ahead
+  of the final payload byte, but their 1-deep AXIS output slice only samples
+  `src_*` while `src_ready` is high. `src_last` was cleared unconditionally on
+  every cycle, so whenever the sink stalled on exactly that beat the `tlast`
+  evaporated: the frame merged with the next one, `mii_tx_saf`'s oversize guard
+  truncated the pair, and **one frame went out for every two generated**. The
+  generators now hold `tlast` until the slice captures it. Measured on an Arty
+  A7-100T at 100 Mbps: a 20000-frame blast delivered 10002 frames (50.0% loss,
+  58 Mbps) before the fix and 20000/20000 (0 loss, 95.69 Mbps - the theoretical
+  UDP payload maximum) after; the 60 s bidirectional stress went from 31 gaps
+  to 0. The defect was rate-dependent and invisible to a never-stalling sink,
+  so every existing testbench passed. `UDP-BLAST-BACKPRESSURE` now sweeps a
+  one-cycle sink stall across every beat position of the frame and fails on the
+  merged 2x-length frame.
+
 - `mii_tx_saf` synthesizes again: `tx_fifo_level` sliced `fifo_count[12:0]` from
   a counter whose width is `FIFO_ADDR_WIDTH+1`, so Vivado rejected it with
   `[Synth 8-524] part-select [12:0] out of range` and **no Arty A7 bitstream
