@@ -36,13 +36,18 @@ responder, and optional IPv4/UDP TX checksum offload.
   `"MII"` mode above - so this path pins the internal pacing to 1G and ignores
   the `cfg_speed` speed field. Its main use is driving a vendor 1G PCS/PMA core
   for **SGMII / 1000BASE-X**, which presents a GMII bus rather than PHY pins.
-  Jumbo TX works here as on RGMII; see the RX caveat in the jumbo bullet below.
+  Jumbo TX and RX work here as on RGMII.
 - **RGMII PHY interface** - 10/100/1G with **runtime speed selection** via `cfg_speed[1:0]` and parameterizable `RGMII_SPEEDS = "ALL" | "1G_ONLY" | "10_100"` for resource-conscious builds
-- **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`) on TX for
-  the **GMII** and **RGMII** paths. **RX caveat:** `gmii_cdc`'s RX CDC FIFO is
-  fixed at 4096 words, so received frames above ~4083 bytes are truncated on
-  both the GMII and RGMII paths (measured; tracked as a known bug). Jumbo RX is
-  therefore not usable above that size yet - jumbo TX is unaffected.
+- **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`) on TX and
+  RX for the **GMII** and **RGMII** paths. `gmii_cdc`'s store-and-forward RX
+  CDC FIFO is sized from `MAX_FRAME` (16K words at the 9018 default, 4K floor),
+  so a full `MAX_FRAME` frame is received intact. If that FIFO does overflow
+  (sustained line-rate 1G reception when `clk` is slower than the 125 MHz
+  media clock - the reader drains one byte per `clk`), the
+  affected frame is truncated and tagged with `rx_er` - delivered with
+  `m_axis_terror` and counted in `RX_ERR_ALIGN` - or dropped whole; frame
+  boundaries are never merged. Builds that don't need jumbo RX can set
+  `MAX_FRAME=1518` to keep the RX CDC FIFO at 4K words.
   The MII 10/100 path is standard-MTU only: its 4096-byte TX FIFO and RX replay
   buffer cannot buffer a jumbo frame while the slow MII side drains it, so set
   `MAX_FRAME=1518` for MII builds.
@@ -277,7 +282,8 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-CDC-10M | 10M rate adaptation pacing in gmii_cdc | 4 |
 | RGMII-IF-VARIANTS | RGMII speed/DDR variant handling | 6 |
 | RGMII-LOOPBACK | Full system + RGMII PHY loopback at 1G | 5 |
-| GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/jumbo byte-exact, oversize gate, GTX_CLK integrity | 20 |
+| GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er`, whole-frame drop, EOF-only frames, no merged frames, recovery | 30 |
+| GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, oversize gate, GTX_CLK integrity | 23 |
 
 ## Hardware Test (Arty A7-100T)
 

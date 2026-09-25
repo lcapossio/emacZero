@@ -20,8 +20,8 @@ This project does not yet maintain long-lived release branches.
   media option alongside `"MII"` and `"RGMII"`, structurally the RGMII branch
   with the DDR stage replaced by registered SDR I/O: the same cut-through
   `eth_mac_tx` framer and the same `gmii_cdc` store-and-forward CDC, so jumbo
-  TX works exactly as it does on RGMII. (Jumbo RX is capped on both paths by a
-  pre-existing `gmii_cdc` RX FIFO limit - see the jumbo note in README.md.)
+  TX and RX work exactly as they do on RGMII (jumbo RX needed the `gmii_cdc`
+  RX FIFO fix under Fixed below).
   - 1000 Mbps only, which is what GMII means - a tri-speed PHY exposing GMII
     reverts to 4-bit MII at 10/100, and that is the existing `"MII"` mode. The
     branch therefore pins `gmii_cdc` pacing to 1G and **ignores the `cfg_speed`
@@ -145,6 +145,38 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **Jumbo RX truncated above ~4083 bytes on the GMII and RGMII paths.**
+  `gmii_cdc`'s RX CDC FIFO is store-and-forward (the sys side waits for a
+  frame's EOF marker) but was fixed at 4096 words, so any frame longer than
+  that, preamble included, could not fit. It is now sized from a new
+  `MAX_FRAME` parameter (passed down from `eth_mac_sys`): 16K words at the
+  9018-byte default, with a 4K floor so standard-MTU builds keep their
+  previous depth. `RX_FIFO_ADDR_WIDTH` can override it. On GMII/RGMII builds
+  with jumbo `MAX_FRAME` the RX CDC FIFO grows 4x; set `MAX_FRAME=1518` if
+  jumbo RX is not needed. `GMII-LOOPBACK` now checks a full 9018-byte frame
+  byte-exact; with the old depth it arrives as 4084 bytes.
+- **RX CDC FIFO overflow could merge two frames.** Writes were gated only by
+  `full`, so on overflow the frame's EOF marker could be dropped while the
+  frame toggle still fired, and the sys side read two frames as one. Data words
+  are now written only while two slots are free, so an EOF always fits; once a
+  byte is refused the rest of that frame is dropped (no holes), and its EOF
+  carries a truncation flag. The reader appends one `rx_er` beat to a truncated
+  frame, so the MAC delivers it with `m_axis_terror` and counts it in
+  `RX_ERR_ALIGN` instead of relying on a CRC miss. A frame that finds the FIFO
+  full is dropped whole, without trace.
+- **`gmii_cdc` RX reader could start a partially written frame, or wedge.** At
+  an EOF, `rx_frames_pending` still counted the frame being retired, so the
+  reader kept going into whatever followed - cut-through into a frame whose
+  EOF had not been written yet. At RGMII 10/100, where the media side is
+  slower than the reader, that can underflow mid-frame. Going idle also issued
+  a speculative pop that silently ate the next word: harmless when it was a
+  preamble byte, but when it was the EOF of a frame dropped whole by overflow
+  it left `rx_frames_pending` stuck, and the reader never went idle again.
+  Readiness now excludes the frame being retired (and any done pulse in
+  flight), and the reader goes idle without popping. New
+  `GMII-CDC-RX-OVERFLOW` testbench
+  (`sim/tb/tb_gmii_cdc_rx_overflow.v`) covers truncation, whole-frame drops,
+  EOF-only frames, overflowing bursts and recovery.
 - **Half of all FPGA-to-host frames were dropped at line rate.** `udp_blast`,
   `udp_echo`, `udp_stats_reply` and `icmp_echo` arm `src_last` one cycle ahead
   of the final payload byte, but their 1-deep AXIS output slice only samples

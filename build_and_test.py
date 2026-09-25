@@ -653,6 +653,12 @@ TESTS = [
         "sim_timeout": 120,
     },
     {
+        "name": "GMII-CDC-RX-OVERFLOW",
+        "srcs": ["rtl/async_fifo.v", "rtl/gmii_cdc.v",
+                 "sim/tb/tb_gmii_cdc_rx_overflow.v"],
+        "out": "sim/tb_gmii_cdc_rx_overflow.vvp",
+    },
+    {
         "name": "GMII-CDC-100M",
         "srcs": ["rtl/async_fifo.v", "rtl/gmii_cdc.v",
                  "sim/tb/tb_gmii_cdc_100m.v"],

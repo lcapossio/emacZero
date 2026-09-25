@@ -13,8 +13,8 @@
 // (gmii_if included) is covered.
 //
 // Checks frame count, exact received length with the FCS stripped, header and
-// payload content, and zero CRC errors, across a small, a standard-MTU and a
-// jumbo frame; that clearing jumbo_en flags the oversize frame; and that
+// payload content, and zero CRC errors, across a small, a standard-MTU, a
+// 4000-byte jumbo and a full MAX_FRAME (9018-byte) jumbo frame; that clearing jumbo_en flags the oversize frame; and that
 // GTX_CLK toggles with its rising edge inside the TXD data window to the
 // IEEE 802.3 GMII setup/hold budget.
 // =============================================================================
@@ -442,14 +442,23 @@ module tb_gmii_loopback;
         check_int("jumbo frame count", rx_frame_cnt, 3);
         check_frame("jumbo", 4000);
 
+        // Test 5b: full-size jumbo - 9000-byte payload is exactly MAX_FRAME
+        // (9018) on the wire. Above ~4083 bytes this used to be truncated by
+        // gmii_cdc's fixed 4096-word RX CDC FIFO; the FIFO is now sized from
+        // MAX_FRAME.
+        send_frame(9000);
+        #5000000;
+        check_int("max jumbo frame count", rx_frame_cnt, 4);
+        check_frame("max jumbo", 9000);
+
         // Test 6: no CRC errors anywhere in the loopback
         check_int("rx error beats", rx_err_cnt, 0);
 
         // Test 7: stats counters advanced
         axi_read(8'h28, rd_result);
-        check32("TX_FRAME_CNT", rd_result, 32'd3);
+        check32("TX_FRAME_CNT", rd_result, 32'd4);
         axi_read(8'h30, rd_result);
-        check32("RX_FRAME_CNT", rd_result, 32'd3);
+        check32("RX_FRAME_CNT", rd_result, 32'd4);
 
         // Test 8: GTX_CLK is alive and correctly phased. Without this, a stuck
         // or edge-aligned GTX_CLK passes every other check in this file.

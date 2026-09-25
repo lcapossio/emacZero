@@ -7,7 +7,16 @@
 // Verilog 2001
 // =============================================================================
 
-module gmii_cdc (
+module gmii_cdc #(
+    // Largest frame the RX path must deliver intact (DA..FCS bytes). The RX CDC
+    // FIFO is store-and-forward - the sys side waits for a frame's EOF marker -
+    // so it must hold MAX_FRAME + 8 preamble/SFD words + the EOF word + the one
+    // slot reserved for that EOF. 4096-word floor keeps standard-MTU builds at
+    // their previous depth for small-frame bursts.
+    parameter MAX_FRAME          = 9018,
+    parameter RX_FIFO_ADDR_WIDTH = ($clog2(MAX_FRAME + 10) > 12) ?
+                                    $clog2(MAX_FRAME + 10) : 12
+)(
     input  wire        sys_clk,
     input  wire        sys_rst_n,
     input  wire        media_clk,      // 125 MHz TX/media clock
@@ -58,20 +67,44 @@ module gmii_cdc (
     // =========================================================================
     // RX path: media_clk GMII -> async FIFO -> sys_clk GMII
     // =========================================================================
-    // FIFO data: [9] = EOF marker, [8] = error, [7:0] = data
+    // FIFO data: [9] = EOF marker, [8] = error, [7:0] = data.
+    // On an EOF word, [8] set means the frame was truncated by RX FIFO overflow.
+    localparam [RX_FIFO_ADDR_WIDTH:0] RX_FIFO_DEPTH = 1 << RX_FIFO_ADDR_WIDTH;
     reg [9:0]  rx_wr_data;
     reg        rx_wr_en;
     wire       rx_wr_full;
+    wire [RX_FIFO_ADDR_WIDTH:0] rx_wr_count;
     reg        rx_dv_d1;
+    reg        rx_drop;         // media_rx: current frame lost bytes to overflow
+
+    // Overflow policy. Data words are only written while at least two slots are
+    // free, so the frame's EOF word always fits: a dropped EOF would leave the
+    // sys side reading two frames as one (the frame toggle still fires). Once a
+    // data word is refused, the rest of that frame is dropped too - no holes -
+    // and its EOF carries the truncation flag. rx_wr_count lags reads, never
+    // writes, so it only ever over-reports occupancy (safe direction).
+    wire rx_wr_is_eof   = rx_wr_data[9];
+    wire rx_data_room   = (rx_wr_count < RX_FIFO_DEPTH - 1'b1);
+    wire rx_wr_accept   = rx_wr_en &&
+                          (rx_wr_is_eof ? !rx_wr_full : (rx_data_room && !rx_drop));
+    wire rx_data_refuse = rx_wr_en && !rx_wr_is_eof && !rx_wr_accept;
+    wire [9:0] rx_fifo_din = rx_wr_is_eof ? {1'b1, rx_drop | rx_data_refuse, 8'h00}
+                                          : rx_wr_data;
 
     always @(posedge media_rx_clk or negedge media_rx_rst_n_s2) begin
         if (!media_rx_rst_n_s2) begin
             rx_wr_data <= 10'd0;
             rx_wr_en   <= 1'b0;
             rx_dv_d1   <= 1'b0;
+            rx_drop    <= 1'b0;
         end else begin
             rx_wr_en <= 1'b0;
             rx_dv_d1 <= gmii_rx_dv_in;
+
+            if (rx_wr_en && rx_wr_is_eof)
+                rx_drop <= 1'b0;
+            else if (rx_data_refuse)
+                rx_drop <= 1'b1;
 
             if (gmii_rx_dv_in) begin
                 rx_wr_data <= {1'b0, gmii_rx_er_in, gmii_rxd_in};
@@ -89,7 +122,7 @@ module gmii_cdc (
     always @(posedge media_rx_clk or negedge media_rx_rst_n_s2) begin
         if (!media_rx_rst_n_s2)
             rx_frame_toggle <= 1'b0;
-        else if (rx_wr_en && rx_wr_data[9])
+        else if (rx_wr_accept && rx_wr_is_eof)
             rx_frame_toggle <= ~rx_frame_toggle;
     end
 
@@ -98,18 +131,18 @@ module gmii_cdc (
     wire       rx_rd_empty;
     reg        rx_rd_en;
 
-    async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(12)) u_rx_fifo (
+    async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(RX_FIFO_ADDR_WIDTH)) u_rx_fifo (
         .wr_clk  (media_rx_clk),
         .wr_rst_n(media_rx_rst_n_s2),
-        .wr_data (rx_wr_data),
-        .wr_en   (rx_wr_en && !rx_wr_full),
+        .wr_data (rx_fifo_din),
+        .wr_en   (rx_wr_accept),
         .wr_full (rx_wr_full),
         .rd_clk  (sys_clk),
         .rd_rst_n(sys_rst_n),
         .rd_data (rx_rd_data),
         .rd_en   (rx_rd_en),
         .rd_empty(rx_rd_empty),
-        .wr_data_count()
+        .wr_data_count(rx_wr_count)
     );
 
     // Frame availability tracking (sys_clk domain)
@@ -118,17 +151,24 @@ module gmii_cdc (
     // Width = RX FIFO addr width + 1 (RX_CNT_W). A 4-bit counter aliased once 16
     // frames buffered: under sustained line rate the 125 MHz media_rx side fills
     // faster than the (slower) sys side drains, so small frames pile up well past
-    // 16 long before the 4K RX FIFO fills - the counter wrapped, rx_frame_ready
+    // 16 long before the RX FIFO fills - the counter wrapped, rx_frame_ready
     // read false, and the readout stalled. At ADDR_WIDTH+1 bits the FIFO fills
     // first, so it cannot alias.
-    localparam RX_CNT_W = 13;   // 12 (RX FIFO ADDR_WIDTH) + 1
+    localparam RX_CNT_W = RX_FIFO_ADDR_WIDTH + 1;
     reg [RX_CNT_W-1:0] rx_frames_pending;
     reg        rx_frame_done_pulse;
     reg        rx_reading;
+    reg        rx_out_data;     // current frame has put bytes on gmii_rxd_out
 
     wire rx_frame_avail   = (rx_toggle_s2 != rx_toggle_s3);
     wire rx_frame_avail_d = rx_avail_delay[7];
-    wire rx_frame_ready   = (rx_frames_pending > 0);
+    // rx_frames_pending lags a retired frame by one cycle (done pulse in
+    // flight), and at an EOF still counts the frame being retired. Readiness
+    // must exclude both, or the reader starts a frame whose EOF has not been
+    // written yet - cut-through, which underflows at 10/100 and breaks framing.
+    wire [RX_CNT_W-1:0] rx_done_inflight = {{(RX_CNT_W-1){1'b0}}, rx_frame_done_pulse};
+    wire rx_frame_ready   = (rx_frames_pending > rx_done_inflight);
+    wire rx_next_ready    = (rx_frames_pending > rx_done_inflight + 1'b1);
 
     always @(posedge sys_clk or negedge sys_rst_n) begin
         if (!sys_rst_n) begin
@@ -161,6 +201,7 @@ module gmii_cdc (
             rx_rd_en            <= 1'b0;
             rx_reading          <= 1'b0;
             rx_frame_done_pulse <= 1'b0;
+            rx_out_data         <= 1'b0;
         end else begin
             rx_rd_en            <= 1'b0;
             gmii_rx_dv_out      <= 1'b0;
@@ -170,29 +211,45 @@ module gmii_cdc (
             if (rx_reading) begin
                 if (!rx_rd_empty) begin
                     if (rx_rd_data[9]) begin
-                        // EOF marker: end this frame (consume it, do not output).
-                        // Stay in rx_reading so any following frame's first byte
-                        // is read by the normal data path below. Dropping to idle
-                        // here would re-enter the "align" pre-consume at the next
-                        // frame start and skip that frame's byte 0 (the byte-drop
-                        // that only appears once a next frame is already buffered).
-                        rx_rd_en            <= 1'b1;
+                        // EOF marker: end this frame (consumed, not output).
                         rx_frame_done_pulse <= 1'b1;
-                        if (!rx_frame_ready)
+                        rx_out_data         <= 1'b0;
+                        if (rx_rd_data[8] && rx_out_data) begin
+                            // Truncated by overflow: append one rx_er beat so the
+                            // MAC terrors the frame instead of relying on a CRC
+                            // miss, then go idle so the next frame still gets a
+                            // dv-low gap. A frame dropped whole emitted nothing
+                            // and takes the path below: no lone error beat.
+                            gmii_rxd_out   <= 8'h00;
+                            gmii_rx_dv_out <= 1'b1;
+                            gmii_rx_er_out <= 1'b1;
+                            rx_reading     <= 1'b0;
+                        end else if (rx_next_ready) begin
+                            // Next frame is already whole in the FIFO: keep the
+                            // read stream going; this cycle is the dv-low gap.
+                            rx_rd_en <= 1'b1;
+                        end else begin
+                            // Nothing complete behind this frame: go idle WITHOUT
+                            // a speculative pop. That pop used to eat the next
+                            // word - a preamble byte of a partly written frame,
+                            // or the EOF of a frame dropped whole by overflow,
+                            // which then left rx_frames_pending stuck.
                             rx_reading <= 1'b0;
+                        end
                     end else begin
                         gmii_rxd_out   <= rx_rd_data[7:0];
                         gmii_rx_dv_out <= 1'b1;
                         gmii_rx_er_out <= rx_rd_data[8];
                         rx_rd_en       <= 1'b1;
+                        rx_out_data    <= 1'b1;
                     end
                 end else if (!rx_frame_ready) begin
                     rx_reading <= 1'b0;
                 end
             end else if (rx_frame_ready && !rx_rd_empty) begin
-                // Cold start out of empty: the FIFO/pointer are not settled for a
-                // direct output, so burn one "align" read; byte 0 falls through to
-                // rx_rd_data next cycle for the reading path above.
+                // Start a buffered frame. rd_en runs one cycle ahead of the
+                // reader: this pop lands on the edge where the reading path
+                // first sees the word, so each word is consumed exactly once.
                 rx_reading <= 1'b1;
                 rx_rd_en   <= 1'b1;
             end

@@ -13,12 +13,10 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] Ethernet FCS generation on TX
 - [x] Ethernet FCS validation on RX with `m_axis_terror`
 - [x] RX error tagging for FCS, receive error, FIFO overflow, and oversize
-- [x] Jumbo-frame TX gate up to `MAX_FRAME` (GMII and RGMII paths; the MII 10/100
-      path is standard-MTU only — its TX FIFO and RX replay buffer are 4096
-      bytes and cannot hold a jumbo frame, so jumbo TX requires GMII or RGMII).
-      **Jumbo RX is capped at ~4083 bytes on BOTH the GMII and RGMII paths** by
-      `gmii_cdc`'s fixed 4096-word RX CDC FIFO - measured, pre-existing, and
-      tracked as a known bug
+- [x] Jumbo frames up to `MAX_FRAME` on TX and RX (GMII and RGMII paths; the
+      MII 10/100 path is standard-MTU only — its TX FIFO and RX replay buffer
+      are 4096 bytes and cannot hold a jumbo frame, so jumbo requires GMII or
+      RGMII). The `gmii_cdc` RX CDC FIFO is sized from `MAX_FRAME`
 - [x] 802.3x PAUSE frame parse and TX gating
 - [x] Firmware-triggered PAUSE frame transmit through `PAUSE_CTRL`
 - [x] Single primary unicast MAC address filter
