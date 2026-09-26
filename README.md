@@ -149,6 +149,9 @@ module eth_mac_sys #(
     input  wire        clk_125, clk_125_90,
     input  wire        clk_25,           // 100M reference (cfg_speed=01)
     input  wire        clk_2_5,          // 10M reference (cfg_speed=10)
+                                         // clk_25 / clk_2_5 must share a source with
+                                         // clk_125 (e.g. one MMCM): they sample the
+                                         // clk_125-domain TX byte directly
     output wire [3:0]  rgmii_txd,
     output wire        rgmii_tx_ctl, rgmii_txc,
     input  wire [3:0]  rgmii_rxd,

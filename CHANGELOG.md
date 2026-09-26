@@ -172,7 +172,9 @@ This project does not yet maintain long-lived release branches.
     into a byte and pulsed `gmii_rx_dv` once per byte; `gmii_cdc` read each
     dv-low cycle as end of frame. `rgmii_if` now holds `gmii_rx_dv` for the
     whole frame and adds a `gmii_rx_ce` byte strobe, and `gmii_cdc` gains a
-    matching `gmii_rx_ce_in` (tied high on the GMII path and at 1G).
+    matching `gmii_rx_ce_in` (tied high on the GMII path and at 1G). Code
+    that instantiates `gmii_cdc` directly must tie `gmii_rx_ce_in` high;
+    left unconnected, RX writes nothing.
   - TX never sent the high nibble. At 10/100 `rgmii_if` drove `TXD[3:0]` in
     both TXC cycles of each paced byte. It now sends `TXD[3:0]` then
     `TXD[7:4]`, with the nibble and TX_CTL registered in the TXC domain.
