@@ -295,7 +295,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | RGMII-100M-LOOPBACK | Full system + RGMII pin-level loopback at 100M: min/MTU/back-to-back/9018-byte jumbo byte-exact, IFG >= 12 byte times | 12 |
 | RGMII-10M-LOOPBACK | As RGMII-100M-LOOPBACK at 10M (no jumbo) | 11 |
 | GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er` on the last kept byte, whole-frame drop, EOF-only frames, no merged frames, recovery | 31 |
-| GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, oversize gate, GTX_CLK integrity | 23 |
+| GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, back-to-back frames with IFG >= 12 byte times, oversize gate, GTX_CLK integrity | 27 |
 | GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |
 
 ## Hardware Test (Arty A7-100T)

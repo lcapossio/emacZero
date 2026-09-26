@@ -419,13 +419,15 @@ module gmii_cdc #(
     //   10M  = 800ns = 100 cycles(pace_max = 99)
     wire [9:0] pace_max = is_1g ? 10'd0 : (is_100 ? 10'd9 : 10'd99);
 
-    // Idle media cycles (TX_EN low) before each frame. At 1G the MAC's own IFG
-    // already spaces frames, so a short fixed delay is kept. When paced, the
-    // FIFO can hold the next frame as soon as one ends, so the gap is enforced
-    // here: 12 byte times (the 96-bit-time IFG) - 120 cycles at 100M, 1200 at
-    // 10M. Anything much shorter is invisible to the PHY at 2.5/25 MHz and
-    // merges back-to-back frames on the wire.
-    wire [10:0] tx_gap = is_1g ? 11'd8 : (is_100 ? 11'd120 : 11'd1200);
+    // Start delay before each frame, in media cycles. The TX FIFO is
+    // store-and-forward, so the next frame can be waiting as soon as one ends
+    // and the MAC framer's own IFG never reaches the wire: the gap is enforced
+    // here at every speed. TX_EN is low for tx_gap + 2 cycles (one to close
+    // out the frame, one to load the next), so 1G uses 10 for exactly 12 byte
+    // times (the 96-bit-time IFG); 100M/10M get 122/1202 cycles, just over 12
+    // byte times. Anything much shorter is invisible to the PHY at 2.5/25 MHz
+    // and merges back-to-back frames on the wire.
+    wire [10:0] tx_gap = is_1g ? 11'd10 : (is_100 ? 11'd120 : 11'd1200);
 
     // Committed-frame counter CDC into the media domain. tx_frame_pending_media
     // asserts once at least one whole frame has been committed to the FIFO but

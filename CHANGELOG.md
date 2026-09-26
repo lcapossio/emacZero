@@ -192,6 +192,16 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **1G inter-frame gap was 10 byte times, not 12.** `gmii_cdc` waited 8
+  media cycles before a queued frame, and with the cycle that closes the
+  previous frame and the one that loads the next, TX_EN was low for only 10
+  cycles - 80 bit times against the 96 IEEE 802.3 requires. The code assumed
+  the MAC framer's own IFG spaced frames at 1G, but the store-and-forward TX
+  FIFO absorbs it; any frame already queued when the previous one ended went
+  out 10 byte times later. The 1G start delay is now 10 cycles, for exactly
+  12 byte times on the wire. Affects GMII and RGMII at 1G; 100M/10M already
+  had 12.2 byte times. `GMII-LOOPBACK` now queues frames back to back and
+  requires a gap of at least 12 GTX_CLK cycles at the pins.
 - **RGMII at 10/100 Mbps now works end to end.** Three defects, none reachable
   at 1G and none covered by a pin-level test before:
   - RX split every byte into its own frame. `rgmii_if` pairs two RXC cycles

@@ -241,6 +241,31 @@ module tb_gmii_loopback;
         txc_last_fall = $realtime;
     end
 
+    // -------------------------------------------------------------------------
+    // Inter-frame gap on the wire, as the PHY samples it (GTX_CLK rising
+    // edge): shortest TX_EN-low run between two frames, in byte times.
+    // -------------------------------------------------------------------------
+    integer gap_cycles, min_gap, tx_bursts;
+    reg     tx_en_d;
+
+    initial begin gap_cycles = 0; min_gap = 1000000; tx_bursts = 0; tx_en_d = 0; end
+
+    always @(posedge gmii_txc) begin
+        if (rst_n) begin
+            if (gmii_tx_en) begin
+                if (!tx_en_d) begin
+                    if (tx_bursts > 0 && gap_cycles < min_gap)
+                        min_gap = gap_cycles;
+                    tx_bursts = tx_bursts + 1;
+                end
+                gap_cycles = 0;
+            end else begin
+                gap_cycles = gap_cycles + 1;
+            end
+            tx_en_d = gmii_tx_en;
+        end
+    end
+
     // ---- AXI4-Lite BFM ----
     reg [31:0] rd_result;
 
@@ -477,6 +502,26 @@ module tb_gmii_loopback;
         end
         check_int("GTX_CLK phase violations", txc_phase_viol, 0);
         check_int("GTX_CLK pulse-width violations", txc_width_viol, 0);
+
+        // Test 8b: frames queued back to back. The two short frames are fully
+        // in gmii_cdc's store-and-forward TX FIFO before the long one ends, so
+        // only gmii_cdc's gap separates them on the wire. The MAC framer's own
+        // IFG is spent writing the FIFO and never reaches the pins.
+        send_frame(1500);
+        send_frame(60);
+        send_frame(46);
+        #200000;
+        check_int("back-to-back frame count", rx_frame_cnt, 7);
+        check_int("back-to-back rx error beats", rx_err_cnt, 0);
+        check_int("frames seen on the TX pins", tx_bursts, 7);
+        // IEEE 802.3 IFG: 96 bit times = 12 byte times = 12 GTX_CLK cycles
+        if (min_gap >= 12 && min_gap < 1000000) begin
+            $display("PASS: shortest inter-frame gap %0d byte times (>= 12)", min_gap);
+            pass_cnt = pass_cnt + 1;
+        end else begin
+            $display("FAIL: shortest inter-frame gap %0d byte times, expected >= 12", min_gap);
+            fail_cnt = fail_cnt + 1;
+        end
 
         // Test 9: the oversize gate works on the GMII path. Clear jumbo_en and
         // resend the same jumbo frame - it must now be delivered with terror
