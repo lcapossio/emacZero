@@ -7,6 +7,13 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- `fpga/zcu106/`: AMD ZCU106 board port over SFP cage 0 (1000BASE-X). It uses
+  `PHY_INTERFACE="GMII"` behind the AMD 1G/2.5G Ethernet PCS/PMA IP on a GTH,
+  with the MAC and the ARP/ICMP/UDP-echo demo on the 125 MHz transceiver
+  clock. The GTH reference clock defaults to the USER_MGT_SI570 (156.25 MHz,
+  no setup); `-tclargs si5328` instead programs the Si5328 to 125 MHz over I2C
+  with `i2c_init` (simulated by `ZCU106-I2C-INIT`). Builds and meets timing;
+  not yet tested on hardware.
 - **Arty GMII fabric-loopback self-test** (`fpga/arty_a7/rtl/gmii_lb_selftest.v`,
   built with `fpga/arty_a7/scripts/build_arty_gmii_lb.tcl`). A second
   `eth_mac_sys` in GMII mode (`MAX_FRAME=9018`, 125 MHz from an MMCM) has its

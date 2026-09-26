@@ -776,6 +776,14 @@ TESTS = [
         "out": "sim/tb_gmii_lb_selftest.vvp",
         "sim_timeout": 300,
     },
+    {
+        "name": "ZCU106-I2C-INIT",
+        "srcs": ["fpga/zcu106/rtl/i2c_init.v",
+                 "sim/tb/tb_zcu106_i2c_init.v"],
+        "out": "sim/tb_zcu106_i2c_init.vvp",
+        "iverilog_args": "-Ifpga/zcu106/rtl",
+        "sim_timeout": 120,
+    },
 ]
 
 

@@ -18,6 +18,7 @@ responder, and optional IPv4/UDP TX checksum offload.
 - [Register Map](#register-map)
 - [Simulation](#simulation)
 - [Hardware Test (Arty A7-100T)](#hardware-test-arty-a7-100t)
+- [ZCU106 SFP Demo (1000BASE-X)](#zcu106-sfp-demo-1000base-x)
 - [Integration](#integration)
 - [Security and CRA Readiness](#security-and-cra-readiness)
 - [Resource Usage](#resource-usage)
@@ -298,6 +299,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er` on the last kept byte, whole-frame drop, EOF-only frames, no merged frames, recovery | 31 |
 | GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, back-to-back frames with IFG >= 12 byte times, oversize gate, GTX_CLK integrity | 27 |
 | GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |
+| ZCU106-I2C-INIT | ZCU106 Si5328 I2C write sequence against the register list, NACK retry at the alternate address | 3 |
 
 ## Hardware Test (Arty A7-100T)
 
@@ -319,6 +321,16 @@ Current Arty A7-100T hardware throughput, re-validated on 2026-09-23 (after the
 These are UDP payload Mbps, not raw wire Mbps. Around 95 Mbps payload is
 expected on a 100 Mbps Ethernet link once preamble, IFG, headers, and FCS are
 included.
+
+## ZCU106 SFP Demo (1000BASE-X)
+
+The AMD ZCU106 port runs the MAC in `PHY_INTERFACE="GMII"` mode behind the
+AMD 1G/2.5G Ethernet PCS/PMA IP (1000BASE-X on a GTH transceiver) through SFP
+cage 0, with the ARP/ICMP/UDP-echo demo. It builds and meets timing but has
+not yet been tested on hardware. The GTH reference clock is the on-board
+USER_MGT_SI570 (156.25 MHz, no setup) by default, with an optional Si5328
+build. Setup and LED meanings are in
+[fpga/zcu106/README.md](fpga/zcu106/README.md).
 
 ## Integration
 
