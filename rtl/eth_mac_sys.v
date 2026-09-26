@@ -29,6 +29,9 @@ module eth_mac_sys #(
     // never stalls for a full frame.
     parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
     parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize IPv4/UDP TX checksum patcher
+    // GMII/RGMII CDC FIFO storage: "BLOCK" (block RAM) or "DISTRIBUTED"
+    // (LUTRAM). Jumbo depths need "BLOCK" to fit and close timing.
+    parameter CDC_RAM_STYLE     = "BLOCK",
     parameter MII_DEBUG         = 0
 )(
     input  wire        clk,           // system clock (100 MHz)
@@ -550,7 +553,7 @@ module eth_mac_sys #(
             // cfg_speed is pinned to 2'b00 (1G): GMII has no 10/100 mode, so
             // gmii_cdc must never engage its byte-pacing dividers here. A CSR
             // write selecting 100M/10M is ignored on this branch by design.
-            gmii_cdc #(.MAX_FRAME(MAX_FRAME)) u_gmii_cdc (
+            gmii_cdc #(.MAX_FRAME(MAX_FRAME), .FIFO_RAM_STYLE(CDC_RAM_STYLE)) u_gmii_cdc (
                 .sys_clk        (clk),
                 .sys_rst_n      (rst_n),
                 .media_clk      (clk_125),
@@ -649,7 +652,7 @@ module eth_mac_sys #(
             assign tx_frame_done_ev = gmii_tx_en_d1 & ~gmii_tx_en;
             assign tx_active        = mac_tx_active;
 
-            gmii_cdc #(.MAX_FRAME(MAX_FRAME)) u_gmii_cdc (
+            gmii_cdc #(.MAX_FRAME(MAX_FRAME), .FIFO_RAM_STYLE(CDC_RAM_STYLE)) u_gmii_cdc (
                 .sys_clk        (clk),
                 .sys_rst_n      (rst_n),
                 .media_clk      (clk_125),

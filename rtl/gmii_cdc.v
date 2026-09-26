@@ -10,12 +10,16 @@
 module gmii_cdc #(
     // Largest frame the RX path must deliver intact (DA..FCS bytes). The RX CDC
     // FIFO is store-and-forward - the sys side waits for a frame's EOF marker -
-    // so it must hold MAX_FRAME + 8 preamble/SFD words + the EOF word + the one
-    // slot reserved for that EOF. 4096-word floor keeps standard-MTU builds at
-    // their previous depth for small-frame bursts.
+    // so it must hold MAX_FRAME + 8 preamble/SFD words + the EOF word + the
+    // slots held back for that EOF. 4096-word floor keeps standard-MTU builds
+    // at their previous depth for small-frame bursts.
     parameter MAX_FRAME          = 9018,
     parameter RX_FIFO_ADDR_WIDTH = ($clog2(MAX_FRAME + 10) > 12) ?
-                                    $clog2(MAX_FRAME + 10) : 12
+                                    $clog2(MAX_FRAME + 10) : 12,
+    // Storage for both CDC FIFOs (async_fifo RAM_STYLE). "BLOCK" maps them to
+    // block RAM; "DISTRIBUTED" to LUTRAM, which at the 16K-word jumbo depths
+    // costs ~7K LUTs and does not close timing at 100/125 MHz on Artix-7.
+    parameter FIFO_RAM_STYLE     = "BLOCK"
 )(
     input  wire        sys_clk,
     input  wire        sys_rst_n,
@@ -77,14 +81,26 @@ module gmii_cdc #(
     reg        rx_dv_d1;
     reg        rx_drop;         // media_rx: current frame lost bytes to overflow
 
-    // Overflow policy. Data words are only written while at least two slots are
-    // free, so the frame's EOF word always fits: a dropped EOF would leave the
-    // sys side reading two frames as one (the frame toggle still fires). Once a
-    // data word is refused, the rest of that frame is dropped too - no holes -
-    // and its EOF carries the truncation flag. rx_wr_count lags reads, never
-    // writes, so it only ever over-reports occupancy (safe direction).
+    // Overflow policy. Data words are only written while slots are held back
+    // for the frame's EOF word, so it always fits: a dropped EOF would leave
+    // the sys side reading two frames as one (the frame toggle still fires).
+    // Once a data word is refused, the rest of that frame is dropped too - no
+    // holes - and its EOF carries the truncation flag. rx_wr_count lags reads,
+    // never writes, so it only ever over-reports occupancy (safe direction).
+    //
+    // rx_data_room is registered to keep the pointer arithmetic out of the
+    // FIFO write-enable path (unregistered it failed 125 MHz timing). The
+    // registered value misses at most the one write accepted since it was
+    // sampled, so the threshold is DEPTH-2: sampled <= DEPTH-3 means at most
+    // DEPTH-1 words after this write, leaving the EOF its slot.
     wire rx_wr_is_eof   = rx_wr_data[9];
-    wire rx_data_room   = (rx_wr_count < RX_FIFO_DEPTH - 1'b1);
+    reg  rx_data_room;
+    always @(posedge media_rx_clk or negedge media_rx_rst_n_s2) begin
+        if (!media_rx_rst_n_s2)
+            rx_data_room <= 1'b1;
+        else
+            rx_data_room <= (rx_wr_count < RX_FIFO_DEPTH - 2'd2);
+    end
     wire rx_wr_accept   = rx_wr_en &&
                           (rx_wr_is_eof ? !rx_wr_full : (rx_data_room && !rx_drop));
     wire rx_data_refuse = rx_wr_en && !rx_wr_is_eof && !rx_wr_accept;
@@ -131,7 +147,8 @@ module gmii_cdc #(
     wire       rx_rd_empty;
     reg        rx_rd_en;
 
-    async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(RX_FIFO_ADDR_WIDTH)) u_rx_fifo (
+    async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(RX_FIFO_ADDR_WIDTH),
+                 .RAM_STYLE(FIFO_RAM_STYLE)) u_rx_fifo (
         .wr_clk  (media_rx_clk),
         .wr_rst_n(media_rx_rst_n_s2),
         .wr_data (rx_fifo_din),
@@ -337,7 +354,8 @@ module gmii_cdc #(
     assign tx_busy       = (tx_fifo_count > TX_START_LIMIT);
 
     // TX data + EOF packet FIFO: sys_clk -> media_clk (16K words for jumbo)
-    async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(14)) u_tx_fifo (
+    async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(14),
+                 .RAM_STYLE(FIFO_RAM_STYLE)) u_tx_fifo (
         .wr_clk  (sys_clk),
         .wr_rst_n(sys_rst_n),
         .wr_data (tx_wr_data),

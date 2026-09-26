@@ -7,6 +7,15 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- **Selectable async FIFO storage.** `async_fifo` takes `RAM_STYLE`:
+  `"DISTRIBUTED"` (the previous combinational-read design, LUTRAM; still the
+  default, so the MII FIFOs are unchanged) or `"BLOCK"` (registered read into
+  a one-word first-word-fall-through output stage, block RAM). The interface is
+  identical; in `"BLOCK"` mode `rd_empty` clears one read clock later, and the
+  loaded output word adds one to capacity (DEPTH+1). `gmii_cdc` gains
+  `FIFO_RAM_STYLE` and `eth_mac_sys` gains `CDC_RAM_STYLE`, both defaulting to
+  `"BLOCK"`. New `ASYNC-FIFO-BLOCK` and `GMII-CDC-RX-OVERFLOW-DIST` runs cover
+  the non-default style of each.
 - Vivado RTL elaboration gate in the regression (`PHASE 0c`, via
   `fpga/arty_a7/scripts/elab_check.tcl`). It elaborates the Arty top - which
   pulls in the whole MAC and the optional L3 helpers - without synthesizing,
@@ -145,6 +154,18 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **GMII/RGMII builds with jumbo `MAX_FRAME` did not fit in LUTs or close
+  timing.** `async_fifo` read its memory combinationally, so Vivado built the
+  16K-word `gmii_cdc` CDC FIFOs from LUTRAM: about 7,200 LUTs for the pair,
+  and write-decode paths that failed 100 MHz on the TX FIFO (a pre-existing
+  16K FIFO) and 125 MHz on the RX FIFO. Found by the first synthesized GMII
+  build, a fabric-loopback self-test on the Arty. `gmii_cdc` now uses
+  `RAM_STYLE="BLOCK"` storage (see Added).
+- **`gmii_cdc` RX overflow check was on the FIFO write-enable path.** The
+  "keep a slot for the EOF" test (Gray-to-binary conversion, subtract,
+  compare) fed the RX FIFO write enable combinationally and failed 125 MHz
+  timing. It is now registered; to cover the one write it can miss, data is
+  refused at DEPTH-2 words instead of DEPTH-1.
 - **Jumbo RX truncated above ~4083 bytes on the GMII and RGMII paths.**
   `gmii_cdc`'s RX CDC FIFO is store-and-forward (the sys side waits for a
   frame's EOF marker) but was fixed at 4096 words, so any frame longer than

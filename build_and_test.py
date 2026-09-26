@@ -408,6 +408,12 @@ TESTS = [
         "out": "sim/tb_async_fifo.vvp",
     },
     {
+        "name": "ASYNC-FIFO-BLOCK",
+        "srcs": ["rtl/async_fifo.v", "sim/tb/tb_async_fifo.v"],
+        "out": "sim/tb_async_fifo_block.vvp",
+        "iverilog_args": "-DASYNC_FIFO_BLOCK",
+    },
+    {
         "name": "ETH-MAC-FCS",
         "srcs": ["rtl/crc32.v", "rtl/eth_mac_tx.v", "sim/tb/tb_eth_mac_fcs.v"],
         "out": "sim/tb_eth_mac_fcs.vvp",
@@ -657,6 +663,13 @@ TESTS = [
         "srcs": ["rtl/async_fifo.v", "rtl/gmii_cdc.v",
                  "sim/tb/tb_gmii_cdc_rx_overflow.v"],
         "out": "sim/tb_gmii_cdc_rx_overflow.vvp",
+    },
+    {
+        "name": "GMII-CDC-RX-OVERFLOW-DIST",
+        "srcs": ["rtl/async_fifo.v", "rtl/gmii_cdc.v",
+                 "sim/tb/tb_gmii_cdc_rx_overflow.v"],
+        "out": "sim/tb_gmii_cdc_rx_overflow_dist.vvp",
+        "iverilog_args": "-DGMII_CDC_DISTRIBUTED",
     },
     {
         "name": "GMII-CDC-100M",

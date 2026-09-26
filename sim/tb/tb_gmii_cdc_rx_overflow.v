@@ -22,6 +22,18 @@
 module tb_gmii_cdc_rx_overflow;
 
     localparam AW = 6;                  // 64-word RX FIFO
+    // Built twice by the regression: GMII-CDC-RX-OVERFLOW (block, the default)
+    // and GMII-CDC-RX-OVERFLOW-DIST (-DGMII_CDC_DISTRIBUTED).
+// KEPT = data words of an overflowing frame that fit: DEPTH-1 (one slot held
+// for the EOF), plus the word the BLOCK FIFO's output stage has already
+// pulled out of memory.
+`ifdef GMII_CDC_DISTRIBUTED
+    localparam RAM_STYLE = "DISTRIBUTED";
+    localparam KEPT      = (1 << AW) - 1;
+`else
+    localparam RAM_STYLE = "BLOCK";
+    localparam KEPT      = (1 << AW);
+`endif
 
     // ---- Clocks ----
     reg     sys_clk, media_clk, sys_rst_n;
@@ -35,7 +47,7 @@ module tb_gmii_cdc_rx_overflow;
     wire [7:0] rx_data;
     wire       rx_dv, rx_er;
 
-    gmii_cdc #(.RX_FIFO_ADDR_WIDTH(AW)) uut (
+    gmii_cdc #(.RX_FIFO_ADDR_WIDTH(AW), .FIFO_RAM_STYLE(RAM_STYLE)) uut (
         .sys_clk        (sys_clk),
         .sys_rst_n      (sys_rst_n),
         .media_clk      (media_clk),
@@ -223,10 +235,9 @@ module tb_gmii_cdc_rx_overflow;
         check("T2 exactly one frame out of B/C/D", n_frames == 2);
         check("T2 B delivered as a valid truncated prefix", fr_ok[1] && fr_id[1] == 8'h20);
         check("T2 B ends with an rx_er beat", fr_trunc[1]);
-        // 63 data words kept (DEPTH-1: one slot stays reserved for the EOF):
-        // 7 preamble + SFD + 55 payload bytes.
-        check("T2 B is short (63 kept words - 8 preamble/SFD = 55 bytes)",
-              fr_plen[1] == 55);
+        // KEPT data words: 7 preamble + SFD + (KEPT - 8) payload bytes.
+        check("T2 B is short (KEPT words - 8 preamble/SFD)",
+              fr_plen[1] == KEPT - 8);
         check("T2 no stray beats from the dropped frames", stray_beats == 0);
         check("T2 pending-frame count back to zero", uut.rx_frames_pending == 0);
         check("T2 reader idle", !uut.rx_reading);
@@ -242,7 +253,7 @@ module tb_gmii_cdc_rx_overflow;
               fr_ok[3] && !fr_trunc[3] && fr_id[3] == 8'h90 && fr_plen[3] == 30);
 
         // ---- T3b: exact fit, then an EOF-only frame -------------------------
-        // E (8 + 54 = 62 words + EOF) fills the FIFO to 63 without overflowing.
+        // E (KEPT - 1 data words + EOF) fills the FIFO without overflowing.
         // F then gets no data room but its EOF still fits: an EOF-only frame
         // the reader must retire silently (it used to be able to pop it as a
         // speculative read and wedge rx_frames_pending). G finds it full.
@@ -250,7 +261,7 @@ module tb_gmii_cdc_rx_overflow;
         i    = ovf_eofs;
         sys_half = 50;
         repeat (4) @(posedge sys_clk);
-        send_frame(8'hA0, 54, 30);      // E
+        send_frame(8'hA0, KEPT - 9, 30);    // E
         send_frame(8'hC0, 10, 30);      // F
         send_frame(8'hE0, 10, 30);      // G
         wait_idle;
@@ -258,7 +269,8 @@ module tb_gmii_cdc_rx_overflow;
         repeat (20) @(posedge sys_clk);
         check("T3b exactly one frame out of E/F/G", n_frames == base + 1);
         check("T3b E exact and clean",
-              fr_ok[base] && !fr_trunc[base] && fr_id[base] == 8'hA0 && fr_plen[base] == 54);
+              fr_ok[base] && !fr_trunc[base] && fr_id[base] == 8'hA0 &&
+              fr_plen[base] == KEPT - 9);
         check("T3b F reached the FIFO as an EOF-only frame", ovf_eofs == i + 1);
         check("T3b no stray beats", stray_beats == 0);
         check("T3b pending-frame count back to zero", uut.rx_frames_pending == 0);

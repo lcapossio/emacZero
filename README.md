@@ -59,7 +59,7 @@ responder, and optional IPv4/UDP TX checksum offload.
 - **Interrupt support** - TX done, RX frame, MDIO done with enable/mask
 - **Minimum frame padding** - auto-pads to 64 bytes
 - **Inter-frame gap** - 12-byte IFG enforcement
-- **Vendor-agnostic** - DDR I/O wrappers for Xilinx/Intel/simulation, async FIFO wraps XPM or behavioral
+- **Vendor-agnostic** - DDR I/O wrappers for Xilinx/Intel/simulation; portable async FIFO with selectable block-RAM or distributed-RAM storage (`mii_if` uses XPM FIFOs on Xilinx)
 - **Optional L3** - Ethernet/IP/ICMP/UDP RX parser, ICMP echo, UDP echo, UDP blast generator, and passive iperf2 sink/stat responder (`rtl/net/`)
 
 ## Architecture
@@ -88,7 +88,7 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 | `ddr_output.v` | Vendor-agnostic DDR output (Xilinx ODDR / Intel / behavioral) |
 | `ddr_input.v` | Vendor-agnostic DDR input (Xilinx IDDR / Intel / behavioral) |
 | `crc32.v` | IEEE 802.3 CRC-32 (reflected polynomial 0xEDB88320) |
-| `async_fifo.v` | Async FIFO (XPM for Xilinx synthesis, behavioral for sim) |
+| `async_fifo.v` | Gray-pointer async FIFO, first-word-fall-through; `RAM_STYLE="BLOCK"` (block RAM, registered read) or `"DISTRIBUTED"` (LUTRAM) |
 | `mdio_master.v` | MDIO serial interface for PHY register access |
 | `eth_mac.v` | Bare MAC wrapper (TX + RX + MII, no CSR) for simple designs |
 | `tx_csum_off.v` | IPv4/UDP TX checksum insertion helper |
@@ -113,6 +113,7 @@ module eth_mac_sys #(
     // backpressure; lower to save BRAM on standard-MTU builds.
     parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
     parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize checksum patcher
+    parameter CDC_RAM_STYLE     = "BLOCK",// GMII/RGMII CDC FIFOs: "BLOCK" | "DISTRIBUTED"
     parameter MII_DEBUG         = 0       // 0 = debug capture/counters off
 )(
     input  wire        clk,           // system clock (100 MHz)
