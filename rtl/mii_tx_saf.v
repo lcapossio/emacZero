@@ -72,7 +72,7 @@ module mii_tx_saf #(
     // =========================================================================
     // mii_tx_clk reset synchronizer
     // =========================================================================
-    reg tx_rst_n_s1, tx_rst_n_s2;
+    (* ASYNC_REG = "TRUE" *) reg tx_rst_n_s1, tx_rst_n_s2;
     always @(posedge mii_tx_clk or negedge rst_n) begin
         if (!rst_n) {tx_rst_n_s2, tx_rst_n_s1} <= 2'b00;
         else        {tx_rst_n_s2, tx_rst_n_s1} <= {tx_rst_n_s1, 1'b1};

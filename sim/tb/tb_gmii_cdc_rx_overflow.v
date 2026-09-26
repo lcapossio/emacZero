@@ -6,14 +6,15 @@
 // Shrinks the RX FIFO to 64 words (RX_FIFO_ADDR_WIDTH=6) and drives the media
 // RX side directly, slowing sys_clk to force overflow. Checks that:
 //   - a frame larger than the FIFO is delivered truncated, with rx_er on its
-//     final beat only (so the MAC terrors it), never silently short
+//     last real byte only (so the MAC terrors it), never silently short and
+//     never lengthened by an extra error byte
 //   - a frame arriving into a full FIFO is dropped whole, with no stray beats
 //   - frame boundaries survive overflow: no two frames are merged, the
 //     pending-frame count returns to zero and the reader goes idle
 //   - a frame reduced to its EOF word by overflow is retired silently
 //   - normal frames after an overflow come through intact
 //   - under a small-frame burst every delivered frame is either exact and
-//     clean, or a truncated prefix ending in an rx_er beat, in order
+//     clean, or a truncated prefix whose last byte carries rx_er, in order
 // Frames are preamble + SFD + payload; payload[i] = (id + i) & 0xFF so the
 // checker identifies each delivered frame and detects merges.
 // =============================================================================
@@ -119,8 +120,9 @@ module tb_gmii_cdc_rx_overflow;
     // Result of the most recent delivered frames, by delivery order.
     integer   n_frames;                 // frames delivered
     integer   fr_id    [0:63];          // frame id (payload[0])
-    integer   fr_plen  [0:63];          // payload bytes delivered (excl. err beat)
-    reg       fr_trunc [0:63];          // ended with an rx_er beat
+    integer   fr_plen  [0:63];          // payload bytes delivered
+    integer   fr_len   [0:63];          // total beats delivered
+    reg       fr_trunc [0:63];          // last byte carried rx_er
     reg       fr_ok    [0:63];          // structure + content valid
     integer   stray_beats;              // dv beats not forming a valid frame
 
@@ -153,8 +155,9 @@ module tb_gmii_cdc_rx_overflow;
     end
 
     // Strip leading preamble 0x55 (the reader may consume one on cold start),
-    // require the SFD, then check payload[i] = payload[0] + i. A final beat with
-    // rx_er set marks truncation; rx_er anywhere else is a failure.
+    // require the SFD, then check payload[i] = payload[0] + i. rx_er on the last
+    // byte marks truncation - that byte is real data and is content-checked
+    // like the rest; rx_er anywhere else is a failure.
     task analyse;
         input integer len;
         integer last;
@@ -162,8 +165,7 @@ module tb_gmii_cdc_rx_overflow;
             ok   = 1'b1;
             last = len;
             pre  = 0;
-            if (len > 0 && cap_er[len-1]) last = len - 1;
-            for (j = 0; j < last; j = j + 1)
+            for (j = 0; j < len - 1; j = j + 1)
                 if (cap_er[j]) ok = 1'b0;
             while (pre < last && cap_d[pre] == 8'h55) pre = pre + 1;
             if (pre >= last || cap_d[pre] != 8'hD5 || pre < 6) ok = 1'b0;
@@ -175,7 +177,8 @@ module tb_gmii_cdc_rx_overflow;
             if (n_frames < 64) begin
                 fr_id[n_frames]    = (ok && p > 0) ? cap_d[pre + 1] : -1;
                 fr_plen[n_frames]  = p;
-                fr_trunc[n_frames] = (last != len);
+                fr_len[n_frames]   = len;
+                fr_trunc[n_frames] = (len > 0) && cap_er[len-1];
                 fr_ok[n_frames]    = ok;
             end
             if (!ok) stray_beats = stray_beats + len;
@@ -235,10 +238,12 @@ module tb_gmii_cdc_rx_overflow;
         check("T2 only B's EOF was committed (C/D EOFs refused)", ovf_eofs == i + 1);
         check("T2 exactly one frame out of B/C/D", n_frames == 2);
         check("T2 B delivered as a valid truncated prefix", fr_ok[1] && fr_id[1] == 8'h20);
-        check("T2 B ends with an rx_er beat", fr_trunc[1]);
+        check("T2 B's last byte carries rx_er", fr_trunc[1]);
         // KEPT data words: 7 preamble + SFD + (KEPT - 8) payload bytes.
         check("T2 B is short (KEPT words - 8 preamble/SFD)",
               fr_plen[1] == KEPT - 8);
+        check("T2 B is exactly the KEPT words, no extra error byte",
+              fr_len[1] == KEPT);
         check("T2 no stray beats from the dropped frames", stray_beats == 0);
         check("T2 pending-frame count back to zero", uut.rx_frames_pending == 0);
         check("T2 reader idle", !uut.rx_reading);

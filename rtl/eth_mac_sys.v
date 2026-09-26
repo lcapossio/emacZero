@@ -16,6 +16,16 @@
 // GMII branch therefore pins gmii_cdc's pacing to 1G and ignores cfg_speed's
 // speed field. Its main use is feeding a vendor 1G PCS/PMA core (SGMII /
 // 1000BASE-X), which presents a GMII bus rather than PHY pins.
+//
+// System clock and 1G: the datapath moves one byte per clk. At 1000 Mbps the
+// PHY delivers one byte per 8 ns, so clk must be at least 125 MHz or the RX
+// CDC FIFO falls behind under sustained traffic and drops frames (at 100 MHz a
+// back-to-back 1518-byte stream loses ~3 us per frame). The 12-byte IFG and
+// the preamble leave ~11 clk cycles of slack per frame at exactly 125 MHz,
+// which absorbs a ppm offset between clk and the PHY clock. Set CLK_FREQ_HZ to
+// the real clk frequency: a build that can run at 1G (GMII, or RGMII with
+// RGMII_SPEEDS other than "10_100") fails elaboration below 125 MHz, and the
+// PAUSE-quantum and MDC dividers are derived from it.
 // =============================================================================
 
 module eth_mac_sys #(
@@ -32,9 +42,15 @@ module eth_mac_sys #(
     // GMII/RGMII CDC FIFO storage: "BLOCK" (block RAM) or "DISTRIBUTED"
     // (LUTRAM). Jumbo depths need "BLOCK" to fit and close timing.
     parameter CDC_RAM_STYLE     = "BLOCK",
+    // Frequency of clk in Hz. Must be >= 125 MHz for any build that can run
+    // at 1G (see header); sets the PAUSE-quantum and MDC dividers.
+    parameter CLK_FREQ_HZ       = 100_000_000,
+    // RGMII speeds to synthesize: "ALL", "1G_ONLY" or "10_100". "10_100"
+    // removes 1G, and with it the 125 MHz clk requirement.
+    parameter RGMII_SPEEDS      = "ALL",
     parameter MII_DEBUG         = 0
 )(
-    input  wire        clk,           // system clock (100 MHz)
+    input  wire        clk,           // system clock, CLK_FREQ_HZ
     input  wire        rst_n,
 
     // ---- AXI4-Lite CSR slave (8-bit address: 0x00-0x90 used) ----
@@ -342,7 +358,34 @@ module eth_mac_sys #(
     // 1G. The GMII branch ties gmii_cdc's pacing to 1G for the same reason.
     wire [1:0] cfg_speed_eff = (PHY_INTERFACE == "GMII") ? 2'b00 : cfg_speed;
 
-    eth_pause u_pause (
+    // =========================================================================
+    // Clock-frequency configuration
+    // =========================================================================
+    // 1G needs one clk per wire byte (see header). Verilog-2001 has no
+    // elaboration-time $error, so an unsatisfiable configuration instantiates
+    // a module that does not exist; its name is the error message.
+    localparam CAN_RUN_1G = (PHY_INTERFACE == "GMII") ||
+                            ((PHY_INTERFACE == "RGMII") && (RGMII_SPEEDS != "10_100"));
+    generate
+        if (CAN_RUN_1G && (CLK_FREQ_HZ < 125_000_000)) begin : gen_clk_check
+            EMACZERO_CONFIG_ERROR_1G_needs_CLK_FREQ_HZ_at_least_125MHz_or_RGMII_SPEEDS_10_100
+                u_clk_freq_too_low ();
+        end
+    endgenerate
+
+    // PAUSE quantum = 512 bit times: 512 ns at 1G, 5.12 us at 100M, 51.2 us at
+    // 10M, in clk cycles rounded up (52 / 512 / 5120 at 100 MHz). Computed in
+    // kHz so the products stay inside 32-bit integer arithmetic.
+    localparam CLK_KHZ = CLK_FREQ_HZ / 1000;
+    localparam [15:0] PAUSE_DIV_1G   = (CLK_KHZ * 512 + 999_999) / 1_000_000;
+    localparam [15:0] PAUSE_DIV_100M = (CLK_KHZ * 512 +  99_999) /   100_000;
+    localparam [15:0] PAUSE_DIV_10M  = (CLK_KHZ * 512 +   9_999) /    10_000;
+
+    eth_pause #(
+        .TICK_DIV_1G   (PAUSE_DIV_1G),
+        .TICK_DIV_100M (PAUSE_DIV_100M),
+        .TICK_DIV_10M  (PAUSE_DIV_10M)
+    ) u_pause (
         .clk                 (clk),
         .rst_n               (rst_n),
         .our_mac             (cfg_mac_addr),
@@ -679,7 +722,7 @@ module eth_mac_sys #(
 
             assign tx_fifo_level = {1'b0, rgmii_tx_fifo_level};
 
-            rgmii_if u_rgmii_if (
+            rgmii_if #(.RGMII_SPEEDS(RGMII_SPEEDS)) u_rgmii_if (
                 .clk_125     (clk_125),
                 .clk_125_90  (clk_125_90),
                 .clk_25      (clk_25),
@@ -852,7 +895,7 @@ module eth_mac_sys #(
     // =========================================================================
     // MDIO master
     // =========================================================================
-    mdio_master u_mdio (
+    mdio_master #(.CLK_FREQ_HZ(CLK_FREQ_HZ)) u_mdio (
         .clk       (clk),
         .rst_n     (rst_n),
         .mdc       (mdc),

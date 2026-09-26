@@ -33,7 +33,7 @@ module tb_gmii_loopback;
 
     initial sys_clk = 0;
     initial clk_125 = 0;
-    always #5 sys_clk = ~sys_clk;   // 100 MHz
+    always #4 sys_clk = ~sys_clk;   // 125 MHz: 1G needs one clk per wire byte
     always #4 clk_125 = ~clk_125;   // 125 MHz
 
     // PHY-sourced RX clock: same nominal rate, deliberately offset 2 ns from
@@ -79,7 +79,8 @@ module tb_gmii_loopback;
 
     eth_mac_sys #(
         .PHY_INTERFACE ("GMII"),
-        .MAX_FRAME     (MAX_FRAME)
+        .MAX_FRAME     (MAX_FRAME),
+        .CLK_FREQ_HZ   (125_000_000)
     ) uut (
         .clk            (sys_clk),
         .rst_n          (rst_n),

@@ -212,7 +212,7 @@ module rgmii_if #(
     // asynchronous to rgmii_rxc (a PHY-sourced clock); using it directly risks
     // metastable reset release of the pairing state. Async assert, 2-FF sync
     // deassert, matching the gmii_cdc / mii_if reset-synchronizer style.
-    reg rx_rst_n_s1, rx_rst_n_s2;
+    (* ASYNC_REG = "TRUE" *) reg rx_rst_n_s1, rx_rst_n_s2;
     always @(posedge rgmii_rxc or negedge rst_n) begin
         if (!rst_n) {rx_rst_n_s2, rx_rst_n_s1} <= 2'b00;
         else        {rx_rst_n_s2, rx_rst_n_s1} <= {rx_rst_n_s1, 1'b1};

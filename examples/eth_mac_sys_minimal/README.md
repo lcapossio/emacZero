@@ -54,9 +54,17 @@ CSRs are documented in [sw/README.md](../../sw/README.md). The driver in
 
 ```verilog
 eth_mac_sys_minimal #(.PHY_INTERFACE("MII"))  u_mac (...);
-// or
-eth_mac_sys_minimal #(.PHY_INTERFACE("RGMII")) u_mac (...);
+// or, gigabit-capable RGMII (clk must run at 125 MHz or more):
+eth_mac_sys_minimal #(.PHY_INTERFACE("RGMII"),
+                      .CLK_FREQ_HZ(125_000_000)) u_mac (...);
+// or 10/100-only RGMII on a slower clk:
+eth_mac_sys_minimal #(.PHY_INTERFACE("RGMII"),
+                      .RGMII_SPEEDS("10_100")) u_mac (...);
 ```
+
+At 1G the MAC moves one byte per `clk`, so `clk` below 125 MHz cannot keep
+up with sustained RX; a 1G-capable build with `CLK_FREQ_HZ` below 125 MHz
+fails elaboration. `CLK_FREQ_HZ` also sets the PAUSE-quantum and MDC dividers.
 
 Tie off the unused interface's input ports (`mii_*` or `rgmii_*` plus
 `clk_125`, `clk_125_90`, `clk_25`, `clk_2_5`) when you instantiate. The

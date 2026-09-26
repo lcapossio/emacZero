@@ -38,7 +38,9 @@ Typical use (MII, Arty A7-style, 100 MHz `sys` clock domain)::
 
 For a gigabit RGMII target, instantiate with ``phy_interface="RGMII"`` and
 also drive ``clk_125`` / ``clk_125_90`` / ``clk_25`` / ``clk_2_5`` from the
-platform's clock generator.
+platform's clock generator. 1G needs the ``sys`` clock at 125 MHz or more; pass
+its frequency as ``clk_freq`` (or ``rgmii_speeds="10_100"`` for a 10/100-only
+build on a slower ``sys`` clock).
 """
 
 from pathlib import Path
@@ -132,15 +134,33 @@ class EmacZero(LiteXModule):
         Pass-through to ``TX_CSUM_OFFLOAD``. Default 0 removes the frame-
         buffering IPv4/UDP checksum patcher; set 1 if firmware will use
         CTRL[7].
+    clk_freq : int or float
+        Frequency of the ``sys`` clock domain in Hz, passed as
+        ``CLK_FREQ_HZ``. Sets the PAUSE-quantum and MDC dividers, and must be
+        at least 125 MHz when the build can run at 1G.
+    rgmii_speeds : str
+        Pass-through to ``RGMII_SPEEDS``: ``"ALL"``, ``"1G_ONLY"`` or
+        ``"10_100"``. ``"10_100"`` drops 1G and its 125 MHz ``sys`` clock
+        requirement.
     """
 
     def __init__(self, platform, pads,
                  phy_interface="MII",
                  mcast_hash_filter=0,
                  max_frame=9018,
-                 tx_csum_offload=0):
+                 tx_csum_offload=0,
+                 clk_freq=100e6,
+                 rgmii_speeds="ALL"):
         if phy_interface not in ("MII", "RGMII"):
             raise ValueError(f"phy_interface must be 'MII' or 'RGMII', got {phy_interface!r}")
+        if rgmii_speeds not in ("ALL", "1G_ONLY", "10_100"):
+            raise ValueError(f"rgmii_speeds must be 'ALL', '1G_ONLY' or '10_100', got {rgmii_speeds!r}")
+        # Same rule eth_mac_sys enforces at elaboration: 1G moves one byte per
+        # sys clock, so a slower sys clock drops frames under sustained RX.
+        if phy_interface == "RGMII" and rgmii_speeds != "10_100" and clk_freq < 125e6:
+            raise ValueError(
+                f"RGMII with 1G enabled needs a sys clock >= 125 MHz (clk_freq={clk_freq:g}); "
+                "raise the sys clock or pass rgmii_speeds='10_100'")
 
         add_sources(platform)
 
@@ -171,6 +191,8 @@ class EmacZero(LiteXModule):
             p_MCAST_HASH_FILTER = mcast_hash_filter,
             p_MAX_FRAME         = max_frame,
             p_TX_CSUM_OFFLOAD   = tx_csum_offload,
+            p_CLK_FREQ_HZ       = int(clk_freq),
+            p_RGMII_SPEEDS      = rgmii_speeds,
 
             i_clk   = ClockSignal("sys"),
             i_rst_n = ~ResetSignal("sys"),

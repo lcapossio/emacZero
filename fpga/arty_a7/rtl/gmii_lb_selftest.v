@@ -17,14 +17,16 @@
 // Every frame carries a 32-bit sequence number and a sequence-seeded byte
 // pattern; the checker verifies length, header, pattern, terror and order.
 //
-// The loopback is lossless by construction: the TX framer runs at one byte per
-// 100 MHz clk, so the RX reader (also one byte per clk) keeps up on average.
-// Any rx_bad / rx_terror / seq_gap count is therefore a real failure.
+// The MAC's system clock is the same 125 MHz as the GMII media clock, so the TX
+// framer fills the wire at line rate and RX must sustain a full 1 Gb/s. At
+// clk = 125 MHz the RX reader has ~11 cycles of slack per frame (IFG +
+// preamble), so the loopback is lossless: any rx_bad / rx_terror / seq_gap
+// count is a real failure. (At a 100 MHz clk RX would fall behind and drop.)
 //
 // Control (ctrl, async - synchronized here):
 //   [0] run   - generate traffic while high (the current frame completes)
 //   [1] clear - hold high to zero all counters
-// Status (sys_clk domain; stop traffic before reading for a coherent view):
+// Status (clk_125 domain; stop traffic before reading for a coherent view):
 //   [31:0]    tx_frames       frames handed to the MAC
 //   [63:32]   rx_ok           frames received exact and clean
 //   [95:64]   rx_ok_big       of those, frames longer than 4083 bytes
@@ -82,16 +84,19 @@ module gmii_lb_selftest (
     BUFG u_bufg_125 (.I(clk_125_mmcm), .O(clk_125));
 `endif
 
-    // Reset the loopback MAC until the MMCM is locked.
+    // Everything below runs on clk_125: the MAC's system clock equals the GMII
+    // media clock, so the TX framer fills the wire at line rate and the RX
+    // side must keep up at a sustained 1 Gb/s (eth_mac_sys requires clk >=
+    // 125 MHz for 1G). Reset the loopback logic until the MMCM is locked.
     (* ASYNC_REG = "TRUE" *) reg [1:0] lock_s;
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk_125 or negedge rst_n) begin
         if (!rst_n) lock_s <= 2'b00;
         else        lock_s <= {lock_s[0], mmcm_locked};
     end
     wire lb_rst_n = rst_n & lock_s[1];
 
     (* ASYNC_REG = "TRUE" *) reg [1:0] run_s, clr_s;
-    always @(posedge clk or negedge lb_rst_n) begin
+    always @(posedge clk_125 or negedge lb_rst_n) begin
         if (!lb_rst_n) begin
             run_s <= 2'b00;
             clr_s <= 2'b00;
@@ -123,9 +128,10 @@ module gmii_lb_selftest (
 
     eth_mac_sys #(
         .PHY_INTERFACE("GMII"),
-        .MAX_FRAME    (9018)
+        .MAX_FRAME    (9018),
+        .CLK_FREQ_HZ  (125_000_000)
     ) u_lb_mac (
-        .clk            (clk),
+        .clk            (clk_125),
         .rst_n          (lb_rst_n),
         .s_axi_awaddr   (awaddr),
         .s_axi_awvalid  (awvalid),
@@ -196,7 +202,7 @@ module gmii_lb_selftest (
     // =========================================================================
     reg init_done;
     reg aw_done, w_done;
-    always @(posedge clk or negedge lb_rst_n) begin
+    always @(posedge clk_125 or negedge lb_rst_n) begin
         if (!lb_rst_n) begin
             awaddr    <= 8'h04;
             wdata     <= 32'h0000_0067;
@@ -265,7 +271,7 @@ module gmii_lb_selftest (
     reg        tx_busy;
     reg [31:0] tx_frames;
 
-    always @(posedge clk or negedge lb_rst_n) begin
+    always @(posedge clk_125 or negedge lb_rst_n) begin
         if (!lb_rst_n) begin
             tx_seq      <= 32'd0;
             tx_idx      <= 14'd0;
@@ -309,7 +315,7 @@ module gmii_lb_selftest (
     // off the compare/count logic below (one path failed 100 MHz without it).
     reg  [7:0] rx_tdata;
     reg        rx_tvalid, rx_tlast, rx_terror, rx_tsof;
-    always @(posedge clk or negedge lb_rst_n) begin
+    always @(posedge clk_125 or negedge lb_rst_n) begin
         if (!lb_rst_n) begin
             rx_tdata  <= 8'd0;
             rx_tvalid <= 1'b0;
@@ -342,15 +348,48 @@ module gmii_lb_selftest (
     // Header bytes and the pattern are checked; the seq bytes define the frame.
     wire byte_bad = ((cur_idx < 14'd14) || (cur_idx > 14'd17)) &&
                     (rx_tdata != frame_byte(cur_seq, cur_idx));
-    wire mism_now = (rx_tsof ? 1'b0 : rx_mismatch) | byte_bad;
-    wire [15:0] fr_len  = {2'b00, cur_idx} + 16'd1;
-    wire [15:0] exp_len = 16'd14 + {2'b00, payload_len(cur_seq[2:0])};
-    wire fr_good = !mism_now && !rx_terror && (fr_len == exp_len);
+    // Stage 1: track index and sequence, compare each byte. Registering the
+    // per-byte result keeps the expected-byte compare off the frame-verdict
+    // and counter-enable logic below (together they missed 125 MHz).
+    reg        s_valid, s_first, s_last, s_terror, s_bad;
+    reg [13:0] s_idx;
+    reg [31:0] s_seq;
 
-    always @(posedge clk or negedge lb_rst_n) begin
+    always @(posedge clk_125 or negedge lb_rst_n) begin
         if (!lb_rst_n) begin
-            rx_idx        <= 14'd0;
-            rx_seq        <= 32'd0;
+            rx_idx   <= 14'd0;
+            rx_seq   <= 32'd0;
+            s_valid  <= 1'b0;
+            s_first  <= 1'b0;
+            s_last   <= 1'b0;
+            s_terror <= 1'b0;
+            s_bad    <= 1'b0;
+            s_idx    <= 14'd0;
+            s_seq    <= 32'd0;
+        end else begin
+            s_valid <= rx_tvalid;
+            if (rx_tvalid) begin
+                rx_seq   <= cur_seq;
+                rx_idx   <= rx_tlast ? 14'd0 :
+                            (cur_idx == 14'h3FFF) ? cur_idx : cur_idx + 1'b1;
+                s_first  <= rx_tsof;
+                s_last   <= rx_tlast;
+                s_terror <= rx_terror;
+                s_bad    <= byte_bad;
+                s_idx    <= cur_idx;
+                s_seq    <= cur_seq;
+            end
+        end
+    end
+
+    // Stage 2: accumulate mismatches and judge the frame at its last byte.
+    wire mism_now = (s_first ? 1'b0 : rx_mismatch) | s_bad;
+    wire [15:0] fr_len  = {2'b00, s_idx} + 16'd1;
+    wire [15:0] exp_len = 16'd14 + {2'b00, payload_len(s_seq[2:0])};
+    wire fr_good = !mism_now && !s_terror && (fr_len == exp_len);
+
+    always @(posedge clk_125 or negedge lb_rst_n) begin
+        if (!lb_rst_n) begin
             rx_mismatch   <= 1'b0;
             rx_exp_seq    <= 32'd0;
             rx_seen_any   <= 1'b0;
@@ -374,12 +413,9 @@ module gmii_lb_selftest (
             first_bad_seq <= 16'd0;
             first_bad_set <= 1'b0;
             rx_seen_any   <= 1'b0;
-        end else if (rx_tvalid) begin
-            rx_seq      <= cur_seq;
+        end else if (s_valid) begin
             rx_mismatch <= mism_now;
-            rx_idx      <= (cur_idx == 14'h3FFF) ? cur_idx : cur_idx + 1'b1;
-            if (rx_tlast) begin
-                rx_idx <= 14'd0;
+            if (s_last) begin
                 if (fr_good) begin
                     rx_ok <= rx_ok + 1'b1;
                     if (fr_len > 16'd4083) rx_ok_big <= rx_ok_big + 1'b1;
@@ -389,13 +425,13 @@ module gmii_lb_selftest (
                     if (!first_bad_set) begin
                         first_bad_set <= 1'b1;
                         first_bad_len <= fr_len;
-                        first_bad_seq <= cur_seq[15:0];
+                        first_bad_seq <= s_seq[15:0];
                     end
                 end
-                if (rx_terror) rx_terr <= rx_terr + 1'b1;
-                if (rx_seen_any && cur_seq != rx_exp_seq) seq_gap <= seq_gap + 1'b1;
+                if (s_terror) rx_terr <= rx_terr + 1'b1;
+                if (rx_seen_any && s_seq != rx_exp_seq) seq_gap <= seq_gap + 1'b1;
                 rx_seen_any <= 1'b1;
-                rx_exp_seq  <= cur_seq + 1'b1;
+                rx_exp_seq  <= s_seq + 1'b1;
             end
         end
     end

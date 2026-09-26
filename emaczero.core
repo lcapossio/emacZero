@@ -86,6 +86,12 @@ parameters:
     paramtype: vlogparam
     default: "ALL"
 
+  CLK_FREQ_HZ:
+    datatype: int
+    description: System clock (clk) frequency in Hz; >= 125000000 for any 1G-capable build (GMII, or RGMII unless RGMII_SPEEDS is "10_100")
+    paramtype: vlogparam
+    default: 100000000
+
   MAX_FRAME:
     datatype: int
     description: Max frame size in bytes (1518 standard, up to 9018 jumbo)

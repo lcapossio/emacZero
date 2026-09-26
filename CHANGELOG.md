@@ -115,6 +115,28 @@ This project does not yet maintain long-lived release branches.
 
 ### Changed
 
+- **Breaking: gigabit builds need `clk` >= 125 MHz.** `eth_mac_sys` gains
+  `CLK_FREQ_HZ` (default 100 MHz) and exposes `RGMII_SPEEDS` (default `"ALL"`).
+  A build that can run at 1G - `PHY_INTERFACE="GMII"`, or `"RGMII"` with
+  `RGMII_SPEEDS` other than `"10_100"` - now fails elaboration when
+  `CLK_FREQ_HZ` is below 125 MHz, with an unknown-module error naming
+  `EMACZERO_CONFIG_ERROR_1G_needs_CLK_FREQ_HZ_at_least_125MHz_or_RGMII_SPEEDS_10_100`.
+  The RX CDC reader moves one byte per `clk` cycle plus a few cycles per
+  frame; at 100 MHz it falls behind a 125 MB/s wire, and back-to-back traffic
+  overflowed the RX CDC FIFO and truncated frames. MII and RGMII 10/100-only
+  builds are unaffected. New `GMII-RX-LINE-RATE` drives sustained
+  minimum-IFG frames (minimum, MTU and 9018-byte) from a PHY clock 100 ppm
+  fast into a `clk` 100 ppm slow of 125 MHz and requires every frame
+  byte-exact; run with `clk` at 100 MHz it loses frames. The pause-quanta
+  timer (`eth_pause` `TICK_DIV_*`, now 16-bit) and the MDC divider
+  (`mdio_master` `CLK_FREQ_HZ`) are derived from `CLK_FREQ_HZ` instead of
+  assuming 100 MHz; at 100 MHz they are unchanged. The FuseSoC core and the
+  LiteX wrapper (`clk_freq`, `rgmii_speeds`) pass both parameters, and the
+  wrapper raises `ValueError` on a 1G-capable build below 125 MHz. The Arty
+  GMII loopback self-test now runs its MAC on the 125 MHz clock.
+- Reset and toggle synchronizer flops in `gmii_cdc`, `rgmii_if`, `mii_if` and
+  `mii_tx_saf` carry `ASYNC_REG = "TRUE"`, so Vivado places each pair together
+  and reports MTBF on them.
 - `eth_mac_sys` MII path now transmits through `mii_tx_saf` instead of the
   cut-through `eth_mac_tx`, so a bubbling TX AXIS source can no longer cause a
   mid-frame underrun / bad frame on the wire. `eth_mac_tx` is retained on the
@@ -214,9 +236,10 @@ This project does not yet maintain long-lived release branches.
   frame toggle still fired, and the sys side read two frames as one. Data words
   are now written only while two slots are free, so an EOF always fits; once a
   byte is refused the rest of that frame is dropped (no holes), and its EOF
-  carries a truncation flag. The reader appends one `rx_er` beat to a truncated
-  frame, so the MAC delivers it with `m_axis_terror` and counts it in
-  `RX_ERR_ALIGN` instead of relying on a CRC miss. A frame that finds the FIFO
+  carries a truncation flag. The reader raises `rx_er` on the last kept byte of
+  a truncated frame, so the MAC delivers it with `m_axis_terror` and counts it
+  in `RX_ERR_ALIGN` instead of relying on a CRC miss. No extra byte is added,
+  so `RX_BYTE_CNT` and the frame-size statistics see only bytes that arrived. A frame that finds the FIFO
   full is dropped whole, without trace.
 - **`gmii_cdc` RX reader could start a partially written frame, or wedge.** At
   an EOF, `rx_frames_pending` still counted the frame being retired, so the

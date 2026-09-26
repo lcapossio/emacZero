@@ -18,9 +18,12 @@
 // =============================================================================
 
 module eth_mac_sys_minimal #(
-    parameter PHY_INTERFACE = "MII"     // "MII" or "RGMII"
+    parameter PHY_INTERFACE = "MII",    // "MII" or "RGMII"
+    // clk frequency. RGMII at 1G needs >= 125 MHz (or RGMII_SPEEDS "10_100").
+    parameter CLK_FREQ_HZ   = 100_000_000,
+    parameter RGMII_SPEEDS  = "ALL"
 ) (
-    input  wire        clk,             // 100 MHz system clock
+    input  wire        clk,             // system clock, CLK_FREQ_HZ
     input  wire        rst_n,
 
     // ---- AXI4-Lite CSR (slave) ----
@@ -90,7 +93,9 @@ module eth_mac_sys_minimal #(
 );
 
     eth_mac_sys #(
-        .PHY_INTERFACE (PHY_INTERFACE)
+        .PHY_INTERFACE (PHY_INTERFACE),
+        .CLK_FREQ_HZ   (CLK_FREQ_HZ),
+        .RGMII_SPEEDS  (RGMII_SPEEDS)
     ) u_mac (
         .clk           (clk),
         .rst_n         (rst_n),

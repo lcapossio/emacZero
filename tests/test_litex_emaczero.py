@@ -6,6 +6,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 class _Signal:
     def __init__(self, width=1):
@@ -125,3 +127,14 @@ def test_litex_wrapper_imports_and_instantiates_without_include_path(monkeypatch
     mac = module.EmacZero(_Platform(), _Pads())
 
     assert hasattr(mac.source, "first")
+
+    # CLK_FREQ_HZ / RGMII_SPEEDS reach eth_mac_sys, defaulting to 100 MHz / "ALL".
+    name, params = mac.specials[-1]
+    assert name == "eth_mac_sys"
+    assert params["p_CLK_FREQ_HZ"] == 100_000_000
+    assert params["p_RGMII_SPEEDS"] == "ALL"
+
+    # 1G-capable RGMII below 125 MHz is rejected up front, as eth_mac_sys
+    # would reject it at elaboration.
+    with pytest.raises(ValueError, match="125 MHz"):
+        module.EmacZero(_Platform(), _Pads(), phy_interface="RGMII", clk_freq=100e6)

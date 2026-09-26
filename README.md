@@ -114,9 +114,15 @@ module eth_mac_sys #(
     parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
     parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize checksum patcher
     parameter CDC_RAM_STYLE     = "BLOCK",// GMII/RGMII CDC FIFOs: "BLOCK" | "DISTRIBUTED"
+    // clk frequency: sets the pause-quanta and MDC dividers. A build that can
+    // run at 1G (GMII, or RGMII with RGMII_SPEEDS != "10_100") needs >= 125 MHz
+    // and fails elaboration below that: a slower clk cannot drain the RX CDC
+    // FIFO at gigabit line rate.
+    parameter CLK_FREQ_HZ       = 100_000_000,
+    parameter RGMII_SPEEDS      = "ALL",  // "ALL" | "1G_ONLY" | "10_100"
     parameter MII_DEBUG         = 0       // 0 = debug capture/counters off
 )(
-    input  wire        clk,           // system clock (100 MHz)
+    input  wire        clk,           // system clock, CLK_FREQ_HZ
     input  wire        rst_n,
 
     // AXI4-Lite CSR (32-bit data, 8-bit byte address)
@@ -288,8 +294,9 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | RGMII-LOOPBACK | Full system + RGMII PHY loopback at 1G | 5 |
 | RGMII-100M-LOOPBACK | Full system + RGMII pin-level loopback at 100M: min/MTU/back-to-back/9018-byte jumbo byte-exact, IFG >= 12 byte times | 12 |
 | RGMII-10M-LOOPBACK | As RGMII-100M-LOOPBACK at 10M (no jumbo) | 11 |
-| GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er`, whole-frame drop, EOF-only frames, no merged frames, recovery | 30 |
+| GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er` on the last kept byte, whole-frame drop, EOF-only frames, no merged frames, recovery | 31 |
 | GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, oversize gate, GTX_CLK integrity | 23 |
+| GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |
 
 ## Hardware Test (Arty A7-100T)
 

@@ -58,8 +58,8 @@ module gmii_cdc #(
     // =========================================================================
     // Reset synchronizers
     // =========================================================================
-    reg media_rst_n_s1, media_rst_n_s2;
-    reg media_rx_rst_n_s1, media_rx_rst_n_s2;
+    (* ASYNC_REG = "TRUE" *) reg media_rst_n_s1, media_rst_n_s2;
+    (* ASYNC_REG = "TRUE" *) reg media_rx_rst_n_s1, media_rx_rst_n_s2;
     always @(posedge media_clk or negedge sys_rst_n) begin
         if (!sys_rst_n) {media_rst_n_s2, media_rst_n_s1} <= 2'b00;
         else            {media_rst_n_s2, media_rst_n_s1} <= {media_rst_n_s1, 1'b1};
@@ -181,7 +181,12 @@ module gmii_cdc #(
     reg [RX_CNT_W-1:0] rx_frames_pending;
     reg        rx_frame_done_pulse;
     reg        rx_reading;
-    reg        rx_out_data;     // current frame has put bytes on gmii_rxd_out
+    // One-byte hold: each data word waits here until the next word is seen, so
+    // an overflow-truncated frame can flag its own last byte with rx_er rather
+    // than growing an extra error byte (which inflated RX byte and size stats).
+    reg  [7:0] rx_pend_data;
+    reg        rx_pend_er;
+    reg        rx_pend_valid;
 
     wire rx_frame_avail   = (rx_toggle_s2 != rx_toggle_s3);
     wire rx_frame_avail_d = rx_avail_delay[7];
@@ -224,7 +229,9 @@ module gmii_cdc #(
             rx_rd_en            <= 1'b0;
             rx_reading          <= 1'b0;
             rx_frame_done_pulse <= 1'b0;
-            rx_out_data         <= 1'b0;
+            rx_pend_data        <= 8'd0;
+            rx_pend_er          <= 1'b0;
+            rx_pend_valid       <= 1'b0;
         end else begin
             rx_rd_en            <= 1'b0;
             gmii_rx_dv_out      <= 1'b0;
@@ -235,21 +242,21 @@ module gmii_cdc #(
                 if (!rx_rd_empty) begin
                     if (rx_rd_data[9]) begin
                         // EOF marker: end this frame (consumed, not output).
+                        // Release the held last byte; if the frame was truncated
+                        // by overflow (EOF err bit) it carries rx_er, so the MAC
+                        // terrors the frame without an extra byte. A frame
+                        // dropped whole has no held byte and emits nothing.
                         rx_frame_done_pulse <= 1'b1;
-                        rx_out_data         <= 1'b0;
-                        if (rx_rd_data[8] && rx_out_data) begin
-                            // Truncated by overflow: append one rx_er beat so the
-                            // MAC terrors the frame instead of relying on a CRC
-                            // miss, then go idle so the next frame still gets a
-                            // dv-low gap. A frame dropped whole emitted nothing
-                            // and takes the path below: no lone error beat.
-                            gmii_rxd_out   <= 8'h00;
+                        if (rx_pend_valid) begin
+                            gmii_rxd_out   <= rx_pend_data;
                             gmii_rx_dv_out <= 1'b1;
-                            gmii_rx_er_out <= 1'b1;
-                            rx_reading     <= 1'b0;
-                        end else if (rx_next_ready) begin
+                            gmii_rx_er_out <= rx_pend_er | rx_rd_data[8];
+                        end
+                        rx_pend_valid <= 1'b0;
+                        if (rx_next_ready) begin
                             // Next frame is already whole in the FIFO: keep the
-                            // read stream going; this cycle is the dv-low gap.
+                            // read stream going. Its first word goes into the
+                            // hold next cycle, which is the dv-low gap.
                             rx_rd_en <= 1'b1;
                         end else begin
                             // Nothing complete behind this frame: go idle WITHOUT
@@ -260,11 +267,15 @@ module gmii_cdc #(
                             rx_reading <= 1'b0;
                         end
                     end else begin
-                        gmii_rxd_out   <= rx_rd_data[7:0];
-                        gmii_rx_dv_out <= 1'b1;
-                        gmii_rx_er_out <= rx_rd_data[8];
-                        rx_rd_en       <= 1'b1;
-                        rx_out_data    <= 1'b1;
+                        if (rx_pend_valid) begin
+                            gmii_rxd_out   <= rx_pend_data;
+                            gmii_rx_dv_out <= 1'b1;
+                            gmii_rx_er_out <= rx_pend_er;
+                        end
+                        rx_pend_data  <= rx_rd_data[7:0];
+                        rx_pend_er    <= rx_rd_data[8];
+                        rx_pend_valid <= 1'b1;
+                        rx_rd_en      <= 1'b1;
                     end
                 end else if (!rx_frame_ready) begin
                     rx_reading <= 1'b0;

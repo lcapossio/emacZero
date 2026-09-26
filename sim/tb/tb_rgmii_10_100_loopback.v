@@ -78,7 +78,8 @@ module tb_rgmii_10_100_loopback;
 
     eth_mac_sys #(
         .PHY_INTERFACE ("RGMII"),
-        .MAX_FRAME     (MAX_FRAME)
+        .MAX_FRAME     (MAX_FRAME),
+        .RGMII_SPEEDS  ("10_100")    // 10/100 only: a 100 MHz clk is enough
     ) uut (
         .clk            (sys_clk),
         .rst_n          (rst_n),

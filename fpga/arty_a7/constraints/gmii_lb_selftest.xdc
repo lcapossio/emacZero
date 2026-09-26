@@ -6,7 +6,10 @@
 ## the sys <-> media crossings as synchronous and time them at the 2 ns
 ## 100/125 MHz edge spacing. gmii_cdc handles them as asynchronous (gray-coded
 ## FIFO pointers, 2-FF synchronizers), as on a board where the 125 MHz clock and
-## the PHY RX clock are independent - so constrain them that way.
+## the PHY RX clock are independent - so constrain them that way. The self-test
+## logic itself also runs on the 125 MHz clock; its ctrl input is synchronized
+## into it and its status is read by the sys_clk EIO only while traffic is
+## stopped, so those crossings are asynchronous too.
 set lb_clk_125 [get_clocks -of_objects [get_pins u_gmii_lb/u_mmcm/CLKOUT0]]
 set_clock_groups -asynchronous \
     -group [get_clocks sys_clk] \

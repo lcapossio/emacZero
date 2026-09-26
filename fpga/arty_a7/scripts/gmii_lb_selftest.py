@@ -87,6 +87,8 @@ def main():
     t0 = time.monotonic()
     while time.monotonic() - t0 < a.seconds:
         time.sleep(min(a.interval, max(0.0, a.seconds - (time.monotonic() - t0))))
+        # Progress only: the counters are in clk_125 and move while this reads
+        # them, so a value can be torn. The verdict uses the read after stop.
         show(read_status(base), f"  t={time.monotonic() - t0:5.1f}s")
     fcapz(["eio-write", "0x0"], base)          # stop; in-flight frames drain
     time.sleep(1.0)
