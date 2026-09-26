@@ -46,8 +46,9 @@ module gmii_cdc #(
 
     // ---- GMII from media interface (media_clk domain) ----
     input  wire [7:0]  gmii_rxd_in,
-    input  wire        gmii_rx_dv_in,
+    input  wire        gmii_rx_dv_in,  // frame envelope
     input  wire        gmii_rx_er_in,
+    input  wire        gmii_rx_ce_in,  // byte strobe; tie 1 when every dv cycle is a byte
 
     // ---- Status ----
     output wire        tx_busy,
@@ -122,9 +123,14 @@ module gmii_cdc #(
             else if (rx_data_refuse)
                 rx_drop <= 1'b1;
 
+            // A frame is the gmii_rx_dv_in envelope; within it only cycles
+            // with gmii_rx_ce_in carry a byte (rgmii_if at 10/100 assembles
+            // one byte every two RXC cycles).
             if (gmii_rx_dv_in) begin
-                rx_wr_data <= {1'b0, gmii_rx_er_in, gmii_rxd_in};
-                rx_wr_en   <= 1'b1;
+                if (gmii_rx_ce_in) begin
+                    rx_wr_data <= {1'b0, gmii_rx_er_in, gmii_rxd_in};
+                    rx_wr_en   <= 1'b1;
+                end
             end else if (rx_dv_d1) begin
                 // Write EOF marker
                 rx_wr_data <= {1'b1, 1'b0, 8'h00};
@@ -402,6 +408,14 @@ module gmii_cdc #(
     //   10M  = 800ns = 100 cycles(pace_max = 99)
     wire [9:0] pace_max = is_1g ? 10'd0 : (is_100 ? 10'd9 : 10'd99);
 
+    // Idle media cycles (TX_EN low) before each frame. At 1G the MAC's own IFG
+    // already spaces frames, so a short fixed delay is kept. When paced, the
+    // FIFO can hold the next frame as soon as one ends, so the gap is enforced
+    // here: 12 byte times (the 96-bit-time IFG) - 120 cycles at 100M, 1200 at
+    // 10M. Anything much shorter is invisible to the PHY at 2.5/25 MHz and
+    // merges back-to-back frames on the wire.
+    wire [10:0] tx_gap = is_1g ? 11'd8 : (is_100 ? 11'd120 : 11'd1200);
+
     // Committed-frame counter CDC into the media domain. tx_frame_pending_media
     // asserts once at least one whole frame has been committed to the FIFO but
     // not yet drained - the store-and-forward start gate.
@@ -436,7 +450,7 @@ module gmii_cdc #(
     //     rather than when a preloaded byte counter reaches zero.
     reg       tx_frame_loaded;
     reg       tx_frame_end;
-    reg [5:0] tx_start_delay;
+    reg [10:0] tx_start_delay;
     reg [9:0] pace_cnt;
     wire      pace_tick    = (pace_cnt == 10'd0);
     wire      pace_advance = (pace_max == 10'd0) || (pace_cnt == 10'd1);
@@ -449,7 +463,7 @@ module gmii_cdc #(
             tx_rd_en              <= 1'b0;
             tx_frame_loaded       <= 1'b0;
             tx_frame_end          <= 1'b0;
-            tx_start_delay        <= 6'd0;
+            tx_start_delay        <= 11'd0;
             tx_frame_rd_count_bin <= {FRAME_CNT_W{1'b0}};
             pace_cnt              <= 10'd0;
         end else begin
@@ -461,17 +475,17 @@ module gmii_cdc #(
                 pace_cnt <= pace_cnt - 10'd1;
 
             if (!tx_frame_loaded && tx_frame_pending_media) begin
-                tx_start_delay  <= 6'd8;
+                tx_start_delay  <= tx_gap;
                 tx_frame_loaded <= 1'b1;
                 pace_cnt        <= pace_max;
             end else if (tx_frame_loaded) begin
-                if (tx_start_delay != 6'd0) begin
-                    tx_start_delay <= tx_start_delay - 6'd1;
+                if (tx_start_delay != 11'd0) begin
+                    tx_start_delay <= tx_start_delay - 11'd1;
                     gmii_tx_en_out <= 1'b0;
                     // Prefetch: pulse rd_en one cycle before start_delay==0 so
                     // byte 0 is at the FIFO output for the first pace_tick. Also
                     // align pace_cnt so pace_tick fires at start_delay==0.
-                    if (tx_start_delay == 6'd1 && !tx_rd_empty) begin
+                    if (tx_start_delay == 11'd1 && !tx_rd_empty) begin
                         tx_rd_en <= 1'b1;
                         pace_cnt <= 10'd0;
                     end

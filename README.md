@@ -260,7 +260,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-CDC | GMII CDC bridge: loopback, data integrity, back-to-back | 7 |
 | ETH-MAC-SYS | Full integration: AXI-Lite config, MII loopback, stats, MDIO | 10 |
 | RGMII-IF | RGMII DDR pin packing/unpacking at 1G | 14 |
-| RGMII-IF-100M | 100M nibble pairing through RGMII loopback | 2 |
+| RGMII-IF-100M | 100M RGMII pin loopback: low-nibble-first TX, byte-exact RX pairing, one unbroken `gmii_rx_dv` envelope per burst | 5 |
 | MCAST-FILTER | Multicast hash filter accept/drop behavior | 6 |
 | ETH-MAC-RX-BACKPRESSURE | RX path holds frames when downstream stalls | 3 |
 | ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate | 3 |
@@ -283,6 +283,8 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-CDC-10M | 10M rate adaptation pacing in gmii_cdc | 4 |
 | RGMII-IF-VARIANTS | RGMII speed/DDR variant handling | 6 |
 | RGMII-LOOPBACK | Full system + RGMII PHY loopback at 1G | 5 |
+| RGMII-100M-LOOPBACK | Full system + RGMII pin-level loopback at 100M: min/MTU/back-to-back/9018-byte jumbo byte-exact, IFG >= 12 byte times | 12 |
+| RGMII-10M-LOOPBACK | As RGMII-100M-LOOPBACK at 10M (no jumbo) | 11 |
 | GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er`, whole-frame drop, EOF-only frames, no merged frames, recovery | 30 |
 | GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, oversize gate, GTX_CLK integrity | 23 |
 

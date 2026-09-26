@@ -571,6 +571,7 @@ module eth_mac_sys #(
                 .gmii_rxd_in    (media_gmii_rxd),
                 .gmii_rx_dv_in  (media_gmii_rx_dv),
                 .gmii_rx_er_in  (media_gmii_rx_er),
+                .gmii_rx_ce_in  (1'b1),
                 .tx_busy        (tx_fifo_busy),
                 .tx_fifo_level  (gmii_tx_fifo_level)
             );
@@ -613,6 +614,7 @@ module eth_mac_sys #(
             wire [7:0] media_gmii_rxd;
             wire       media_gmii_rx_dv;
             wire       media_gmii_rx_er;
+            wire       media_gmii_rx_ce;   // byte strobe: every other RXC at 10/100
 
             wire [11:0] rgmii_tx_fifo_level;
 
@@ -670,6 +672,7 @@ module eth_mac_sys #(
                 .gmii_rxd_in    (media_gmii_rxd),
                 .gmii_rx_dv_in  (media_gmii_rx_dv),
                 .gmii_rx_er_in  (media_gmii_rx_er),
+                .gmii_rx_ce_in  (media_gmii_rx_ce),
                 .tx_busy        (tx_fifo_busy),
                 .tx_fifo_level  (rgmii_tx_fifo_level)
             );
@@ -694,7 +697,8 @@ module eth_mac_sys #(
                 .gmii_tx_er  (media_gmii_tx_er),
                 .gmii_rxd    (media_gmii_rxd),
                 .gmii_rx_dv  (media_gmii_rx_dv),
-                .gmii_rx_er  (media_gmii_rx_er)
+                .gmii_rx_er  (media_gmii_rx_er),
+                .gmii_rx_ce  (media_gmii_rx_ce)
             );
 
             // Tie off MII outputs

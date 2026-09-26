@@ -65,6 +65,7 @@ module tb_gmii_cdc_rx_overflow;
         .gmii_rxd_in    (m_rxd),
         .gmii_rx_dv_in  (m_rx_dv),
         .gmii_rx_er_in  (m_rx_er),
+        .gmii_rx_ce_in  (1'b1),
         .tx_busy        (),
         .tx_fifo_level  ()
     );

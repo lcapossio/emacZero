@@ -166,6 +166,25 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **RGMII at 10/100 Mbps now works end to end.** Three defects, none reachable
+  at 1G and none covered by a pin-level test before:
+  - RX split every byte into its own frame. `rgmii_if` pairs two RXC cycles
+    into a byte and pulsed `gmii_rx_dv` once per byte; `gmii_cdc` read each
+    dv-low cycle as end of frame. `rgmii_if` now holds `gmii_rx_dv` for the
+    whole frame and adds a `gmii_rx_ce` byte strobe, and `gmii_cdc` gains a
+    matching `gmii_rx_ce_in` (tied high on the GMII path and at 1G).
+  - TX never sent the high nibble. At 10/100 `rgmii_if` drove `TXD[3:0]` in
+    both TXC cycles of each paced byte. It now sends `TXD[3:0]` then
+    `TXD[7:4]`, with the nibble and TX_CTL registered in the TXC domain.
+    `clk_25` / `clk_2_5` must share a source with `clk_125` (as from one MMCM).
+  - Back-to-back TX frames merged. `gmii_cdc` idled TX_EN for a fixed 8
+    media cycles (64 ns) between frames, shorter than one 10M TXC period. The
+    gap is now 12 byte times when paced (960 ns at 100M, 9.6 us at 10M).
+  New `RGMII-100M-LOOPBACK` and `RGMII-10M-LOOPBACK` loop `eth_mac_sys` at the
+  RGMII pins and check min/MTU/back-to-back (and 9018-byte jumbo at 100M)
+  frames byte-exact plus the wire IFG; each of the three defects, reinstated
+  alone, fails them. `RGMII-IF-100M` now checks exact bytes instead of "some
+  bytes arrived".
 - **GMII/RGMII builds with jumbo `MAX_FRAME` did not fit in LUTs or close
   timing.** `async_fifo` read its memory combinationally, so Vivado built the
   16K-word `gmii_cdc` CDC FIFOs from LUTRAM: about 7,200 LUTs for the pair,

@@ -63,7 +63,7 @@ handling, and release traceability.
 | Statistics/counter behavior | `ETH-STATS`, `ETH-MAC-SYS` |
 | MDIO sequencing | `MDIO-MASTER`, `ETH-MAC-SYS` |
 | CDC and FIFO behavior | `ASYNC-FIFO`, `GMII-CDC`, `MII-RX-REPLAY-STRESS` |
-| RGMII speed handling | `RGMII-IF`, `RGMII-IF-100M`, `RGMII-IF-VARIANTS`, `RGMII-LOOPBACK` |
+| RGMII speed handling | `RGMII-IF`, `RGMII-IF-100M`, `RGMII-IF-VARIANTS`, `RGMII-LOOPBACK`, `RGMII-100M-LOOPBACK`, `RGMII-10M-LOOPBACK` |
 | Optional L3 helper behavior | `NET-RX`, `ICMP-ECHO`, `UDP-IPERF-SINK`, `UDP-BLAST-*`, `UDP-STATS-REPLY` |
 | TX checksum offload | `TX-CSUM-OFF`, `ETH-MAC-SYS-CSUM`, `ETH-MAC-SYS-CSUM-BYPASS` |
 

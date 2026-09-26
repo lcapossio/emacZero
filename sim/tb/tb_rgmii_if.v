@@ -61,7 +61,8 @@ module tb_rgmii_if;
         .gmii_tx_er  (tx_gmii_tx_er),
         .gmii_rxd    (),
         .gmii_rx_dv  (),
-        .gmii_rx_er  ()
+        .gmii_rx_er  (),
+        .gmii_rx_ce  ()
     );
 
     rgmii_if u_rx (
@@ -82,7 +83,8 @@ module tb_rgmii_if;
         .gmii_tx_er  (1'b0),
         .gmii_rxd    (rx_gmii_rxd),
         .gmii_rx_dv  (rx_gmii_rx_dv),
-        .gmii_rx_er  (rx_gmii_rx_er)
+        .gmii_rx_er  (rx_gmii_rx_er),
+        .gmii_rx_ce  ()
     );
 
     integer pass_cnt, fail_cnt;

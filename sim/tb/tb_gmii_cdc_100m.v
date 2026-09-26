@@ -59,6 +59,7 @@ module tb_gmii_cdc_100m;
         .gmii_rxd_in    (8'd0),
         .gmii_rx_dv_in  (1'b0),
         .gmii_rx_er_in  (1'b0),
+        .gmii_rx_ce_in  (1'b1),
 
         .tx_busy        (tx_busy),
         .tx_fifo_level  (tx_fifo_level)
