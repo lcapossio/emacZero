@@ -28,6 +28,11 @@
 //       3 PCS link sync        4 1000BASE-X link up 5 RX frame activity
 //       6 TX frame activity    7 userclk2 heartbeat (GT clock running)
 // DIP 0: 1 disables 1000BASE-X auto-negotiation (for partners without AN).
+//
+// With ZCU106_SFP1_LB defined (build_zcu106.tcl ... lb), SFP cage 1 gets a
+// second PCS/PMA and sfp_lb_tester, which exercises the demo on SFP0 over a
+// fiber between the two cages; the LEDs then show the loopback test (see
+// the LED block at the end) and an fcapz EIO drives and reads the tester.
 // Verilog 2001
 // =============================================================================
 
@@ -47,6 +52,14 @@ module zcu106_top #(
     input  wire       SFP0_RX_P,
     input  wire       SFP0_RX_N,
     output wire       SFP0_TX_DISABLE_B,  // high = laser on (J16 also forces on)
+`ifdef ZCU106_SFP1_LB
+    // SFP cage 1 (loopback tester), same GTH quad
+    output wire       SFP1_TX_P,
+    output wire       SFP1_TX_N,
+    input  wire       SFP1_RX_P,
+    input  wire       SFP1_RX_N,
+    output wire       SFP1_TX_DISABLE_B,
+`endif
 
     // PL I2C to the Si5328 (through the TCA9548A mux); released (high-Z)
     // when REFCLK_SI5328 = 0
@@ -156,6 +169,7 @@ module zcu106_top #(
     // PCS/PMA (1000BASE-X over GTH, shared logic in core)
     // =========================================================================
     wire        userclk2;
+    wire        gtrefclk, userclk, rxuserclk, rxuserclk2;   // shared with SFP1
     wire        gt_mmcm_locked;
     wire        pma_reset_out;
     wire [15:0] pcs_status;
@@ -175,16 +189,16 @@ module zcu106_top #(
     pcs_pma_1000basex u_pcs_pma (
         .gtrefclk_p             (SFP_REFCLK_P),
         .gtrefclk_n             (SFP_REFCLK_N),
-        .gtrefclk_out           (),
+        .gtrefclk_out           (gtrefclk),
         .txn                    (SFP0_TX_N),
         .txp                    (SFP0_TX_P),
         .rxn                    (SFP0_RX_N),
         .rxp                    (SFP0_RX_P),
         .independent_clock_bufg (clk_50),
-        .userclk_out            (),
+        .userclk_out            (userclk),
         .userclk2_out           (userclk2),
-        .rxuserclk_out          (),
-        .rxuserclk2_out         (),
+        .rxuserclk_out          (rxuserclk),
+        .rxuserclk2_out         (rxuserclk2),
         .gtpowergood            (),
         .resetdone              (gt_resetdone),
         .pma_reset_out          (pma_reset_out),
@@ -232,236 +246,122 @@ module zcu106_top #(
     wire rst_n = mac_rst_sync[2];
 
     // =========================================================================
-    // AXI4-Stream TX mux: ARP / ICMP / UDP echo
+    // emacZero MAC + demo L3 stack on SFP0
     // =========================================================================
-    wire [31:0] cfg_ip_addr;
+    wire demo_rx_frame, demo_tx_frame;
 
-    wire [7:0]  arp_tx_tdata;
-    wire        arp_tx_tvalid, arp_tx_tready, arp_tx_tlast;
-    wire [7:0]  icmp_tx_tdata;
-    wire        icmp_tx_tvalid, icmp_tx_tready, icmp_tx_tlast;
-    wire [7:0]  udp_tx_tdata;
-    wire        udp_tx_tvalid, udp_tx_tready, udp_tx_tlast;
-
-    wire [7:0]  mac_tx_tdata;
-    wire        mac_tx_tvalid, mac_tx_tready, mac_tx_tlast;
-
-    arty_tx_arbiter u_tx_arb (
-        .clk           (userclk2),
-        .rst_n         (rst_n),
-        .arp_tx_active (1'b0),
-        .seq_tdata     (8'd0),
-        .seq_tvalid    (1'b0),
-        .seq_tready    (),
-        .seq_tlast     (1'b0),
-        .arp_tdata     (arp_tx_tdata),
-        .arp_tvalid    (arp_tx_tvalid),
-        .arp_tready    (arp_tx_tready),
-        .arp_tlast     (arp_tx_tlast),
-        .icmp_tdata    (icmp_tx_tdata),
-        .icmp_tvalid   (icmp_tx_tvalid),
-        .icmp_tready   (icmp_tx_tready),
-        .icmp_tlast    (icmp_tx_tlast),
-        .stats_tdata   (8'd0),
-        .stats_tvalid  (1'b0),
-        .stats_tready  (),
-        .stats_tlast   (1'b0),
-        .udp_tdata     (udp_tx_tdata),
-        .udp_tvalid    (udp_tx_tvalid),
-        .udp_tready    (udp_tx_tready),
-        .udp_tlast     (udp_tx_tlast),
-        .blast_tdata   (8'd0),
-        .blast_tvalid  (1'b0),
-        .blast_tready  (),
-        .blast_tlast   (1'b0),
-        .m_axis_tdata  (mac_tx_tdata),
-        .m_axis_tvalid (mac_tx_tvalid),
-        .m_axis_tready (mac_tx_tready),
-        .m_axis_tlast  (mac_tx_tlast)
+    zcu106_eth_demo #(
+        .OUR_MAC       (OUR_MAC),
+        .UDP_ECHO_PORT (UDP_ECHO_PORT)
+    ) u_demo (
+        .clk        (userclk2),
+        .rst_n      (rst_n),
+        .gmii_txd   (gmii_txd),
+        .gmii_tx_en (gmii_tx_en),
+        .gmii_tx_er (gmii_tx_er),
+        .gmii_rxd   (gmii_rxd),
+        .gmii_rx_dv (gmii_rx_dv),
+        .gmii_rx_er (gmii_rx_er),
+        .rx_frame   (demo_rx_frame),
+        .tx_frame   (demo_tx_frame)
     );
 
+`ifdef ZCU106_SFP1_LB
     // =========================================================================
-    // Ethernet MAC (GMII mode). CSRs stay at their reset values: TX/RX
-    // enabled, speed 1G, MAC 02:00:00:00:00:01, IP 192.168.137.200.
+    // SFP1 loopback tester: a second PCS/PMA on the neighboring GTH channel
+    // (sharing core 0's reference clock, user clocks and resets), with
+    // sfp_lb_tester playing a host that pings / ARPs / UDP-echoes the demo
+    // on SFP0 over the fiber. Driven and read over JTAG by the fcapz EIO.
     // =========================================================================
-    wire [7:0]  mac_rx_tdata;
-    wire        mac_rx_tvalid, mac_rx_tlast, mac_rx_terror, mac_rx_tsof;
+    wire [7:0]  lb_gmii_txd, lb_gmii_rxd;
+    wire        lb_gmii_tx_en, lb_gmii_tx_er, lb_gmii_rx_dv, lb_gmii_rx_er;
+    wire [15:0] lb_pcs_status;
+    wire        lb_gt_resetdone;
 
-    eth_mac_sys #(
-        .PHY_INTERFACE ("GMII"),
-        .CLK_FREQ_HZ   (125_000_000)
-    ) u_mac_sys (
-        .clk            (userclk2),
-        .rst_n          (rst_n),
-        // AXI4-Lite unused
-        .s_axi_awaddr   (8'd0),
-        .s_axi_awvalid  (1'b0),
-        .s_axi_awready  (),
-        .s_axi_wdata    (32'd0),
-        .s_axi_wstrb    (4'd0),
-        .s_axi_wvalid   (1'b0),
-        .s_axi_wready   (),
-        .s_axi_bresp    (),
-        .s_axi_bvalid   (),
-        .s_axi_bready   (1'b1),
-        .s_axi_araddr   (8'd0),
-        .s_axi_arvalid  (1'b0),
-        .s_axi_arready  (),
-        .s_axi_rdata    (),
-        .s_axi_rresp    (),
-        .s_axi_rvalid   (),
-        .s_axi_rready   (1'b1),
-        // AXI4-Stream
-        .s_axis_tdata   (mac_tx_tdata),
-        .s_axis_tvalid  (mac_tx_tvalid),
-        .s_axis_tready  (mac_tx_tready),
-        .s_axis_tlast   (mac_tx_tlast),
-        .m_axis_tdata   (mac_rx_tdata),
-        .m_axis_tvalid  (mac_rx_tvalid),
-        .m_axis_tready  (1'b1),
-        .m_axis_tlast   (mac_rx_tlast),
-        .m_axis_terror  (mac_rx_terror),
-        .m_axis_tsof    (mac_rx_tsof),
-        // MII unused
-        .mii_txd        (),
-        .mii_tx_en      (),
-        .mii_tx_clk     (1'b0),
-        .mii_rxd        (4'd0),
-        .mii_rx_dv      (1'b0),
-        .mii_rx_er      (1'b0),
-        .mii_rx_clk     (1'b0),
-        .mii_col        (1'b0),
-        .mii_crs        (1'b0),
-        // GMII TX clock (the RGMII group's clk_125); other RGMII ports unused
-        .clk_125        (userclk2),
-        .clk_125_90     (1'b0),
-        .clk_25         (1'b0),
-        .clk_2_5        (1'b0),
-        .rgmii_txd      (),
-        .rgmii_tx_ctl   (),
-        .rgmii_txc      (),
-        .rgmii_rxd      (4'd0),
-        .rgmii_rx_ctl   (1'b0),
-        .rgmii_rxc      (1'b0),
-        // GMII to the PCS/PMA. gmii_if registers both directions; the
-        // forwarded TX clock is for an external PHY and is left open.
-        .phy_gmii_txd    (gmii_txd),
-        .phy_gmii_tx_en  (gmii_tx_en),
-        .phy_gmii_tx_er  (gmii_tx_er),
-        .phy_gmii_txc    (),
-        .phy_gmii_rx_clk (userclk2),
-        .phy_gmii_rxd    (gmii_rxd),
-        .phy_gmii_rx_dv  (gmii_rx_dv),
-        .phy_gmii_rx_er  (gmii_rx_er),
-        // MDIO unused (1000BASE-X has no external PHY)
-        .mdc            (),
-        .mdio_i         (1'b1),
-        .mdio_o         (),
-        .mdio_oe        (),
-        .cfg_ip_addr    (cfg_ip_addr),
-        .irq            ()
+    pcs_pma_1000basex_ns u_pcs_pma_sfp1 (
+        .gtrefclk               (gtrefclk),
+        .txn                    (SFP1_TX_N),
+        .txp                    (SFP1_TX_P),
+        .rxn                    (SFP1_RX_N),
+        .rxp                    (SFP1_RX_P),
+        .independent_clock_bufg (clk_50),
+        .txoutclk               (),
+        .gtpowergood            (),
+        .rxoutclk               (),
+        .resetdone              (lb_gt_resetdone),
+        .cplllock               (),
+        .mmcm_reset             (),
+        .userclk                (userclk),
+        .userclk2               (userclk2),
+        .pma_reset              (pma_reset_out),
+        .mmcm_locked            (gt_mmcm_locked),
+        .rxuserclk              (rxuserclk),
+        .rxuserclk2             (rxuserclk2),
+        .gmii_txd               (lb_gmii_txd),
+        .gmii_tx_en             (lb_gmii_tx_en),
+        .gmii_tx_er             (lb_gmii_tx_er),
+        .gmii_rxd               (lb_gmii_rxd),
+        .gmii_rx_dv             (lb_gmii_rx_dv),
+        .gmii_rx_er             (lb_gmii_rx_er),
+        .gmii_isolate           (),
+        .configuration_vector   ({~an_dis_sync[1], 4'b0000}),
+        .an_interrupt           (),
+        .an_adv_config_vector   (16'h0020),
+        .an_restart_config      (1'b0),
+        .status_vector          (lb_pcs_status),
+        .reset                  (pcs_reset),
+        .signal_detect          (1'b1)
     );
 
-    // =========================================================================
-    // Demo L3 stack: ARP responder, IPv4/ICMP/UDP parser, ping, UDP echo
-    // =========================================================================
-    arp_responder u_arp (
-        .clk            (userclk2),
-        .rst_n          (rst_n),
-        .enable         (1'b1),
-        .rx_tdata       (mac_rx_tdata),
-        .rx_tvalid      (mac_rx_tvalid),
-        .rx_tlast       (mac_rx_tlast),
-        .rx_terror      (mac_rx_terror),
-        .rx_tsof        (mac_rx_tsof),
-        .tx_tdata       (arp_tx_tdata),
-        .tx_tvalid      (arp_tx_tvalid),
-        .tx_tready      (arp_tx_tready),
-        .tx_tlast       (arp_tx_tlast),
-        .our_mac        (OUR_MAC),
-        .our_ip         (cfg_ip_addr),
-        .arp_reply_sent ()
+    assign SFP1_TX_DISABLE_B = refclk_ready;
+
+    wire [1:0]   lb_ctrl;
+    wire [263:0] lb_status;
+    wire         lb_ok_pulse, lb_bad_pulse;
+
+    sfp_lb_tester u_lb (
+        .clk        (userclk2),
+        .rst_n      (rst_n),
+        .ctrl       (lb_ctrl),
+        .link_ok    (pcs_status[0] && lb_pcs_status[0]),
+        .gmii_txd   (lb_gmii_txd),
+        .gmii_tx_en (lb_gmii_tx_en),
+        .gmii_tx_er (lb_gmii_tx_er),
+        .gmii_rxd   (lb_gmii_rxd),
+        .gmii_rx_dv (lb_gmii_rx_dv),
+        .gmii_rx_er (lb_gmii_rx_er),
+        .status     (lb_status),
+        .ok_pulse   (lb_ok_pulse),
+        .bad_pulse  (lb_bad_pulse)
     );
 
-    wire [7:0]  netrx_icmp_data;
-    wire        netrx_icmp_valid, netrx_icmp_last;
-    wire [31:0] netrx_icmp_src_ip;
-    wire [47:0] netrx_rx_src_mac;
-    wire [7:0]  netrx_udp_data;
-    wire        netrx_udp_valid, netrx_udp_last;
-    wire [31:0] netrx_udp_src_ip;
-    wire [15:0] netrx_udp_src_port, netrx_udp_dst_port, netrx_udp_length;
-
-    net_rx u_net_rx (
-        .clk            (userclk2),
-        .rst_n          (rst_n),
-        .s_axis_tdata   (mac_rx_tdata),
-        .s_axis_tvalid  (mac_rx_tvalid),
-        .s_axis_tlast   (mac_rx_tlast),
-        .s_axis_tsof    (mac_rx_tsof),
-        .s_axis_terror  (mac_rx_terror),
-        .arp_data       (),
-        .arp_valid      (),
-        .arp_last       (),
-        .icmp_data      (netrx_icmp_data),
-        .icmp_valid     (netrx_icmp_valid),
-        .icmp_last      (netrx_icmp_last),
-        .icmp_src_ip    (netrx_icmp_src_ip),
-        .udp_data       (netrx_udp_data),
-        .udp_valid      (netrx_udp_valid),
-        .udp_last       (netrx_udp_last),
-        .udp_src_ip     (netrx_udp_src_ip),
-        .udp_src_port   (netrx_udp_src_port),
-        .udp_dst_port   (netrx_udp_dst_port),
-        .udp_length     (netrx_udp_length),
-        .rx_src_mac     (netrx_rx_src_mac),
-        .our_ip         (cfg_ip_addr)
+    // EIO (USER3). eio-write: [0] run, [1] clear.
+    // eio-read: [263:0] tester status (see sfp_lb_tester.v),
+    //   [279:264] SFP0 PCS status_vector, [295:280] SFP1 PCS status_vector,
+    //   [296] SFP0 GT reset done, [297] SFP1 GT reset done,
+    //   [298] refclk ready, [319:308] marker 12'h106.
+    fcapz_eio_xilinxus #(
+        .IN_W  (320),
+        .OUT_W (2),
+        .CHAIN (3)
+    ) u_eio (
+        .probe_in  ({12'h106, 9'd0, refclk_ready, lb_gt_resetdone,
+                     gt_resetdone, lb_pcs_status, pcs_status, lb_status}),
+        .probe_out (lb_ctrl)
     );
-
-    icmp_echo u_icmp (
-        .clk            (userclk2),
-        .rst_n          (rst_n),
-        .our_mac        (OUR_MAC),
-        .our_ip         (cfg_ip_addr),
-        .icmp_rx_data   (netrx_icmp_data),
-        .icmp_rx_valid  (netrx_icmp_valid),
-        .icmp_rx_last   (netrx_icmp_last),
-        .icmp_rx_src_ip (netrx_icmp_src_ip),
-        .rx_src_mac     (netrx_rx_src_mac),
-        .tx_data        (icmp_tx_tdata),
-        .tx_valid       (icmp_tx_tvalid),
-        .tx_last        (icmp_tx_tlast),
-        .tx_ready       (icmp_tx_tready),
-        .tx_start       ()
-    );
-
-    udp_echo #(
-        .BUF_SIZE    (1536),
-        .LISTEN_PORT (UDP_ECHO_PORT)
-    ) u_udp (
-        .clk             (userclk2),
-        .rst_n           (rst_n),
-        .our_mac         (OUR_MAC),
-        .our_ip          (cfg_ip_addr),
-        .udp_rx_data     (netrx_udp_data),
-        .udp_rx_valid    (netrx_udp_valid),
-        .udp_rx_last     (netrx_udp_last),
-        .udp_rx_src_ip   (netrx_udp_src_ip),
-        .udp_rx_src_port (netrx_udp_src_port),
-        .udp_rx_dst_port (netrx_udp_dst_port),
-        .udp_rx_length   (netrx_udp_length),
-        .rx_src_mac      (netrx_rx_src_mac),
-        .tx_data         (udp_tx_tdata),
-        .tx_valid        (udp_tx_tvalid),
-        .tx_last         (udp_tx_tlast),
-        .tx_ready        (udp_tx_tready),
-        .tx_start        ()
-    );
+`endif
 
     // =========================================================================
     // LEDs
     // =========================================================================
-    // Activity: stretch a frame-end pulse to ~67 ms at 125 MHz.
+    // Activity: stretch a one-cycle pulse to ~67 ms at 125 MHz.
+`ifdef ZCU106_SFP1_LB
+    wire rx_ev = lb_ok_pulse;
+    wire tx_ev = lb_bad_pulse;
+`else
+    wire rx_ev = demo_rx_frame;
+    wire tx_ev = demo_tx_frame;
+`endif
     reg [22:0] rx_led_cnt, tx_led_cnt;
     reg [26:0] heartbeat = 27'd0;
     always @(posedge userclk2 or negedge rst_n) begin
@@ -469,15 +369,27 @@ module zcu106_top #(
             rx_led_cnt <= 23'd0;
             tx_led_cnt <= 23'd0;
         end else begin
-            if (mac_rx_tvalid && mac_rx_tlast)       rx_led_cnt <= {23{1'b1}};
-            else if (rx_led_cnt != 0)                rx_led_cnt <= rx_led_cnt - 23'd1;
-            if (mac_tx_tvalid && mac_tx_tready && mac_tx_tlast)
-                                                     tx_led_cnt <= {23{1'b1}};
-            else if (tx_led_cnt != 0)                tx_led_cnt <= tx_led_cnt - 23'd1;
+            if (rx_ev)                  rx_led_cnt <= {23{1'b1}};
+            else if (rx_led_cnt != 0)   rx_led_cnt <= rx_led_cnt - 23'd1;
+            if (tx_ev)                  tx_led_cnt <= {23{1'b1}};
+            else if (tx_led_cnt != 0)   tx_led_cnt <= tx_led_cnt - 23'd1;
         end
     end
     always @(posedge userclk2) heartbeat <= heartbeat + 27'd1;
 
+`ifdef ZCU106_SFP1_LB
+    // Loopback build: 0 SFP0 link up  1 SFP1 link up  2 both GTs reset done
+    //   3 correct reply seen  4 bad reply / timeout seen  5 tester running
+    //   6 any failure counted since clear (sticky)  7 heartbeat
+    assign LED[0] = pcs_status[0];
+    assign LED[1] = lb_pcs_status[0];
+    assign LED[2] = gt_resetdone && lb_gt_resetdone;
+    assign LED[3] = (rx_led_cnt != 0);
+    assign LED[4] = (tx_led_cnt != 0);
+    assign LED[5] = lb_status[263];
+    assign LED[6] = (lb_status[191:128] != 64'd0);
+    assign LED[7] = heartbeat[26];
+`else
     assign LED[0] = refclk_ready;
     assign LED[1] = (i2c_nacks != 8'd0);
     assign LED[2] = gt_resetdone;
@@ -486,5 +398,6 @@ module zcu106_top #(
     assign LED[5] = (rx_led_cnt != 0);
     assign LED[6] = (tx_led_cnt != 0);
     assign LED[7] = heartbeat[26];
+`endif
 
 endmodule

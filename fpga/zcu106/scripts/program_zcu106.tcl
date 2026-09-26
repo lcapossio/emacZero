@@ -4,10 +4,12 @@
 # =============================================================================
 # program_zcu106.tcl - Program the ZCU106 PL via Vivado Hardware Manager
 # Usage: vivado -mode batch -source fpga/zcu106/scripts/program_zcu106.tcl
-# Run from the repository root directory.
+#            [-tclargs <bitfile>]
+# Default bitfile: build_zcu106/zcu106_top.bit (the loopback build is
+# build_zcu106_lb/zcu106_top.bit). Run from the repository root directory.
 # =============================================================================
 
-set bitfile build_zcu106/zcu106_top.bit
+set bitfile [expr {[llength $argv] > 0 ? [lindex $argv 0] : "build_zcu106/zcu106_top.bit"}]
 
 if {![file exists $bitfile]} {
     puts "ERROR: Bitstream not found: $bitfile"
@@ -17,12 +19,23 @@ if {![file exists $bitfile]} {
 
 open_hw_manager
 connect_hw_server -allow_non_jtag
-open_hw_target
 
-# The ZCU106 JTAG chain also has the ARM DAP; pick the FPGA by name.
-set device [lindex [get_hw_devices -filter {NAME =~ xczu*}] 0]
+# Other boards may share the hw_server, so search every JTAG target for the
+# ZCU106's xczu7ev. Its chain also has the ARM DAP; pick the FPGA by name.
+set device ""
+foreach target [get_hw_targets] {
+    if {[catch {open_hw_target $target}]} {
+        continue
+    }
+    set device [lindex [get_hw_devices -quiet -filter {NAME =~ xczu7*}] 0]
+    if {$device ne ""} {
+        puts "Using $device on $target"
+        break
+    }
+    close_hw_target $target
+}
 if {$device eq ""} {
-    puts "ERROR: no xczu* device found on the JTAG chain: [get_hw_devices]"
+    puts "ERROR: no xczu7* device found on any JTAG target: [get_hw_targets]"
     exit 1
 }
 current_hw_device $device

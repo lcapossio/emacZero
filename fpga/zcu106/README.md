@@ -94,6 +94,59 @@ Bring-up normally shows LED 0, then LED 7 and LED 2 (in the `si5328` build,
 possibly after up to ~20 s while the Si5328 locks), then LEDs 3 and 4 once a
 link partner is connected.
 
+## SFP0 <-> SFP1 loopback test
+
+Without a 1G host on the other end of the fiber, the loopback build tests the
+whole path on one board: plug a module into each cage and connect SFP0 to
+SFP1 with a duplex fiber (TX to RX both ways).
+
+```
+emacZero demo  <-> PCS/PMA <-> SFP0 ==fiber== SFP1 <-> PCS/PMA <-> tester
+(02:..:01, .200)                                          (02:..:02, .1)
+```
+
+`rtl/sfp_lb_tester.v` has its own MAC and plays the host: it sends ARP
+requests, pings (18 to 248 bytes of data) and UDP frames to port 9999 (18 to
+1472 bytes), one at a time, and checks every reply byte by byte, including
+its length, FCS, IPv4 header checksum and ICMP checksum. No reply within
+about 1 ms counts as a timeout. The second PCS/PMA shares the first one's
+reference clock and user clocks.
+
+Build, program and run it (the fcapz host CLI runs from the `fcapz`
+submodule):
+
+```bash
+vivado -mode batch -source fpga/zcu106/scripts/build_zcu106.tcl -tclargs lb
+vivado -mode batch -source fpga/zcu106/scripts/program_zcu106.tcl -tclargs build_zcu106_lb/zcu106_top.bit
+python fpga/zcu106/scripts/sfp_lb_test.py --seconds 30
+```
+
+The script checks that both links are up, clears the counters, runs traffic,
+stops it and reports PASS/FAIL, with the reason, kind, sequence number and
+byte of the first failure if there is one. LEDs in this build:
+
+| LED | Meaning |
+|----:|---------|
+| 0 | SFP0 link up |
+| 1 | SFP1 link up |
+| 2 | Both GTs reset done |
+| 3 | Correct reply seen |
+| 4 | Bad reply or timeout seen |
+| 5 | Tester running |
+| 6 | At least one failure counted since the last clear |
+| 7 | Heartbeat |
+
+The payloads start at 18 bytes because shorter requests are padded to the
+60-byte Ethernet minimum, and `net_rx` passes that padding on as ICMP/UDP
+payload: the demo then echoes it back with a matching IP length. The
+`ZCU106-SFP-LB` simulation runs the same tester against the demo back to back.
+
+**10GBASE-SR modules.** 1000BASE-SX modules are the right part. A 10GBASE-SR
+SFP+ module is not specified for 1.25 Gb/s, but it has no CDR and the FPGA
+does not read its ID EEPROM, so it often passes 1000BASE-X on an FPGA-to-FPGA
+link with the same module at both ends. If the links do not come up with
+10G modules, try 1000BASE-SX modules before suspecting the design.
+
 ## Si5328 build
 
 Only used with `-tclargs si5328`. The Si5328 (U20) drives Quad 225
@@ -122,14 +175,18 @@ lights but LED 2 and LED 7 never do, the Si5328 is not producing 125 MHz.
 
 | File | Purpose |
 |------|---------|
-| `rtl/zcu106_top.v` | Board top: clocks, refclk select (`REFCLK_SI5328`), PCS/PMA, MAC, L3 demo, LEDs |
+| `rtl/zcu106_top.v` | Board top: clocks, refclk select (`REFCLK_SI5328`), PCS/PMA, LEDs; SFP1 loopback under `ZCU106_SFP1_LB` |
+| `rtl/zcu106_eth_demo.v` | emacZero MAC (GMII) plus the ARP / ICMP / UDP-echo demo |
+| `rtl/sfp_lb_tester.v` | Loopback tester: its own MAC, request generator and reply checker |
 | `rtl/i2c_init.v` | Power-up I2C register writer with NACK retry |
 | `rtl/zcu106_si5328_rom.vh` | I2C write list: mux select and Si5328 registers |
 | `constraints/zcu106.xdc` | Pins (from the Vivado ZCU106 board files) and clocks |
 | `constraints/refclk_si570.xdc` | Reference clock pins and period, `si570` build |
 | `constraints/refclk_si5328.xdc` | Reference clock pins and period, `si5328` build |
+| `constraints/sfp1_lb.xdc` | SFP1 pins and the fcapz JTAG clock, `lb` build |
 | `scripts/build_zcu106.tcl` | Non-project Vivado build, including IP generation |
-| `scripts/program_zcu106.tcl` | Program `build_zcu106/zcu106_top.bit` over JTAG |
+| `scripts/program_zcu106.tcl` | Program a bitstream (default `build_zcu106/zcu106_top.bit`) over JTAG |
+| `scripts/sfp_lb_test.py` | Run the loopback test through the fcapz EIO |
 
 The ARP responder and TX arbiter are reused from `fpga/arty_a7/rtl/`.
 The I2C sequence is simulated by `ZCU106-I2C-INIT` in `build_and_test.py`.

@@ -12,8 +12,13 @@ This project does not yet maintain long-lived release branches.
   with the MAC and the ARP/ICMP/UDP-echo demo on the 125 MHz transceiver
   clock. The GTH reference clock defaults to the USER_MGT_SI570 (156.25 MHz,
   no setup); `-tclargs si5328` instead programs the Si5328 to 125 MHz over I2C
-  with `i2c_init` (simulated by `ZCU106-I2C-INIT`). Builds and meets timing;
-  not yet tested on hardware.
+  with `i2c_init` (simulated by `ZCU106-I2C-INIT`). `-tclargs lb` adds an
+  SFP0 <-> SFP1 fiber loopback test: a second PCS/PMA on SFP1 and
+  `sfp_lb_tester`, which ARPs, pings and UDP-echoes the demo and checks every
+  reply, read over JTAG with the fcapz EIO (`scripts/sfp_lb_test.py`,
+  simulated by `ZCU106-SFP-LB`). Builds and meets timing; not yet tested on
+  hardware.
+- `fcapz` submodule updated to the current fpgacapZero main.
 - **Arty GMII fabric-loopback self-test** (`fpga/arty_a7/rtl/gmii_lb_selftest.v`,
   built with `fpga/arty_a7/scripts/build_arty_gmii_lb.tcl`). A second
   `eth_mac_sys` in GMII mode (`MAX_FRAME=9018`, 125 MHz from an MMCM) has its

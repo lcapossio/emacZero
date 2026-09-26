@@ -784,6 +784,23 @@ TESTS = [
         "iverilog_args": "-Ifpga/zcu106/rtl",
         "sim_timeout": 120,
     },
+    {
+        "name": "ZCU106-SFP-LB",
+        "srcs": ["rtl/crc32.v", "rtl/async_fifo.v", "rtl/mii_if.v",
+                 "rtl/sync_fifo.v", "rtl/eth_mac_rx.v", "rtl/eth_mac_tx.v",
+                 "rtl/eth_stats.v", "rtl/eth_pause.v", "rtl/axilite_regs.v", "rtl/mdio_master.v",
+                 "rtl/ddr_output.v", "rtl/ddr_input.v", "rtl/rgmii_if.v", "rtl/gmii_if.v",
+                 "rtl/gmii_cdc.v", "rtl/net/tx_csum_off.v",
+                 "rtl/mii_tx_saf.v", "rtl/eth_mac_sys.v",
+                 "rtl/net/net_rx.v", "rtl/net/icmp_echo.v", "rtl/net/udp_echo.v",
+                 "fpga/arty_a7/rtl/arp_responder.v",
+                 "fpga/arty_a7/rtl/arty_tx_arbiter.v",
+                 "fpga/zcu106/rtl/zcu106_eth_demo.v",
+                 "fpga/zcu106/rtl/sfp_lb_tester.v",
+                 "sim/tb/tb_zcu106_sfp_lb.v"],
+        "out": "sim/tb_zcu106_sfp_lb.vvp",
+        "sim_timeout": 600,
+    },
 ]
 
 

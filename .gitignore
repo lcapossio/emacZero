@@ -12,7 +12,7 @@ sim/cocotb/**/results*.xml
 *.log
 *.jou
 build_arty*/
-build_zcu106/
+build_zcu106*/
 .Xil/
 clockInfo.txt
 dfx_runtime.txt
