@@ -374,12 +374,19 @@ module eth_mac_sys #(
     endgenerate
 
     // PAUSE quantum = 512 bit times: 512 ns at 1G, 5.12 us at 100M, 51.2 us at
-    // 10M, in clk cycles rounded up (52 / 512 / 5120 at 100 MHz). Computed in
-    // kHz so the products stay inside 32-bit integer arithmetic.
-    localparam CLK_KHZ = CLK_FREQ_HZ / 1000;
-    localparam [15:0] PAUSE_DIV_1G   = (CLK_KHZ * 512 + 999_999) / 1_000_000;
-    localparam [15:0] PAUSE_DIV_100M = (CLK_KHZ * 512 +  99_999) /   100_000;
-    localparam [15:0] PAUSE_DIV_10M  = (CLK_KHZ * 512 +   9_999) /    10_000;
+    // 10M, in clk cycles rounded up (52 / 512 / 5120 at 100 MHz):
+    // ceil(f / 1953125), ceil(2f / 390625), ceil(4f / 78125). Split into
+    // quotient and remainder so the result is exact for any frequency and no
+    // product leaves 32-bit integer arithmetic.
+    localparam P1G_Q   = CLK_FREQ_HZ / 1_953_125;
+    localparam P1G_R   = CLK_FREQ_HZ % 1_953_125;
+    localparam P100M_Q = CLK_FREQ_HZ / 390_625;
+    localparam P100M_R = CLK_FREQ_HZ % 390_625;
+    localparam P10M_Q  = CLK_FREQ_HZ / 78_125;
+    localparam P10M_R  = CLK_FREQ_HZ % 78_125;
+    localparam [15:0] PAUSE_DIV_1G   = P1G_Q + ((P1G_R != 0) ? 1 : 0);
+    localparam [15:0] PAUSE_DIV_100M = 2 * P100M_Q + (2 * P100M_R + 390_624) / 390_625;
+    localparam [15:0] PAUSE_DIV_10M  = 4 * P10M_Q  + (4 * P10M_R  +  78_124) /  78_125;
 
     eth_pause #(
         .TICK_DIV_1G   (PAUSE_DIV_1G),

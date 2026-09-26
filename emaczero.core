@@ -59,11 +59,13 @@ targets:
     description: eth_mac_sys IP (MII, GMII or RGMII), no L3
     filesets: [rtl_core]
     toplevel: eth_mac_sys
+    parameters: [PHY_INTERFACE, RGMII_SPEEDS, CLK_FREQ_HZ, MAX_FRAME, MCAST_HASH_FILTER]
 
   with_l3:
     description: eth_mac_sys plus L3 RX parser and ICMP echo responder
     filesets: [rtl_core, rtl_l3]
     toplevel: eth_mac_sys
+    parameters: [PHY_INTERFACE, RGMII_SPEEDS, CLK_FREQ_HZ, MAX_FRAME, MCAST_HASH_FILTER]
 
   arty_a7:
     description: Arty A7-100T hardware test (MII)

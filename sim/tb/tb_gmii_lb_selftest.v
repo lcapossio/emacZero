@@ -83,6 +83,29 @@ module tb_gmii_lb_selftest;
         check("fault: corrupted frame flagged terror (FCS)", rx_terr == 1);
         check("fault: other frames still exact", rx_ok == tx_frames - 1);
 
+        // Clear mid-frame: corrupt one checker input byte (no FCS error, so
+        // only the byte compare can catch it) while clear is high, then drop
+        // clear before the frame ends. The frame must still count as bad.
+        ctrl[1] = 1'b1; #100; ctrl[1] = 1'b0; #100;
+        ctrl[0] = 1'b1;
+        wait (uut.rx_idx == 14'd2000);          // only frames > 2000 bytes
+        ctrl[1] = 1'b1;
+        wait (uut.clear);
+        @(negedge uut.clk_125);
+        while (!(uut.rx_tvalid && !uut.rx_tsof)) @(negedge uut.clk_125);
+        force uut.rx_tdata = uut.rx_tdata ^ 8'h01;
+        @(negedge uut.clk_125);
+        release uut.rx_tdata;
+        ctrl[1] = 1'b0;
+        wait (!uut.clear);
+        check("clear: frame still in progress when clear drops",
+              uut.rx_idx > 14'd2000);
+        ctrl[0] = 1'b0;
+        #300000;
+        show;
+        check("clear: byte corrupted during clear counted bad", rx_bad == 1);
+        check("clear: no terror on that frame", rx_terr == 0);
+
         if (fail_cnt == 0) begin
             $display("PASS: %0d tests passed", pass_cnt);
             $display("ALL TESTS PASSED");

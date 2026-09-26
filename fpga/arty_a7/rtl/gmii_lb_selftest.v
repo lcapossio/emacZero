@@ -388,9 +388,16 @@ module gmii_lb_selftest (
     wire [15:0] exp_len = 16'd14 + {2'b00, payload_len(s_seq[2:0])};
     wire fr_good = !mism_now && !s_terror && (fr_len == exp_len);
 
+    // The mismatch flag follows every beat, clear or not: a bad byte that
+    // arrives while clear is high must still fail its frame if clear drops
+    // before the frame ends.
+    always @(posedge clk_125 or negedge lb_rst_n) begin
+        if (!lb_rst_n)    rx_mismatch <= 1'b0;
+        else if (s_valid) rx_mismatch <= mism_now;
+    end
+
     always @(posedge clk_125 or negedge lb_rst_n) begin
         if (!lb_rst_n) begin
-            rx_mismatch   <= 1'b0;
             rx_exp_seq    <= 32'd0;
             rx_seen_any   <= 1'b0;
             rx_ok         <= 32'd0;
@@ -414,7 +421,6 @@ module gmii_lb_selftest (
             first_bad_set <= 1'b0;
             rx_seen_any   <= 1'b0;
         end else if (s_valid) begin
-            rx_mismatch <= mism_now;
             if (s_last) begin
                 if (fr_good) begin
                     rx_ok <= rx_ok + 1'b1;

@@ -130,9 +130,13 @@ This project does not yet maintain long-lived release branches.
   byte-exact; run with `clk` at 100 MHz it loses frames. The pause-quanta
   timer (`eth_pause` `TICK_DIV_*`, now 16-bit) and the MDC divider
   (`mdio_master` `CLK_FREQ_HZ`) are derived from `CLK_FREQ_HZ` instead of
-  assuming 100 MHz; at 100 MHz they are unchanged. The FuseSoC core and the
-  LiteX wrapper (`clk_freq`, `rgmii_speeds`) pass both parameters, and the
-  wrapper raises `ValueError` on a 1G-capable build below 125 MHz. The Arty
+  assuming 100 MHz, rounded up exactly for any frequency; at 100 MHz they are
+  unchanged. The LiteX wrapper (`clk_freq`, `rgmii_speeds`) passes both
+  parameters and raises `ValueError` on a 1G-capable build below 125 MHz. The
+  FuseSoC core's `default` and `with_l3` targets now list their parameters
+  (`PHY_INTERFACE`, `RGMII_SPEEDS`, `CLK_FREQ_HZ`, `MAX_FRAME`,
+  `MCAST_HASH_FILTER`); before, none of the declared parameters could be set
+  through FuseSoC. The Arty
   GMII loopback self-test now runs its MAC on the 125 MHz clock.
 - Reset and toggle synchronizer flops in `gmii_cdc`, `rgmii_if`, `mii_if` and
   `mii_tx_saf` carry `ASYNC_REG = "TRUE"`, so Vivado places each pair together
