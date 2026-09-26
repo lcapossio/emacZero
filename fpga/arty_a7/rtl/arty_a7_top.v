@@ -829,6 +829,30 @@ module arty_a7_top (
     assign eio_in[62:38] = phy_rst_cnt[24:0];
     assign eio_in[63]    = phy_rst_done_r;
 
+`ifdef GMII_LB_SELFTEST
+    // On-silicon GMII-path self-test (gmii_lb_selftest.v): a second MAC with
+    // PHY_INTERFACE="GMII", MAX_FRAME=9018, looped back in fabric. Its status
+    // rides above the base EIO bits: eio-read bits [319:64]; eio-write bit 0 =
+    // run, bit 1 = clear. See fpga/arty_a7/scripts/gmii_lb_selftest.py.
+    wire [1:0]   lb_ctrl;
+    wire [255:0] lb_status;
+
+    gmii_lb_selftest u_gmii_lb (
+        .clk    (sys_clk),
+        .rst_n  (int_rst_n),
+        .ctrl   (lb_ctrl),
+        .status (lb_status)
+    );
+
+    fcapz_eio_xilinx7 #(
+        .IN_W  (64 + 256),
+        .OUT_W (2),
+        .CHAIN (3)
+    ) u_eio (
+        .probe_in  ({lb_status, eio_in}),
+        .probe_out (lb_ctrl)
+    );
+`else
     fcapz_eio_xilinx7 #(
         .IN_W  (64),
         .OUT_W (1),
@@ -837,6 +861,7 @@ module arty_a7_top (
         .probe_in  (eio_in),
         .probe_out ()
     );
+`endif
 `endif // FCAPZ_DEBUG
 
 endmodule

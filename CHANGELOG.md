@@ -7,6 +7,18 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- **Arty GMII fabric-loopback self-test** (`fpga/arty_a7/rtl/gmii_lb_selftest.v`,
+  built with `fpga/arty_a7/scripts/build_arty_gmii_lb.tcl`). A second
+  `eth_mac_sys` in GMII mode (`MAX_FRAME=9018`, 125 MHz from an MMCM) has its
+  GMII TX looped to its RX inside the fabric. A generator sends sequence-numbered
+  frames of 46-9000 byte payloads and a checker verifies every byte, the
+  sequence and `tuser`; results are read over the debug EIO by
+  `fpga/arty_a7/scripts/gmii_lb_selftest.py`. This exercises the 125 MHz
+  `gmii_cdc` paths and jumbo frames on silicon without a gigabit PHY (the Arty
+  has only a 10/100 MII PHY). On an Arty A7-100T it returned 1,772,990 of
+  1,772,990 frames exact in 60 s, 664,870 of them above 4083 bytes and the
+  largest 9018 bytes with FCS. `GMII-LB-SELFTEST` simulates it, including an
+  injected RX corruption that the checker must flag.
 - **Selectable async FIFO storage.** `async_fifo` takes `RAM_STYLE`:
   `"DISTRIBUTED"` (the previous combinational-read design, LUTRAM; still the
   default, so the MII FIFOs are unchanged) or `"BLOCK"` (registered read into
