@@ -5,7 +5,9 @@ through **SFP cage 0** at 1 Gb/s. It uses the MAC's `PHY_INTERFACE="GMII"`
 mode behind the AMD 1G/2.5G Ethernet PCS/PMA IP (1000BASE-X on a GTH
 transceiver). The demo answers ARP and ping, and echoes UDP on port 9999.
 
-> **Status: builds, not yet tested on hardware.**
+> **Status: tested on hardware with the Si570 reference clock, through the
+> SFP0 <-> SFP1 loopback test below. The Si5328 build and a link to a PC are
+> not yet tested.**
 
 ## Data path
 
@@ -146,6 +148,12 @@ SFP+ module is not specified for 1.25 Gb/s, but it has no CDR and the FPGA
 does not read its ID EEPROM, so it often passes 1000BASE-X on an FPGA-to-FPGA
 link with the same module at both ends. If the links do not come up with
 10G modules, try 1000BASE-SX modules before suspecting the design.
+
+Tested with a pair of Cable Matters 10GBASE-SR modules and the Si570 build:
+both links up, about 1.9 million requests in 30 s (ARP, ICMP and UDP in
+equal parts), no bad replies, no timeouts, worst round trip 59 us. The
+progress lines can show more replies than requests: counters change during
+a JTAG read. Only the final read, after the tester stops, is checked.
 
 ## Si5328 build
 

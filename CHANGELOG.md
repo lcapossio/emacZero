@@ -16,8 +16,9 @@ This project does not yet maintain long-lived release branches.
   SFP0 <-> SFP1 fiber loopback test: a second PCS/PMA on SFP1 and
   `sfp_lb_tester`, which ARPs, pings and UDP-echoes the demo and checks every
   reply, read over JTAG with the fcapz EIO (`scripts/sfp_lb_test.py`,
-  simulated by `ZCU106-SFP-LB`). Builds and meets timing; not yet tested on
-  hardware.
+  simulated by `ZCU106-SFP-LB`). Tested on a ZCU106 with the Si570 reference
+  clock and 10GBASE-SR modules: about 1.9 million requests in 30 s, all
+  answered correctly. The Si5328 build is not yet tested on hardware.
 - `fcapz` submodule updated to the current fpgacapZero main.
 - **Arty GMII fabric-loopback self-test** (`fpga/arty_a7/rtl/gmii_lb_selftest.v`,
   built with `fpga/arty_a7/scripts/build_arty_gmii_lb.tcl`). A second

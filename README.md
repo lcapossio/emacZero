@@ -327,8 +327,8 @@ included.
 
 The AMD ZCU106 port runs the MAC in `PHY_INTERFACE="GMII"` mode behind the
 AMD 1G/2.5G Ethernet PCS/PMA IP (1000BASE-X on a GTH transceiver) through SFP
-cage 0, with the ARP/ICMP/UDP-echo demo. It builds and meets timing but has
-not yet been tested on hardware. The GTH reference clock is the on-board
+cage 0, with the ARP/ICMP/UDP-echo demo. It passes the SFP0 <-> SFP1 fiber
+loopback test on hardware (Si570 reference clock). The GTH reference clock is the on-board
 USER_MGT_SI570 (156.25 MHz, no setup) by default, with an optional Si5328
 build, and a loopback build tests SFP0 against SFP1 over a fiber. Setup and
 LED meanings are in
