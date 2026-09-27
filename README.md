@@ -300,7 +300,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, back-to-back frames with IFG >= 12 byte times, oversize gate, GTX_CLK integrity | 27 |
 | GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |
 | ZCU106-I2C-INIT | ZCU106 Si5328 I2C write sequence against the register list, NACK retry at the alternate address | 3 |
-| ZCU106-SFP-LB | ZCU106 loopback tester against the emacZero demo back to back: ARP / ICMP / UDP requests all answered exactly, a corrupted reply caught | 7 |
+| ZCU106-SFP-LB | ZCU106 loopback tester against the emacZero demo back to back: ARP / ICMP / UDP requests all answered exactly, a corrupted reply caught, frames for another MAC / IP / port ignored, bad-checksum / bad-FCS and short-payload handling reported | 12 |
 
 ## Hardware Test (Arty A7-100T)
 
@@ -328,7 +328,7 @@ included.
 The AMD ZCU106 port runs the MAC in `PHY_INTERFACE="GMII"` mode behind the
 AMD 1G/2.5G Ethernet PCS/PMA IP (1000BASE-X on a GTH transceiver) through SFP
 cage 0, with the ARP/ICMP/UDP-echo demo. It passes the SFP0 <-> SFP1 fiber
-loopback test on hardware (Si570 reference clock). The GTH reference clock is the on-board
+loopback tests on hardware with both reference clocks. The GTH reference clock is the on-board
 USER_MGT_SI570 (156.25 MHz, no setup) by default, with an optional Si5328
 build, and a loopback build tests SFP0 against SFP1 over a fiber. Setup and
 LED meanings are in

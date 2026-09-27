@@ -11,6 +11,15 @@
 //   2. One reply corrupted on the wire (a flipped data bit, so the tester's
 //      MAC flags it with terror on the FCS check): exactly one bad reply,
 //      reason terror, and traffic carries on.
+//   3. Negative mode: frames to another MAC / IP / UDP port get no reply,
+//      and the normal requests in between are still answered. Variants 4..7
+//      (bad IP / ICMP checksum, bad FCS, tx_er) are informational: the
+//      current rtl/net blocks answer them (no checksum checks, and net_rx
+//      still ends the payload stream on a terror frame).
+//   4. Short payloads (0..17 bytes, padded frames): informational only -
+//      prints how many were answered correctly (see net_rx padding note in
+//      sfp_lb_tester.v); only checks that ARP stays correct and nothing
+//      times out.
 // Verilog 2001
 // =============================================================================
 `timescale 1ns / 1ps
@@ -21,7 +30,7 @@ module tb_zcu106_sfp_lb;
     always #4 clk = ~clk;                       // 125 MHz
 
     reg        rst_n = 1'b0;
-    reg  [1:0] ctrl  = 2'b00;
+    reg  [3:0] ctrl  = 4'b0000;
 
     wire [7:0] d_txd, t_txd;
     wire       d_tx_en, d_tx_er, t_tx_en, t_tx_er;
@@ -57,7 +66,7 @@ module tb_zcu106_sfp_lb;
         .tx_frame   ()
     );
 
-    wire [263:0] st;
+    wire [383:0] st;
     sfp_lb_tester u_tester (
         .clk        (clk),
         .rst_n      (rst_n),
@@ -87,7 +96,12 @@ module tb_zcu106_sfp_lb;
     wire [7:0]  f_got    = st[237:230];
     wire [7:0]  f_exp    = st[245:238];
     wire [15:0] f_seq    = st[261:246];
-    wire [31:0] ok_all   = ok_arp + ok_icmp + ok_udp;
+    wire [31:0] ok_neg   = st[295:264];
+    wire [7:0]  neg_fail = st[303:296];
+    wire [47:0] rx_bytes = st[351:304];
+    wire [31:0] neg_rep  = st[383:352];
+    wire [31:0] ok_all   = ok_arp + ok_icmp + ok_udp + ok_neg + neg_rep;
+    wire [31:0] ok_valid = ok_arp + ok_icmp + ok_udp;
 
     integer pass = 0, fail = 0;
 
@@ -107,8 +121,9 @@ module tb_zcu106_sfp_lb;
 
     task show;
         begin
-            $display("  tx=%0d arp=%0d icmp=%0d udp=%0d bad=%0d timeouts=%0d max_rtt=%0d",
-                     tx_count, ok_arp, ok_icmp, ok_udp, bad, timeouts, max_rtt);
+            $display("  tx=%0d arp=%0d icmp=%0d udp=%0d neg_ok=%0d neg_replied=%0d bad=%0d timeouts=%0d max_rtt=%0d bytes=%0d neg_fail=%b",
+                     tx_count, ok_arp, ok_icmp, ok_udp, ok_neg, neg_rep, bad,
+                     timeouts, max_rtt, rx_bytes, neg_fail);
             if (bad != 0 || timeouts != 0)
                 $display("  first: reason=%0d kind=%0d seq=%0d idx=%0d got=%h exp=%h",
                          f_reason, f_kind, f_seq, f_idx, f_got, f_exp);
@@ -137,9 +152,9 @@ module tb_zcu106_sfp_lb;
         repeat (200) @(posedge clk);
 
         // ---- 1. clean run ----
-        ctrl = 2'b01;
+        ctrl = 4'b0001;
         run_until(N_CLEAN);
-        ctrl = 2'b00;
+        ctrl = 4'b0000;
         repeat (40000) @(posedge clk);             // let the last one finish
         $display("clean run:");
         show;
@@ -148,14 +163,15 @@ module tb_zcu106_sfp_lb;
               "clean: >= 16 correct ARP, ICMP and UDP replies each");
         check(ok_all == tx_count, "clean: every request got a correct reply");
         check(bad == 0 && timeouts == 0, "clean: no bad replies, no timeouts");
+        check(ok_neg == 0, "clean: no negative frames without negative mode");
 
         // ---- 2. one reply corrupted on the wire ----
-        ctrl = 2'b10;                               // clear
+        ctrl = 4'b0010;                             // clear
         repeat (10) @(posedge clk);
-        ctrl = 2'b01;
+        ctrl = 4'b0001;
         corrupt_arm = 1'b1;
         run_until(9);
-        ctrl = 2'b00;
+        ctrl = 4'b0000;
         repeat (40000) @(posedge clk);
         $display("corrupted run:");
         show;
@@ -163,6 +179,37 @@ module tb_zcu106_sfp_lb;
               "corrupt: the corrupted reply counted as exactly one bad reply");
         check(f_reason == 4'd3, "corrupt: first failure reason is terror (FCS)");
         check(ok_all == tx_count - 1, "corrupt: every other request answered");
+
+        // ---- 3. negative frames: two rounds of all eight variants ----
+        ctrl = 4'b0010;
+        repeat (10) @(posedge clk);
+        ctrl = 4'b0101;                             // run + negative
+        run_until(64);
+        ctrl = 4'b0000;
+        repeat (40000) @(posedge clk);
+        $display("negative run:");
+        show;
+        check(ok_neg + neg_rep >= 16, "negative: >= 16 negative frames (every variant twice)");
+        check(neg_fail[3:0] == 4'd0,
+              "negative: wrong MAC / IP / ARP target / UDP port get no reply");
+        check(ok_valid + ok_neg + neg_rep == tx_count && bad == 0 && timeouts == 0,
+              "negative: all valid requests answered correctly");
+        $display("INFO: negative variants answered (bit 4 IP csum, 5 ICMP csum, 6 FCS, 7 tx_er): %b",
+                 neg_fail);
+
+        // ---- 4. short payloads (informational) ----
+        ctrl = 4'b0010;
+        repeat (10) @(posedge clk);
+        ctrl = 4'b1001;                             // run + short
+        run_until(54);                              // 18 of each kind
+        ctrl = 4'b0000;
+        repeat (40000) @(posedge clk);
+        $display("short-payload run (informational):");
+        show;
+        $display("INFO: short payloads: %0d of %0d ICMP/UDP requests answered correctly",
+                 ok_icmp + ok_udp, tx_count - ok_arp);
+        check(ok_arp * 3 >= tx_count - 2 && timeouts == 0,
+              "short: ARP still correct, no timeouts");
 
         if (fail == 0) begin
             $display("PASS: %0d tests passed", pass);

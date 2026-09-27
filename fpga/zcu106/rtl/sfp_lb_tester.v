@@ -14,7 +14,7 @@
 // Payloads start at 18 bytes, the smallest that needs no Ethernet padding:
 // net_rx forwards payload up to the end of the frame rather than the IPv4
 // total length, so the demo echoes the padding of a shorter request back as
-// payload (with a matching, wrong, IP length).
+// payload (with a matching, wrong, IP length). Short mode tests exactly that.
 //
 // The three kinds rotate, one transaction in flight at a time, with payload
 // lengths stepping through their range and a sequence-seeded byte pattern.
@@ -23,7 +23,25 @@
 // compared), plus its length, terror, the IPv4 header checksum and the ICMP
 // checksum. No reply within ~1 ms counts as a timeout.
 //
+// Negative mode (ctrl[2]) adds a fourth kind to the rotation: a frame the
+// demo must not answer, cycling through eight variants (based on a 32-byte
+// ping unless noted):
+//   0 wrong destination MAC (02:00:00:00:00:11)
+//   1 wrong destination IP (192.168.137.201)
+//   2 ARP request for 192.168.137.201
+//   3 UDP to port 9998
+//   4 bad IPv4 header checksum
+//   5 bad ICMP checksum
+//   6 bad FCS (one data bit flipped on GMII after the MAC)
+//   7 GMII tx_er in the middle of the frame
+// Silence for 200 us counts as ok_neg; a frame in that window counts as
+// neg_replies (not bad) and sets neg_fail[variant].
+//
+// Short mode (ctrl[3]) uses ICMP and UDP payloads of 0..17 bytes, which need
+// Ethernet padding, and checks for replies of the request's own length.
+//
 // ctrl (any clock domain; synchronized here): [0] run  [1] clear counters
+//   [2] negative frames  [3] short payloads
 // status (clk domain; stop traffic before reading for a coherent view):
 //   [31:0]    tx_count     requests sent
 //   [63:32]   ok_arp       correct ARP replies
@@ -40,13 +58,17 @@
 //   [245:238] first_exp    expected byte   (reason 1)
 //   [261:246] first_seq    sequence number of the first bad transaction
 //   [262]     init_done    [263] run (synced)
+//   [295:264] ok_neg       negative frames correctly ignored
+//   [303:296] neg_fail     negative variants that got a reply
+//   [351:304] rx_bytes     bytes in correct replies (Ethernet frame, no FCS)
+//   [383:352] neg_replies  replies to negative frames
 // Verilog 2001
 // =============================================================================
 
 module sfp_lb_tester (
     input  wire         clk,           // 125 MHz
     input  wire         rst_n,
-    input  wire [1:0]   ctrl,
+    input  wire [3:0]   ctrl,
     input  wire         link_ok,       // both 1000BASE-X links up
 
     // GMII to the PCS/PMA (clk domain)
@@ -57,7 +79,7 @@ module sfp_lb_tester (
     input  wire         gmii_rx_dv,
     input  wire         gmii_rx_er,
 
-    output wire [263:0] status,
+    output wire [383:0] status,
     output reg          ok_pulse,      // one cycle per correct reply
     output reg          bad_pulse      // one cycle per bad reply or timeout
 );
@@ -68,19 +90,22 @@ module sfp_lb_tester (
     localparam [31:0] DI = 32'hC0_A8_89_C8;         // 192.168.137.200
     localparam [15:0] UDP_PORT  = 16'd9999;
     localparam [15:0] ICMP_ID   = 16'hBEEF;
-    localparam [1:0]  K_ARP = 2'd0, K_ICMP = 2'd1, K_UDP = 2'd2;
+    localparam [1:0]  K_ARP = 2'd0, K_ICMP = 2'd1, K_UDP = 2'd2, K_NEG = 2'd3;
     localparam [16:0] TIMEOUT = 17'h1FFFF;          // ~1.05 ms
+    localparam [16:0] NEG_WIN = 17'd25000;          // 200 us
 
     // =========================================================================
-    // Control synchronizers
+    // Control synchronizers (static levels, so bitwise synchronizers are fine)
     // =========================================================================
-    (* ASYNC_REG = "TRUE" *) reg [1:0] run_sync, clr_sync;
+    (* ASYNC_REG = "TRUE" *) reg [3:0] ctrl_s0, ctrl_s1;
     always @(posedge clk) begin
-        run_sync <= {run_sync[0], ctrl[0]};
-        clr_sync <= {clr_sync[0], ctrl[1]};
+        ctrl_s0 <= ctrl;
+        ctrl_s1 <= ctrl_s0;
     end
-    wire run = run_sync[1];
-    wire clr = clr_sync[1];
+    wire run    = ctrl_s1[0];
+    wire clr    = ctrl_s1[1];
+    wire neg_en = ctrl_s1[2];
+    wire short  = ctrl_s1[3];
 
     // =========================================================================
     // Tester MAC. After reset one AXI-Lite write sets MAC_LO so the MAC
@@ -94,6 +119,8 @@ module sfp_lb_tester (
     wire        tx_tready;
     wire [7:0]  rx_tdata;
     wire        rx_tvalid, rx_tlast, rx_terror;
+    wire [7:0]  mac_txd;
+    wire        mac_tx_en, mac_tx_er;
 
     eth_mac_sys #(
         .PHY_INTERFACE ("GMII"),
@@ -147,9 +174,9 @@ module sfp_lb_tester (
         .rgmii_rxd      (4'd0),
         .rgmii_rx_ctl   (1'b0),
         .rgmii_rxc      (1'b0),
-        .phy_gmii_txd    (gmii_txd),
-        .phy_gmii_tx_en  (gmii_tx_en),
-        .phy_gmii_tx_er  (gmii_tx_er),
+        .phy_gmii_txd    (mac_txd),
+        .phy_gmii_tx_en  (mac_tx_en),
+        .phy_gmii_tx_er  (mac_tx_er),
         .phy_gmii_txc    (),
         .phy_gmii_rx_clk (clk),
         .phy_gmii_rxd    (gmii_rxd),
@@ -216,15 +243,38 @@ module sfp_lb_tester (
     reg  [15:0] rtt;
     reg  [3:0]  gap_cnt;
 
+    // Frame template and deviations for this transaction (set in S_PREP):
+    // the request is built as kind fk, and negative variants change one thing
+    reg  [1:0]  fk;
+    reg  [47:0] q_dm;
+    reg  [31:0] q_di;
+    reg  [15:0] q_dport;
+    reg         q_bad_ipcs, q_bad_iccs, q_fcs, q_txer;
+    reg  [2:0]  neg_var;
+    reg  [4:0]  short_step;            // 0..17
+
+    // GMII fault injection after the MAC: at frame byte 42 (GMII byte 50,
+    // after preamble and SFD), flip bit 4 (bad FCS) or assert tx_er
+    reg  [11:0] gbyte;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)                  gbyte <= 12'd0;
+        else if (!mac_tx_en)         gbyte <= 12'd0;
+        else if (gbyte != 12'hFFF)   gbyte <= gbyte + 12'd1;
+    end
+    wire inject = mac_tx_en && (gbyte == 12'd50) && (kind == K_NEG);
+    assign gmii_txd   = mac_txd ^ ((inject && q_fcs) ? 8'h10 : 8'h00);
+    assign gmii_tx_en = mac_tx_en;
+    assign gmii_tx_er = mac_tx_er | (inject && q_txer);
+
     wire [15:0] udp_sport = 16'hC000 | {4'd0, seq[11:0]};
     wire [15:0] udp_len_w = ip_len - 16'd20;      // UDP header + data
-    wire [7:0]  proto     = (kind == K_UDP) ? 8'h11 : 8'h01;
+    wire [7:0]  proto     = (fk == K_UDP) ? 8'h11 : 8'h01;
 
     // Request byte at idx
     reg  [7:0]  tx_byte;
     always @* begin
         tx_byte = 8'h00;
-        if (kind == K_ARP) begin
+        if (fk == K_ARP) begin
             case (idx)
                 16'd0, 16'd1, 16'd2, 16'd3, 16'd4, 16'd5: tx_byte = 8'hFF;
                 16'd6:  tx_byte = TM[47:40];  16'd7:  tx_byte = TM[39:32];
@@ -240,17 +290,17 @@ module sfp_lb_tester (
                 16'd26: tx_byte = TM[15:8];   16'd27: tx_byte = TM[7:0];
                 16'd28: tx_byte = TI[31:24];  16'd29: tx_byte = TI[23:16];
                 16'd30: tx_byte = TI[15:8];   16'd31: tx_byte = TI[7:0];
-                16'd38: tx_byte = DI[31:24];  16'd39: tx_byte = DI[23:16];
-                16'd40: tx_byte = DI[15:8];   16'd41: tx_byte = DI[7:0];
+                16'd38: tx_byte = q_di[31:24];  16'd39: tx_byte = q_di[23:16];
+                16'd40: tx_byte = q_di[15:8];   16'd41: tx_byte = q_di[7:0];
                 default: tx_byte = 8'h00;     // target MAC (32..37) = 0
             endcase
         end else if (idx >= 16'd42) begin
             tx_byte = pat(idx - 16'd42, seq);
         end else begin
             case (idx)
-                16'd0:  tx_byte = DM[47:40];  16'd1:  tx_byte = DM[39:32];
-                16'd2:  tx_byte = DM[31:24];  16'd3:  tx_byte = DM[23:16];
-                16'd4:  tx_byte = DM[15:8];   16'd5:  tx_byte = DM[7:0];
+                16'd0:  tx_byte = q_dm[47:40];  16'd1:  tx_byte = q_dm[39:32];
+                16'd2:  tx_byte = q_dm[31:24];  16'd3:  tx_byte = q_dm[23:16];
+                16'd4:  tx_byte = q_dm[15:8];   16'd5:  tx_byte = q_dm[7:0];
                 16'd6:  tx_byte = TM[47:40];  16'd7:  tx_byte = TM[39:32];
                 16'd8:  tx_byte = TM[31:24];  16'd9:  tx_byte = TM[23:16];
                 16'd10: tx_byte = TM[15:8];   16'd11: tx_byte = TM[7:0];
@@ -265,10 +315,10 @@ module sfp_lb_tester (
                 16'd25: tx_byte = ip_csum[7:0];
                 16'd26: tx_byte = TI[31:24];  16'd27: tx_byte = TI[23:16];
                 16'd28: tx_byte = TI[15:8];   16'd29: tx_byte = TI[7:0];
-                16'd30: tx_byte = DI[31:24];  16'd31: tx_byte = DI[23:16];
-                16'd32: tx_byte = DI[15:8];   16'd33: tx_byte = DI[7:0];
+                16'd30: tx_byte = q_di[31:24];  16'd31: tx_byte = q_di[23:16];
+                16'd32: tx_byte = q_di[15:8];   16'd33: tx_byte = q_di[7:0];
                 default: begin
-                    if (kind == K_ICMP) begin
+                    if (fk == K_ICMP) begin
                         case (idx)
                             16'd34: tx_byte = 8'h08;
                             16'd35: tx_byte = 8'h00;
@@ -283,8 +333,8 @@ module sfp_lb_tester (
                         case (idx)
                             16'd34: tx_byte = udp_sport[15:8];
                             16'd35: tx_byte = udp_sport[7:0];
-                            16'd36: tx_byte = UDP_PORT[15:8];
-                            16'd37: tx_byte = UDP_PORT[7:0];
+                            16'd36: tx_byte = q_dport[15:8];
+                            16'd37: tx_byte = q_dport[7:0];
                             16'd38: tx_byte = udp_len_w[15:8];
                             16'd39: tx_byte = udp_len_w[7:0];
                             default: tx_byte = 8'h00;        // csum 0
@@ -393,6 +443,9 @@ module sfp_lb_tester (
     // Counters and the first failure
     // =========================================================================
     reg [31:0] tx_count, ok_arp, ok_icmp, ok_udp, bad, timeouts;
+    reg [31:0] ok_neg, neg_replies;
+    reg [7:0]  neg_fail;
+    reg [47:0] rx_bytes;
     reg [15:0] max_rtt;
     reg        have_first;
     reg [3:0]  first_reason;
@@ -408,7 +461,7 @@ module sfp_lb_tester (
     wire [31:0] icsum_now  = in_icmp ? r_icsum + rx_word : r_icsum;
     reg  [3:0]  reply_reason;
     always @* begin
-        if (state != S_WAIT)                              reply_reason = 4'd7;
+        if (state != S_WAIT || kind == K_NEG)             reply_reason = 4'd7;
         else if (rx_terror)                               reply_reason = 4'd3;
         else if (any_mis)                                 reply_reason = 4'd1;
         else if (len_now != exp_len)                      reply_reason = 4'd2;
@@ -457,6 +510,16 @@ module sfp_lb_tester (
             timer      <= 17'd0;
             rtt        <= 16'd0;
             gap_cnt    <= 4'd0;
+            fk         <= K_ARP;
+            q_dm       <= DM;
+            q_di       <= DI;
+            q_dport    <= UDP_PORT;
+            q_bad_ipcs <= 1'b0;
+            q_bad_iccs <= 1'b0;
+            q_fcs      <= 1'b0;
+            q_txer     <= 1'b0;
+            neg_var    <= 3'd0;
+            short_step <= 5'd0;
             tx_tdata   <= 8'd0;
             tx_tvalid  <= 1'b0;
             tx_tlast   <= 1'b0;
@@ -473,6 +536,10 @@ module sfp_lb_tester (
             ok_udp     <= 32'd0;
             bad        <= 32'd0;
             timeouts   <= 32'd0;
+            ok_neg     <= 32'd0;
+            neg_replies <= 32'd0;
+            neg_fail   <= 8'd0;
+            rx_bytes   <= 48'd0;
             max_rtt    <= 16'd0;
             have_first <= 1'b0;
             first_reason <= 4'd0;
@@ -495,11 +562,37 @@ module sfp_lb_tester (
             end
             S_PREP: begin
                 // ICMP data 18..248 B (icmp_echo buffers 256 B of ICMP),
-                // UDP data 18..1472 B (full 1500-byte IP MTU)
+                // UDP data 18..1472 B (full 1500-byte IP MTU); short mode
+                // sweeps 0..17 B in opposite directions for the two
+                fk         <= kind;
+                q_dm       <= DM;
+                q_di       <= DI;
+                q_dport    <= UDP_PORT;
+                q_bad_ipcs <= 1'b0;
+                q_bad_iccs <= 1'b0;
+                q_fcs      <= 1'b0;
+                q_txer     <= 1'b0;
                 case (kind)
                     K_ARP:  plen <= 16'd0;
-                    K_ICMP: plen <= {8'd0, icmp_step};
-                    default: plen <= udp_step;
+                    K_ICMP: plen <= short ? {11'd0, short_step}
+                                          : {8'd0, icmp_step};
+                    K_UDP:  plen <= short ? {11'd0, 5'd17 - short_step}
+                                          : udp_step;
+                    default: begin      // K_NEG: variant neg_var
+                        fk   <= (neg_var == 3'd2) ? K_ARP :
+                                (neg_var == 3'd3) ? K_UDP : K_ICMP;
+                        plen <= (neg_var == 3'd2) ? 16'd0 : 16'd32;
+                        case (neg_var)
+                            3'd0: q_dm       <= DM ^ 48'h10;
+                            3'd1: q_di       <= DI ^ 32'h1;
+                            3'd2: q_di       <= DI ^ 32'h1;
+                            3'd3: q_dport    <= UDP_PORT - 16'd1;
+                            3'd4: q_bad_ipcs <= 1'b1;
+                            3'd5: q_bad_iccs <= 1'b1;
+                            3'd6: q_fcs      <= 1'b1;
+                            default: q_txer  <= 1'b1;
+                        endcase
+                    end
                 endcase
                 sum_acc <= 32'd0;
                 idx     <= 16'd0;
@@ -508,8 +601,8 @@ module sfp_lb_tester (
             S_SUM: begin
                 // ip_len/flen from plen; ICMP data sum, one byte per cycle
                 ip_len <= 16'd28 + plen;
-                flen   <= (kind == K_ARP) ? 16'd42 : 16'd42 + plen;
-                if (kind == K_ICMP && idx < plen) begin
+                flen   <= (fk == K_ARP) ? 16'd42 : 16'd42 + plen;
+                if (fk == K_ICMP && idx < plen) begin
                     sum_acc <= sum_acc + (idx[0] ? {24'd0, pat(idx, seq)}
                                                  : {16'd0, pat(idx, seq), 8'd0});
                     idx     <= idx + 16'd1;
@@ -518,8 +611,10 @@ module sfp_lb_tester (
                                        + {16'd0, seq} + 32'h0000
                                        + {16'd0, 8'h40, proto}
                                        + TI[31:16] + TI[15:0]
-                                       + DI[31:16] + DI[15:0]);
-                    icmp_csum <= ~fold(sum_acc + 32'h0800 + ICMP_ID + seq);
+                                       + q_di[31:16] + q_di[15:0])
+                                 ^ {15'd0, q_bad_ipcs};
+                    icmp_csum <= ~fold(sum_acc + 32'h0800 + ICMP_ID + seq)
+                                 ^ {15'd0, q_bad_iccs};
                     idx       <= 16'd0;
                     state     <= S_SEND;
                 end
@@ -548,7 +643,14 @@ module sfp_lb_tester (
             S_WAIT: begin
                 timer <= timer + 17'd1;
                 if (rtt != 16'hFFFF) rtt <= rtt + 16'd1;
-                if (timer == TIMEOUT) begin
+                if (kind == K_NEG) begin
+                    if (timer == NEG_WIN) begin     // silence: correct
+                        ok_neg   <= ok_neg + 32'd1;
+                        ok_pulse <= 1'b1;
+                        gap_cnt  <= 4'd0;
+                        state    <= S_GAP;
+                    end
+                end else if (timer == TIMEOUT) begin
                     timeouts  <= timeouts + 32'd1;
                     bad_pulse <= 1'b1;
                     if (!have_first) begin
@@ -568,7 +670,13 @@ module sfp_lb_tester (
                 gap_cnt <= gap_cnt + 4'd1;
                 if (gap_cnt == 4'd15) begin
                     seq  <= seq + 16'd1;
-                    kind <= (kind == K_UDP) ? K_ARP : kind + 2'd1;
+                    kind <= (kind == K_UDP) ? (neg_en ? K_NEG : K_ARP) :
+                            (kind == K_NEG) ? K_ARP : kind + 2'd1;
+                    if (kind == K_NEG)
+                        neg_var <= neg_var + 3'd1;
+                    if (kind == K_UDP)
+                        short_step <= (short_step == 5'd17) ? 5'd0
+                                                            : short_step + 5'd1;
                     if (kind == K_ICMP)
                         icmp_step <= (icmp_step >= 8'd212) ? icmp_step - 8'd194
                                                            : icmp_step + 8'd37;
@@ -606,6 +714,11 @@ module sfp_lb_tester (
                             default: ok_udp  <= ok_udp  + 32'd1;
                         endcase
                         if (rtt > max_rtt) max_rtt <= rtt;
+                        rx_bytes <= rx_bytes + {32'd0, len_now};
+                    end else if (state == S_WAIT && kind == K_NEG) begin
+                        neg_replies       <= neg_replies + 32'd1;
+                        neg_fail[neg_var] <= 1'b1;
+                        bad_pulse         <= 1'b1;
                     end else begin
                         note_bad(reply_reason);
                     end
@@ -623,13 +736,17 @@ module sfp_lb_tester (
                 ok_udp     <= 32'd0;
                 bad        <= 32'd0;
                 timeouts   <= 32'd0;
+                ok_neg     <= 32'd0;
+                neg_replies <= 32'd0;
+                neg_fail   <= 8'd0;
+                rx_bytes   <= 48'd0;
                 max_rtt    <= 16'd0;
                 have_first <= 1'b0;
             end
         end
     end
 
-    assign status = {run, init_done,
+    assign status = {neg_replies, rx_bytes, neg_fail, ok_neg, run, init_done,
                      first_seq, first_exp, first_got, first_idx, first_kind,
                      first_reason, max_rtt,
                      timeouts, bad, ok_udp, ok_icmp, ok_arp, tx_count};

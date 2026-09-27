@@ -33,6 +33,9 @@
 // second PCS/PMA and sfp_lb_tester, which exercises the demo on SFP0 over a
 // fiber between the two cages; the LEDs then show the loopback test (see
 // the LED block at the end) and an fcapz EIO drives and reads the tester.
+// The EIO can also switch either laser off, reset the SFP1 core, turn
+// auto-negotiation off or restart it, and reads per-hop GMII frame counters
+// and a userclk2 frequency meter (see the EIO block).
 // Verilog 2001
 // =============================================================================
 
@@ -137,7 +140,21 @@ module zcu106_top #(
     end endgenerate
 
     // Keep the SFP laser off until the reference clock is ready.
+`ifdef ZCU106_SFP1_LB
+    // The loopback build can also switch either laser off, and reset the
+    // SFP1 core, from the EIO (bits listed with the PCS/PMA AN controls).
+    wire [15:0] lb_ctrl;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] laser0_off_sync, laser1_off_sync,
+                                       sfp1_rst_sync;
+    always @(posedge clk_50) begin
+        laser0_off_sync <= {laser0_off_sync[0], lb_ctrl[8]};
+        laser1_off_sync <= {laser1_off_sync[0], lb_ctrl[4]};
+        sfp1_rst_sync   <= {sfp1_rst_sync[0],   lb_ctrl[5]};
+    end
+    assign SFP0_TX_DISABLE_B = refclk_ready & ~laser0_off_sync[1];
+`else
     assign SFP0_TX_DISABLE_B = refclk_ready;
+`endif
 
     // GT bring-up watchdog: hold the PCS/PMA in reset until the reference
     // clock is ready, then pulse its reset for 1 ms every 2 s until the GT
@@ -186,6 +203,26 @@ module zcu106_top #(
     (* ASYNC_REG = "TRUE" *) reg [1:0] an_dis_sync;
     always @(posedge userclk2) an_dis_sync <= {an_dis_sync[0], DIP_AN_DISABLE};
 
+`ifdef ZCU106_SFP1_LB
+    // fcapz EIO outputs (TCK domain, static levels set by the host):
+    //   [0] run  [1] clear  [2] negative frames  [3] short payloads
+    //       (all four go to sfp_lb_tester, which synchronizes them)
+    //   [4] SFP1 laser off  [5] SFP1 PCS/PMA reset  [6] AN off (both cores,
+    //   ORed with DIP 0)  [7] AN restart (both, rising edge)  [8] SFP0 laser
+    //   off (no effect while J16 forces the laser on)
+    (* ASYNC_REG = "TRUE" *) reg [1:0] an_off_sync, an_rst_sync, lb_clr_sync;
+    always @(posedge userclk2) begin
+        an_off_sync <= {an_off_sync[0], lb_ctrl[6]};
+        an_rst_sync <= {an_rst_sync[0], lb_ctrl[7]};
+        lb_clr_sync <= {lb_clr_sync[0], lb_ctrl[1]};
+    end
+    wire an_disable = an_dis_sync[1] | an_off_sync[1];
+    wire an_restart = an_rst_sync[1];
+`else
+    wire an_disable = an_dis_sync[1];
+    wire an_restart = 1'b0;
+`endif
+
     pcs_pma_1000basex u_pcs_pma (
         .gtrefclk_p             (SFP_REFCLK_P),
         .gtrefclk_n             (SFP_REFCLK_N),
@@ -211,11 +248,11 @@ module zcu106_top #(
         .gmii_rx_er             (gmii_rx_er),
         .gmii_isolate           (),
         // [4] AN enable, [3] isolate, [2] powerdown, [1] loopback, [0] unidir
-        .configuration_vector   ({~an_dis_sync[1], 4'b0000}),
+        .configuration_vector   ({~an_disable, 4'b0000}),
         .an_interrupt           (),
         // 1000BASE-X base page: full duplex only, no PAUSE advertised
         .an_adv_config_vector   (16'h0020),
-        .an_restart_config      (1'b0),
+        .an_restart_config      (an_restart),
         .status_vector          (pcs_status),
         .reset                  (pcs_reset),
         .signal_detect          (1'b1)
@@ -304,25 +341,107 @@ module zcu106_top #(
         .gmii_rx_dv             (lb_gmii_rx_dv),
         .gmii_rx_er             (lb_gmii_rx_er),
         .gmii_isolate           (),
-        .configuration_vector   ({~an_dis_sync[1], 4'b0000}),
+        .configuration_vector   ({~an_disable, 4'b0000}),
         .an_interrupt           (),
         .an_adv_config_vector   (16'h0020),
-        .an_restart_config      (1'b0),
+        .an_restart_config      (an_restart),
         .status_vector          (lb_pcs_status),
-        .reset                  (pcs_reset),
+        .reset                  (pcs_reset | sfp1_rst_sync[1]),
         .signal_detect          (1'b1)
     );
 
-    assign SFP1_TX_DISABLE_B = refclk_ready;
+    assign SFP1_TX_DISABLE_B = refclk_ready & ~laser1_off_sync[1];
 
-    wire [1:0]   lb_ctrl;
-    wire [263:0] lb_status;
+    // Link-down events per core (falling edges of status_vector[0])
+    reg        link0_q, link1_q;
+    reg [15:0] link0_downs, link1_downs;
+    always @(posedge userclk2 or negedge rst_n) begin
+        if (!rst_n) begin
+            link0_q     <= 1'b0;
+            link1_q     <= 1'b0;
+            link0_downs <= 16'd0;
+            link1_downs <= 16'd0;
+        end else begin
+            link0_q <= pcs_status[0];
+            link1_q <= lb_pcs_status[0];
+            if (lb_clr_sync[1]) begin
+                link0_downs <= 16'd0;
+                link1_downs <= 16'd0;
+            end else begin
+                if (link0_q && !pcs_status[0])    link0_downs <= link0_downs + 16'd1;
+                if (link1_q && !lb_pcs_status[0]) link1_downs <= link1_downs + 16'd1;
+            end
+        end
+    end
+
+    // Frame counters at each GMII hop (starts of tx_en / rx_dv, and frames
+    // with rx_er), to show where frames get lost: tester TX -> SFP1 PCS ->
+    // fiber -> SFP0 PCS -> demo RX, and back.
+    reg        d_rx_q, d_tx_q, t_rx_q, t_tx_q, d_er_q, t_er_q;
+    reg [15:0] demo_rx_frames, demo_tx_frames, tst_rx_frames, tst_tx_frames;
+    reg [15:0] demo_rx_errs, tst_rx_errs;
+    always @(posedge userclk2 or negedge rst_n) begin
+        if (!rst_n) begin
+            {d_rx_q, d_tx_q, t_rx_q, t_tx_q, d_er_q, t_er_q} <= 6'd0;
+            demo_rx_frames <= 16'd0;
+            demo_tx_frames <= 16'd0;
+            tst_rx_frames  <= 16'd0;
+            tst_tx_frames  <= 16'd0;
+            demo_rx_errs   <= 16'd0;
+            tst_rx_errs    <= 16'd0;
+        end else begin
+            d_rx_q <= gmii_rx_dv;
+            d_tx_q <= gmii_tx_en;
+            t_rx_q <= lb_gmii_rx_dv;
+            t_tx_q <= lb_gmii_tx_en;
+            d_er_q <= gmii_rx_er;
+            t_er_q <= lb_gmii_rx_er;
+            if (lb_clr_sync[1]) begin
+                demo_rx_frames <= 16'd0;
+                demo_tx_frames <= 16'd0;
+                tst_rx_frames  <= 16'd0;
+                tst_tx_frames  <= 16'd0;
+                demo_rx_errs   <= 16'd0;
+                tst_rx_errs    <= 16'd0;
+            end else begin
+                if (gmii_rx_dv    && !d_rx_q) demo_rx_frames <= demo_rx_frames + 16'd1;
+                if (gmii_tx_en    && !d_tx_q) demo_tx_frames <= demo_tx_frames + 16'd1;
+                if (lb_gmii_rx_dv && !t_rx_q) tst_rx_frames  <= tst_rx_frames  + 16'd1;
+                if (lb_gmii_tx_en && !t_tx_q) tst_tx_frames  <= tst_tx_frames  + 16'd1;
+                if (gmii_rx_er    && !d_er_q) demo_rx_errs   <= demo_rx_errs   + 16'd1;
+                if (lb_gmii_rx_er && !t_er_q) tst_rx_errs    <= tst_rx_errs    + 16'd1;
+            end
+        end
+    end
+
+    // userclk2 frequency: cycles per 2^22 clk_50 cycles (83.9 ms); 125 MHz
+    // reads as about 10,485,760. The window is a clk_50 toggle synchronized
+    // into userclk2; the result holds for a whole window.
+    reg [21:0] fm_div = 22'd0;
+    reg        fm_tog = 1'b0;
+    always @(posedge clk_50) begin
+        fm_div <= fm_div + 22'd1;
+        if (fm_div == 22'h3FFFFF) fm_tog <= ~fm_tog;
+    end
+    (* ASYNC_REG = "TRUE" *) reg [2:0] fm_sync = 3'd0;
+    reg [23:0] fm_cnt = 24'd0, fm_meas = 24'd0;
+    always @(posedge userclk2) begin
+        fm_sync <= {fm_sync[1:0], fm_tog};
+        if (fm_sync[2] != fm_sync[1]) begin
+            fm_meas <= fm_cnt;
+            fm_cnt  <= 24'd1;
+        end else if (fm_cnt != 24'hFFFFFF) begin
+            fm_cnt  <= fm_cnt + 24'd1;
+        end
+    end
+
+    wire [383:0] lb_status;
     wire         lb_ok_pulse, lb_bad_pulse;
 
     sfp_lb_tester u_lb (
         .clk        (userclk2),
         .rst_n      (rst_n),
-        .ctrl       (lb_ctrl),
+        .ctrl       (lb_ctrl[3:0]),
         .link_ok    (pcs_status[0] && lb_pcs_status[0]),
         .gmii_txd   (lb_gmii_txd),
         .gmii_tx_en (lb_gmii_tx_en),
@@ -335,18 +454,30 @@ module zcu106_top #(
         .bad_pulse  (lb_bad_pulse)
     );
 
-    // EIO (USER3). eio-write: [0] run, [1] clear.
-    // eio-read: [263:0] tester status (see sfp_lb_tester.v),
-    //   [279:264] SFP0 PCS status_vector, [295:280] SFP1 PCS status_vector,
-    //   [296] SFP0 GT reset done, [297] SFP1 GT reset done,
-    //   [298] refclk ready, [319:308] marker 12'h106.
+    // EIO (USER3). eio-write: lb_ctrl, see the AN controls above.
+    // eio-read: [383:0] tester status (see sfp_lb_tester.v),
+    //   [399:384] SFP0 PCS status_vector, [415:400] SFP1 PCS status_vector,
+    //   [431:416] SFP0 link-down count, [447:432] SFP1 link-down count,
+    //   [463:448] demo RX frames, [479:464] demo TX frames,
+    //   [495:480] tester TX frames, [511:496] tester RX frames,
+    //   [527:512] demo RX error frames, [543:528] tester RX error frames,
+    //   [567:544] userclk2 cycles per 2^22 clk_50 cycles,
+    //   [576] SFP0 GT reset done, [577] SFP1 GT reset done,
+    //   [578] refclk ready, [579] AN disabled, [580] REFCLK_SI5328,
+    //   [581] MAC out of reset, [595:592] layout version 2,
+    //   [607:596] marker 12'h106.
+    wire refclk_sel = (REFCLK_SI5328 != 0);
     fcapz_eio_xilinxus #(
-        .IN_W  (320),
-        .OUT_W (2),
+        .IN_W  (608),
+        .OUT_W (16),
         .CHAIN (3)
     ) u_eio (
-        .probe_in  ({12'h106, 9'd0, refclk_ready, lb_gt_resetdone,
-                     gt_resetdone, lb_pcs_status, pcs_status, lb_status}),
+        .probe_in  ({12'h106, 4'd2, 10'd0, rst_n, refclk_sel, an_disable,
+                     refclk_ready, lb_gt_resetdone, gt_resetdone,
+                     8'd0, fm_meas, tst_rx_errs, demo_rx_errs,
+                     tst_rx_frames, tst_tx_frames, demo_tx_frames, demo_rx_frames,
+                     link1_downs, link0_downs,
+                     lb_pcs_status, pcs_status, lb_status}),
         .probe_out (lb_ctrl)
     );
 `endif

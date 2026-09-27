@@ -5,8 +5,8 @@ through **SFP cage 0** at 1 Gb/s. It uses the MAC's `PHY_INTERFACE="GMII"`
 mode behind the AMD 1G/2.5G Ethernet PCS/PMA IP (1000BASE-X on a GTH
 transceiver). The demo answers ARP and ping, and echoes UDP on port 9999.
 
-> **Status: tested on hardware with the Si570 reference clock, through the
-> SFP0 <-> SFP1 loopback test below. The Si5328 build and a link to a PC are
+> **Status: tested on hardware with both reference clocks (Si570 and
+> Si5328), through the SFP0 <-> SFP1 loopback tests below. A link to a PC is
 > not yet tested.**
 
 ## Data path
@@ -114,18 +114,34 @@ its length, FCS, IPv4 header checksum and ICMP checksum. No reply within
 about 1 ms counts as a timeout. The second PCS/PMA shares the first one's
 reference clock and user clocks.
 
-Build, program and run it (the fcapz host CLI runs from the `fcapz`
-submodule):
+Build, program and run it (`-tclargs si5328 lb` for the Si5328 clock). The
+script uses the fcapz host library from the `fcapz` submodule over one
+hw_server session:
 
 ```bash
 vivado -mode batch -source fpga/zcu106/scripts/build_zcu106.tcl -tclargs lb
 vivado -mode batch -source fpga/zcu106/scripts/program_zcu106.tcl -tclargs build_zcu106_lb/zcu106_top.bit
-python fpga/zcu106/scripts/sfp_lb_test.py --seconds 30
+python fpga/zcu106/scripts/sfp_lb_test.py                   # all tests
+python fpga/zcu106/scripts/sfp_lb_test.py --tests links,soak --soak 3600
 ```
 
-The script checks that both links are up, clears the counters, runs traffic,
-stops it and reports PASS/FAIL, with the reason, kind, sequence number and
-byte of the first failure if there is one. LEDs in this build:
+| Test | What it does |
+|------|--------------|
+| `links` | Bitstream identity, reference clock, userclk2 frequency, both links up |
+| `traffic` | ARP / ICMP / UDP for `--seconds`; every reply must be correct |
+| `negative` | Frames the demo must ignore, mixed with normal traffic (see below) |
+| `short` | 0..17-byte payloads, which need Ethernet padding; informational |
+| `sfp1-laser`, `sfp0-laser` | Laser off for 1 s, links must recover; skipped when the link never drops |
+| `sfp1-reset` | Resets the SFP1 PCS/PMA; both links must drop and recover |
+| `an-off` | Auto-negotiation off on both cores, then back on; traffic each way |
+| `an-restart` | Restarts auto-negotiation on both cores; links must recover |
+| `soak` | Long traffic run (`--soak` seconds) with a bit error rate bound |
+
+Every test that recovers a link then runs 5 s of traffic that must be
+error-free. On a failure the script prints the first bad reply (reason, kind,
+sequence number, byte) and GMII frame counters for each hop, which show
+whether frames were lost on the way out or on the way back. LEDs in this
+build:
 
 | LED | Meaning |
 |----:|---------|
@@ -138,10 +154,16 @@ byte of the first failure if there is one. LEDs in this build:
 | 6 | At least one failure counted since the last clear |
 | 7 | Heartbeat |
 
-The payloads start at 18 bytes because shorter requests are padded to the
-60-byte Ethernet minimum, and `net_rx` passes that padding on as ICMP/UDP
-payload: the demo then echoes it back with a matching IP length. The
-`ZCU106-SFP-LB` simulation runs the same tester against the demo back to back.
+The negative test sends eight variants, each one change from a valid ping
+(or ARP, or UDP frame): 0 another destination MAC, 1 another destination
+IP, 2 ARP for another IP, 3 UDP to another port, 4 bad IPv4 header checksum,
+5 bad ICMP checksum, 6 bad FCS, 7 GMII `tx_er` in mid-frame. Variants 0..3
+must get no reply. Variants 4..7 are reported as FINDING: the current
+`rtl/net` blocks answer them (see "Known issues" below).
+
+The normal payloads start at 18 bytes, the smallest that needs no padding.
+The `ZCU106-SFP-LB` simulation runs the same tester, in all its modes,
+against the demo back to back.
 
 **10GBASE-SR modules.** 1000BASE-SX modules are the right part. A 10GBASE-SR
 SFP+ module is not specified for 1.25 Gb/s, but it has no CDR and the FPGA
@@ -149,11 +171,46 @@ does not read its ID EEPROM, so it often passes 1000BASE-X on an FPGA-to-FPGA
 link with the same module at both ends. If the links do not come up with
 10G modules, try 1000BASE-SX modules before suspecting the design.
 
-Tested with a pair of Cable Matters 10GBASE-SR modules and the Si570 build:
-both links up, about 1.9 million requests in 30 s (ARP, ICMP and UDP in
-equal parts), no bad replies, no timeouts, worst round trip 59 us. The
-progress lines can show more replies than requests: counters change during
-a JTAG read. Only the final read, after the tester stops, is checked.
+### Results
+
+With a pair of Cable Matters 10GBASE-SR modules, on both reference clocks:
+
+| | Si570 (156.25 MHz) | Si5328 (125 MHz) |
+|---|---|---|
+| 10 min soak | 32,135,265 requests, all correct | 31,961,598 requests, all correct |
+| Bit error rate (95% confidence) | < 2e-11 | < 1.8e-11 |
+| Worst round trip | 59.3 us (1472-byte UDP) | 59.3 us |
+| Negative variants 0..3 | ignored | ignored |
+| SFP1 reset, AN off / on, AN restart | links recover in 0.1-0.2 s, clean traffic after | same |
+| Laser off (either cage) | no link drop: skipped | same |
+
+The progress lines can show more replies than requests: counters change
+during a JTAG read. Only the final read, after the tester stops, is checked.
+
+Neither `TX_DISABLE` output drops the link on this board. For SFP0, jumper
+J16 forces the laser on; SFP1 probably has the same kind of override.
+
+### Known issues
+
+The loopback tests found these in the shared blocks. They are not fixed
+here:
+
+- `net_rx` takes the ICMP / UDP payload up to the end of the Ethernet frame,
+  not the IPv4 total length, so the padding of a short request is echoed
+  back as payload, with an IP length to match. No short request (0..17 bytes)
+  gets a correct reply.
+- `eth_mac_tx` pads a 59-byte frame to 61 bytes instead of 60 (`S_PAD`
+  always sends one more byte after `S_DATA` sent the first pad byte). The
+  frame is still valid, one pad byte too long.
+- `net_rx` does not check the IPv4 header checksum, and `icmp_echo` does not
+  check the ICMP checksum, so requests with a bad checksum are answered.
+- On a frame with `terror` (bad FCS, or `rx_er`), `net_rx` resets its parser
+  but still passes the last byte on with `icmp_last` / `udp_last`, so the
+  echo blocks answer the damaged frame.
+- One earlier loopback build with the Si5328 clock (from the first version
+  of this test) never got a reply, with both links up; it failed every time
+  it was loaded, while later builds of both clocks passed every time. It has
+  not been explained.
 
 ## Si5328 build
 
@@ -178,6 +235,8 @@ no non-volatile memory, so `rtl/i2c_init.v` programs it after configuration:
 
 If LED 0 never lights, the I2C writes are not being acknowledged. If LED 0
 lights but LED 2 and LED 7 never do, the Si5328 is not producing 125 MHz.
+On the test board the loopback build's frequency meter read userclk2 at
+125.000 MHz with the Si5328 clock.
 
 ## Files
 
@@ -194,7 +253,7 @@ lights but LED 2 and LED 7 never do, the Si5328 is not producing 125 MHz.
 | `constraints/sfp1_lb.xdc` | SFP1 pins and the fcapz JTAG clock, `lb` build |
 | `scripts/build_zcu106.tcl` | Non-project Vivado build, including IP generation |
 | `scripts/program_zcu106.tcl` | Program a bitstream (default `build_zcu106/zcu106_top.bit`) over JTAG |
-| `scripts/sfp_lb_test.py` | Run the loopback test through the fcapz EIO |
+| `scripts/sfp_lb_test.py` | Run the loopback tests through the fcapz EIO |
 
 The ARP responder and TX arbiter are reused from `fpga/arty_a7/rtl/`.
 The I2C sequence is simulated by `ZCU106-I2C-INIT` in `build_and_test.py`.
