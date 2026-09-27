@@ -89,7 +89,7 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 ## Verification
 
 - [x] Directed Icarus regression (`python build_and_test.py --sim-only`)
-- [x] 53 directed simulation tests
+- [x] 54 directed simulation tests
 - [x] Verilator lint in `build_and_test.py` and CI for `rtl/eth_mac_sys.f`
       with style waivers
 - [x] Vivado RTL elaboration gate in `build_and_test.py` (skipped where

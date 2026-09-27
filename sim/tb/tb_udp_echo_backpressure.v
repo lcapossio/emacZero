@@ -10,7 +10,8 @@
 // beat is lost - the reply then ends with no tlast at all.
 //
 // This is also udp_echo's first directed testbench; until now it was covered
-// by lint only.
+// by lint only. The sweep runs with 16-, 2- and 1-byte payloads: a 1-byte
+// payload has to arm src_last during the UDP header.
 // Verilog 2001
 // =============================================================================
 `timescale 1ns / 1ps
@@ -23,7 +24,7 @@ module tb_udp_echo_backpressure;
     localparam [31:0] REQ_IP    = 32'hC0_A8_89_01;
     localparam [15:0] SRC_PORT  = 16'd50222;
     localparam [15:0] DST_PORT  = 16'd7;
-    localparam [15:0]  PAY_LEN  = 16'd16;
+    reg        [15:0]  pay_len  = 16'd16;
 
     reg clk = 1'b0;
     reg rst_n = 1'b0;
@@ -59,10 +60,11 @@ module tb_udp_echo_backpressure;
         .udp_rx_data     (udp_rx_data),
         .udp_rx_valid    (udp_rx_valid),
         .udp_rx_last     (udp_rx_last),
+        .udp_rx_err      (1'b0),
         .udp_rx_src_ip   (REQ_IP),
         .udp_rx_src_port (SRC_PORT),
         .udp_rx_dst_port (DST_PORT),
-        .udp_rx_length   (16'd8 + PAY_LEN),
+        .udp_rx_length   (16'd8 + pay_len),
         .rx_src_mac      (REQ_MAC),
         .tx_data         (tx_data),
         .tx_valid        (tx_valid),
@@ -95,10 +97,10 @@ module tb_udp_echo_backpressure;
         integer k;
         begin
             @(negedge clk);
-            for (k = 0; k < PAY_LEN; k = k + 1) begin
+            for (k = 0; k < pay_len; k = k + 1) begin
                 udp_rx_data  = k[7:0] + 8'hA0;
                 udp_rx_valid = 1'b1;
-                udp_rx_last  = (k == PAY_LEN - 1);
+                udp_rx_last  = (k == pay_len - 1);
                 @(negedge clk);
             end
             udp_rx_data  = 8'd0;
@@ -137,14 +139,15 @@ module tb_udp_echo_backpressure;
             if (cond) begin
                 pass_cnt = pass_cnt + 1;
             end else begin
-                $display("FAIL: %0s (stall_at=%0d)", name, stall_at);
+                $display("FAIL: %0s (pay_len=%0d stall_at=%0d)", name, pay_len, stall_at);
                 fail_cnt = fail_cnt + 1;
             end
         end
     endtask
 
-    integer s;
+    integer s, n;
     integer ref_len;
+    integer swept = 0;
 
     initial begin
         udp_rx_data  = 8'd0;
@@ -153,30 +156,35 @@ module tb_udp_echo_backpressure;
 
         #50; rst_n = 1'b1; #50;
 
-        stall_en = 1'b0;
-        clear_capture;
-        feed_udp;
-        wait_reply;
-        ref_len = tx_beat;
-        check("reference reply completes", saw_last);
-        check("reply is eth+ip+udp+payload", ref_len == 14 + 20 + 8 + PAY_LEN);
+        for (n = 0; n < 3; n = n + 1) begin
+            pay_len = (n == 0) ? 16'd16 : (n == 1) ? 16'd2 : 16'd1;
 
-        stall_en = 1'b1;
-        for (s = 0; s < ref_len; s = s + 1) begin
-            stall_at = s;
+            stall_en = 1'b0;
             clear_capture;
             feed_udp;
             wait_reply;
-            check("reply still ends in tlast", saw_last);
-            check("reply length unchanged", tx_beat == ref_len);
+            ref_len = tx_beat;
+            check("reference reply completes", saw_last);
+            check("reply is eth+ip+udp+payload", ref_len == 14 + 20 + 8 + pay_len);
+
+            stall_en = 1'b1;
+            for (s = 0; s < ref_len; s = s + 1) begin
+                stall_at = s;
+                clear_capture;
+                feed_udp;
+                wait_reply;
+                check("reply still ends in tlast", saw_last);
+                check("reply length unchanged", tx_beat == ref_len);
+            end
+            swept = swept + ref_len;
         end
 
         if (fail_cnt == 0) begin
             // No per-check "PASS:" lines: the runner counts those, and an
-            // 86-position sweep would drown the log. Reporting the total here
-            // lets it fall back to parsing the count instead.
+            // stall-position sweep would drown the log. Reporting the total
+            // here lets it fall back to parsing the count instead.
             $display("%0d tests passed (%0d stall positions swept)",
-                     pass_cnt, ref_len);
+                     pass_cnt, swept);
             $display("ALL TESTS PASSED");
         end else begin
             $display("FAIL: %0d passed, %0d failed", pass_cnt, fail_cnt);

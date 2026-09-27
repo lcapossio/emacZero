@@ -55,6 +55,7 @@ module tb_icmp_echo_backpressure;
         .icmp_rx_data   (icmp_rx_data),
         .icmp_rx_valid  (icmp_rx_valid),
         .icmp_rx_last   (icmp_rx_last),
+        .icmp_rx_err    (1'b0),
         .icmp_rx_src_ip (REQ_IP),
         .rx_src_mac     (REQ_MAC),
         .tx_data        (tx_data),

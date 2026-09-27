@@ -43,6 +43,7 @@ module tb_udp_stats_reply;
         .udp_rx_data        (udp_rx_data),
         .udp_rx_valid       (udp_rx_valid),
         .udp_rx_last        (udp_rx_last),
+        .udp_rx_err         (1'b0),
         .udp_rx_src_ip      (udp_rx_src_ip),
         .udp_rx_src_port    (udp_rx_src_port),
         .udp_rx_dst_port    (udp_rx_dst_port),

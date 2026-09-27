@@ -32,6 +32,7 @@ module tb_udp_blast_path;
     wire [7:0]  udp_data;
     wire        udp_valid;
     wire        udp_last;
+    wire        udp_err;
     wire [31:0] udp_src_ip;
     wire [15:0] udp_src_port;
     wire [15:0] udp_dst_port;
@@ -56,6 +57,7 @@ module tb_udp_blast_path;
         .udp_data      (udp_data),
         .udp_valid     (udp_valid),
         .udp_last      (udp_last),
+        .udp_err       (udp_err),
         .udp_src_ip    (udp_src_ip),
         .udp_src_port  (udp_src_port),
         .udp_dst_port  (udp_dst_port),
@@ -89,6 +91,7 @@ module tb_udp_blast_path;
         .udp_rx_data     (udp_data),
         .udp_rx_valid    (udp_valid),
         .udp_rx_last     (udp_last),
+        .udp_rx_err      (udp_err),
         .udp_rx_src_mac  (rx_src_mac),
         .udp_rx_src_ip   (udp_src_ip),
         .udp_rx_src_port (udp_src_port),
@@ -239,9 +242,14 @@ module tb_udp_blast_path;
         integer i;
         reg [15:0] ip_len;
         reg [15:0] udp_len;
+        reg [31:0] ip_sum;
         begin
             ip_len = 16'd37;  // 20 IP + 8 UDP + 9 payload
             udp_len = 16'd17; // 8 UDP + 9 payload
+            ip_sum = 32'h4500 + ip_len + 32'h1234 + 32'h4000 + 32'h4011
+                   + HOST_IP[31:16] + HOST_IP[15:0] + OUR_IP[31:16] + OUR_IP[15:0];
+            ip_sum = (ip_sum & 32'hFFFF) + (ip_sum >> 16);
+            ip_sum = ~((ip_sum & 32'hFFFF) + (ip_sum >> 16));
 
             // Ethernet header
             send_byte(OUR_MAC[47:40], 1'b1, 1'b0);
@@ -270,8 +278,8 @@ module tb_udp_blast_path;
             send_byte(8'h00, 1'b0, 1'b0);
             send_byte(8'h40, 1'b0, 1'b0);
             send_byte(8'h11, 1'b0, 1'b0);
-            send_byte(8'h00, 1'b0, 1'b0);
-            send_byte(8'h00, 1'b0, 1'b0);
+            send_byte(ip_sum[15:8], 1'b0, 1'b0);
+            send_byte(ip_sum[7:0],  1'b0, 1'b0);
             send_byte(HOST_IP[31:24], 1'b0, 1'b0);
             send_byte(HOST_IP[23:16], 1'b0, 1'b0);
             send_byte(HOST_IP[15:8],  1'b0, 1'b0);

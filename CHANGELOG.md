@@ -192,6 +192,23 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `net_rx` passed ICMP / UDP payload up to the end of the Ethernet frame,
+  so the echo blocks sent the padding of a short request back as payload. It
+  now stops at the IPv4 total length.
+- `net_rx` checks the IPv4 header (version 4, IHL >= 5, header checksum,
+  total length) and drops a bad one, and checks the ICMP checksum. New
+  outputs `icmp_err` / `udp_err`, valid with `icmp_last` / `udp_last`, flag
+  a bad ICMP checksum, a frame with `terror` (bad FCS or `rx_er`, which were
+  answered before) and a frame shorter than its IPv4 total length.
+  `icmp_echo`, `udp_echo`, `udp_iperf_sink`, `udp_blast_trigger` and
+  `udp_stats_reply` take the matching `*_rx_err` input and drop the message.
+  Integrators instantiating these blocks must connect the new ports.
+- `eth_mac_tx` padded a 59-byte frame to 61 bytes instead of 60 (the FCS was
+  valid, the frame one byte long). New `ETH-MAC-TX-PAD` checks 14- to
+  61-byte frames through both TX framers for wire length, zero pad and FCS;
+  `mii_tx_saf` was not affected.
+- `udp_echo` never asserted `tlast` on the reply to a 1-byte datagram, which
+  hung the transmit path.
 - **1G inter-frame gap was 10 byte times, not 12.** `gmii_cdc` waited 8
   media cycles before a queued frame, and with the cycle that closes the
   previous frame and the one that loads the next, TX_EN was low for only 10

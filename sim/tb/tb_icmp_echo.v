@@ -45,6 +45,7 @@ module tb_icmp_echo;
         .icmp_rx_data   (icmp_rx_data),
         .icmp_rx_valid  (icmp_rx_valid),
         .icmp_rx_last   (icmp_rx_last),
+        .icmp_rx_err    (1'b0),
         .icmp_rx_src_ip (icmp_rx_src_ip),
         .rx_src_mac     (rx_src_mac),
         .tx_data        (tx_data),

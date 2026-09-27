@@ -419,6 +419,12 @@ TESTS = [
         "out": "sim/tb_eth_mac_fcs.vvp",
     },
     {
+        "name": "ETH-MAC-TX-PAD",
+        "srcs": ["rtl/async_fifo.v", "rtl/eth_mac_tx.v", "rtl/mii_tx_saf.v",
+                 "sim/tb/tb_eth_mac_tx_pad.v"],
+        "out": "sim/tb_eth_mac_tx_pad.vvp",
+    },
+    {
         "name": "ETH-MAC-MULTIFRAME",
         "srcs": ["rtl/crc32.v", "rtl/async_fifo.v", "rtl/mii_if.v",
                  "rtl/sync_fifo.v", "rtl/eth_mac_rx.v", "rtl/eth_mac_tx.v", "rtl/eth_mac.v",

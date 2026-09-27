@@ -54,6 +54,7 @@ module tb_udp_stats_reply_backpressure;
         .udp_rx_data        (udp_rx_data),
         .udp_rx_valid       (udp_rx_valid),
         .udp_rx_last        (udp_rx_last),
+        .udp_rx_err         (1'b0),
         .udp_rx_src_ip      (REQ_IP),
         .udp_rx_src_port    (HOST_PORT),
         .udp_rx_dst_port    (STATS_PORT),

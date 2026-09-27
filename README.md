@@ -255,6 +255,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | CRC32 | Known test vectors, residue verification | 3 |
 | ASYNC-FIFO | Async FIFO pointer, full/empty, wraparound behavior | 11 |
 | ETH-MAC-FCS | FCS generation for multiple frame sizes | 4 |
+| ETH-MAC-TX-PAD | Minimum-frame padding in `eth_mac_tx` and `mii_tx_saf`: 14/58/59/60/61-byte frames, wire length, zero pad, FCS | 31 |
 | ETH-MAC-MULTIFRAME | Back-to-back frames, minimum padding, IFG | 1 |
 | ETH-MAC-JUMBO | Jumbo-frame TX/RX behavior | 6 |
 | MII-TX-BRIDGE | GMII-to-MII byte-to-nibble conversion | 1 |
@@ -276,7 +277,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | ETH-MAC-RX-BYTE0 | RX byte-zero/start-of-frame handling | 4 |
 | MDIO-MASTER | MDIO master read/write protocol, 1-bit shift fix | 10 |
 | TX-CSUM-OFF | Inline IPv4/UDP TX checksum offload patcher | 5 |
-| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage | 16 |
+| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage: IPv4 header and ICMP checksums, payload cut at the IPv4 total length, `terror` and truncated frames flagged | 34 |
 | ICMP-ECHO | ICMP echo responder packet generation | 35 |
 | UDP-IPERF-SINK | iperf2 UDP header parsing, counters, gap tracking | 16 |
 | UDP-BLAST-TRIGGER | trigger payload parsing and busy/port filtering | 13 |

@@ -22,6 +22,7 @@ module icmp_echo (
     input  wire [7:0]  icmp_rx_data,
     input  wire        icmp_rx_valid,
     input  wire        icmp_rx_last,
+    input  wire        icmp_rx_err,     // with last: discard (net_rx verdict)
     input  wire [31:0] icmp_rx_src_ip,
 
     // Source MAC (captured by net_rx before IP parsing)
@@ -84,7 +85,7 @@ module icmp_echo (
                 if (icmp_rx_last) begin
                     icmp_len <= rx_cnt + 9'd1;
                     rx_cnt   <= 9'd0;
-                    if (is_echo_req && (rx_cnt + 9'd1) >= 9'd8) begin
+                    if (is_echo_req && !icmp_rx_err && (rx_cnt + 9'd1) >= 9'd8) begin
                         pkt_ready     <= 1'b1;
                         reply_dst_ip  <= icmp_rx_src_ip;
                         reply_dst_mac <= rx_src_mac;
