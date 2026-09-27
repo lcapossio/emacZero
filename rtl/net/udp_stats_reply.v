@@ -34,6 +34,7 @@ module udp_stats_reply (
     input  wire [7:0]  udp_rx_data,
     input  wire        udp_rx_valid,
     input  wire        udp_rx_last,
+    input  wire        udp_rx_err,      // with last: discard (net_rx verdict)
     input  wire [31:0] udp_rx_src_ip,
     input  wire [15:0] udp_rx_src_port,
     input  wire [15:0] udp_rx_dst_port,
@@ -89,7 +90,7 @@ module udp_stats_reply (
     wire query_clear_next = (rx_state == RX_IDLE) ?
                             (udp_rx_data == 8'h43) : query_is_clear;
     wire do_latch_query =
-        udp_rx_valid &&
+        udp_rx_valid && !udp_rx_err &&
         ((rx_state == RX_IDLE && udp_rx_dst_port == stats_port && udp_rx_last) ||
          (rx_state == RX_CAPTURE && udp_rx_last));
 
@@ -162,6 +163,11 @@ module udp_stats_reply (
                 rx_state       <= RX_IDLE;
                 query_is_clear <= 1'b0;
             end
+            // A discarded datagram (net_rx error) ends here too.
+            if (udp_rx_valid && udp_rx_last && udp_rx_err) begin
+                rx_state       <= RX_IDLE;
+                query_is_clear <= 1'b0;
+            end
         end
     end
 
@@ -204,7 +210,11 @@ module udp_stats_reply (
         end else begin
             if (tx_ready && tx_valid)
                 tx_start <= 1'b0;
-            src_last <= 1'b0;
+            // Hold tlast until the output slice captures it: the slice samples
+            // src_* only while src_ready is high, so an unconditional clear drops
+            // tlast when the sink stalls on that beat and merges two frames.
+            if (src_ready)
+                src_last <= 1'b0;
 
             case (tx_state)
                 TX_IDLE: begin

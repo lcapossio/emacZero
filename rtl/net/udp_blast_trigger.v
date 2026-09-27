@@ -27,6 +27,7 @@ module udp_blast_trigger #(
     input  wire [7:0]  udp_rx_data,
     input  wire        udp_rx_valid,
     input  wire        udp_rx_last,
+    input  wire        udp_rx_err,      // with last: discard (net_rx verdict)
     input  wire [47:0] udp_rx_src_mac,
     input  wire [31:0] udp_rx_src_ip,
     input  wire [15:0] udp_rx_src_port,
@@ -103,7 +104,7 @@ module udp_blast_trigger #(
                 end
 
                 if (udp_rx_last) begin
-                    if (this_accept) begin
+                    if (this_accept && !udp_rx_err) begin
                         start        <= 1'b1;
                         dst_mac      <= udp_rx_src_mac;
                         dst_ip       <= udp_rx_src_ip;

@@ -3,7 +3,7 @@ CAPI=2:
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 
 name: bard0:eth:emaczero:0.1.0
-description: emacZero — open-source 10/100/1G Ethernet MAC (MII / RGMII)
+description: emacZero — open-source 10/100/1G Ethernet MAC (MII / GMII / RGMII)
 
 filesets:
   rtl_core:
@@ -22,6 +22,7 @@ filesets:
       - rtl/ddr_output.v
       - rtl/ddr_input.v
       - rtl/rgmii_if.v
+      - rtl/gmii_if.v
       - rtl/gmii_cdc.v
       - rtl/net/tx_csum_off.v
       - rtl/eth_mac_sys.v
@@ -55,14 +56,16 @@ filesets:
 
 targets:
   default:
-    description: eth_mac_sys IP (MII or RGMII), no L3
+    description: eth_mac_sys IP (MII, GMII or RGMII), no L3
     filesets: [rtl_core]
     toplevel: eth_mac_sys
+    parameters: [PHY_INTERFACE, RGMII_SPEEDS, CLK_FREQ_HZ, MAX_FRAME, MCAST_HASH_FILTER]
 
   with_l3:
     description: eth_mac_sys plus L3 RX parser and ICMP echo responder
     filesets: [rtl_core, rtl_l3]
     toplevel: eth_mac_sys
+    parameters: [PHY_INTERFACE, RGMII_SPEEDS, CLK_FREQ_HZ, MAX_FRAME, MCAST_HASH_FILTER]
 
   arty_a7:
     description: Arty A7-100T hardware test (MII)
@@ -75,7 +78,7 @@ targets:
 parameters:
   PHY_INTERFACE:
     datatype: str
-    description: '"MII" (10/100) or "RGMII" (10/100/1G)'
+    description: '"MII" (10/100), "GMII" (1000 only) or "RGMII" (10/100/1G)'
     paramtype: vlogparam
     default: "MII"
 
@@ -84,6 +87,12 @@ parameters:
     description: '"ALL" | "1G_ONLY" | "10_100" — drops unused DDR cells'
     paramtype: vlogparam
     default: "ALL"
+
+  CLK_FREQ_HZ:
+    datatype: int
+    description: System clock (clk) frequency in Hz; >= 125000000 for any 1G-capable build (GMII, or RGMII unless RGMII_SPEEDS is "10_100")
+    paramtype: vlogparam
+    default: 100000000
 
   MAX_FRAME:
     datatype: int

@@ -24,6 +24,7 @@ rtl/axilite_regs.v
 rtl/ddr_output.v
 rtl/ddr_input.v
 rtl/rgmii_if.v
+rtl/gmii_if.v
 rtl/gmii_cdc.v
 rtl/net/tx_csum_off.v
 rtl/eth_mac_sys.v

@@ -20,7 +20,11 @@
 //   WRITE frame using the same DEVAD.
 // =============================================================================
 
-module mdio_master (
+module mdio_master #(
+    // clk frequency; MDC runs at ~1 MHz (well under the 2.5 MHz clause-22
+    // limit) from a divide-by-ceil(CLK_FREQ_HZ / 1 MHz), 100 at 100 MHz.
+    parameter CLK_FREQ_HZ = 100_000_000
+)(
     input  wire        clk,        // system clock
     input  wire        rst_n,
 
@@ -46,20 +50,25 @@ module mdio_master (
     output reg  [15:0] dbg_rd_raw       // raw captured shift_reg after read
 );
 
-    // MDC divider: clk/100 = 1 MHz MDC
-    reg [6:0] mdc_div;
-    wire      mdc_rising = (mdc_div == 7'd49);
-    wire      mdc_falling = (mdc_div == 7'd99);
+    // MDC divider: clk/MDC_DIV ~= 1 MHz MDC (clk/100 at 100 MHz)
+    localparam MDC_DIV_RAW = (CLK_FREQ_HZ + 999_999) / 1_000_000;
+    localparam MDC_DIV     = (MDC_DIV_RAW < 4) ? 4 : MDC_DIV_RAW;
+    localparam [15:0] MDC_RISE = MDC_DIV / 2 - 1;
+    localparam [15:0] MDC_LAST = MDC_DIV - 1;
+
+    reg [15:0] mdc_div;
+    wire       mdc_rising  = (mdc_div == MDC_RISE);
+    wire       mdc_falling = (mdc_div == MDC_LAST);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             mdc_div <= 0;
             mdc <= 0;
         end else begin
-            if (mdc_div >= 7'd99) mdc_div <= 0;
+            if (mdc_div >= MDC_LAST) mdc_div <= 0;
             else mdc_div <= mdc_div + 1;
-            if (mdc_div == 7'd49) mdc <= 1;
-            else if (mdc_div == 7'd99) mdc <= 0;
+            if (mdc_div == MDC_RISE) mdc <= 1;
+            else if (mdc_div == MDC_LAST) mdc <= 0;
         end
     end
 

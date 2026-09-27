@@ -46,7 +46,8 @@ module tb_rgmii_if_variants;
         .gmii_tx_er  (tx_er),
         .gmii_rxd    (),
         .gmii_rx_dv  (),
-        .gmii_rx_er  ()
+        .gmii_rx_er  (),
+        .gmii_rx_ce  ()
     );
 
     // ---- "10_100" instance, running at 100M ----
@@ -70,7 +71,8 @@ module tb_rgmii_if_variants;
         .gmii_tx_er  (tx_er),
         .gmii_rxd    (),
         .gmii_rx_dv  (),
-        .gmii_rx_er  ()
+        .gmii_rx_er  (),
+        .gmii_rx_ce  ()
     );
 
     // ---- "ALL" instance, running at 1G to verify the default still works
@@ -94,7 +96,8 @@ module tb_rgmii_if_variants;
         .gmii_tx_er  (tx_er),
         .gmii_rxd    (),
         .gmii_rx_dv  (),
-        .gmii_rx_er  ()
+        .gmii_rx_er  (),
+        .gmii_rx_ce  ()
     );
 
     integer pass_cnt = 0, fail_cnt = 0;

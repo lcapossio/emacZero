@@ -24,7 +24,7 @@ module tb_rgmii_loopback;
 
     initial sys_clk = 0;
     initial clk_125 = 0;
-    always #5 sys_clk = ~sys_clk;   // 100 MHz
+    always #4 sys_clk = ~sys_clk;   // 125 MHz: 1G needs one clk per wire byte
     always #4 clk_125 = ~clk_125;   // 125 MHz
 
     // ---- AXI4-Lite ----
@@ -59,7 +59,7 @@ module tb_rgmii_loopback;
     // Here we directly instantiate the RGMII-mode eth_mac_sys and tap internal
     // GMII signals for a media-clock-domain loopback.
 
-    eth_mac_sys #(.PHY_INTERFACE("RGMII")) uut (
+    eth_mac_sys #(.PHY_INTERFACE("RGMII"), .CLK_FREQ_HZ(125_000_000)) uut (
         .clk            (sys_clk),
         .rst_n          (rst_n),
         .s_axi_awaddr   (awaddr),

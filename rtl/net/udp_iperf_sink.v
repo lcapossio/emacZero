@@ -24,6 +24,7 @@ module udp_iperf_sink #(
     input  wire [7:0]  udp_rx_data,
     input  wire        udp_rx_valid,
     input  wire        udp_rx_last,
+    input  wire        udp_rx_err,      // with last: discard (net_rx verdict)
     input  wire [31:0] udp_rx_src_ip,
     input  wire [15:0] udp_rx_src_port,
     input  wire [15:0] udp_rx_dst_port,
@@ -122,7 +123,7 @@ module udp_iperf_sink #(
                 end
 
                 if (udp_rx_last) begin
-                    if (pkt_has_header_next) begin
+                    if (pkt_has_header_next && !udp_rx_err) begin
                         stat_last_src_ip   <= udp_rx_src_ip;
                         stat_last_src_port <= udp_rx_src_port;
                         if (pkt_seq_next[31]) begin
