@@ -11,10 +11,8 @@
 //   ICMP echo    id 0xBEEF, seq n, 18..248 B   -> echo reply, same payload
 //   UDP to 9999  18..1472 B payload            -> echo, ports swapped
 //
-// Payloads start at 18 bytes, the smallest that needs no Ethernet padding:
-// net_rx forwards payload up to the end of the frame rather than the IPv4
-// total length, so the demo echoes the padding of a shorter request back as
-// payload (with a matching, wrong, IP length). Short mode tests exactly that.
+// Payloads start at 18 bytes, the smallest that needs no Ethernet padding;
+// short mode covers the padded sizes below that.
 //
 // The three kinds rotate, one transaction in flight at a time, with payload
 // lengths stepping through their range and a sequence-seeded byte pattern.
@@ -37,8 +35,10 @@
 // Silence for 200 us counts as ok_neg; a frame in that window counts as
 // neg_replies (not bad) and sets neg_fail[variant].
 //
-// Short mode (ctrl[3]) uses ICMP and UDP payloads of 0..17 bytes, which need
-// Ethernet padding, and checks for replies of the request's own length.
+// Short mode (ctrl[3]) uses ICMP payloads of 0..17 bytes and UDP payloads of
+// 1..18 bytes (all but 18 need Ethernet padding) and checks for replies of
+// the request's own length. A 0-byte UDP datagram is not sent: net_rx hands
+// datagrams on byte by byte, so an empty one never reaches udp_echo.
 //
 // ctrl (any clock domain; synchronized here): [0] run  [1] clear counters
 //   [2] negative frames  [3] short payloads
@@ -563,7 +563,7 @@ module sfp_lb_tester (
             S_PREP: begin
                 // ICMP data 18..248 B (icmp_echo buffers 256 B of ICMP),
                 // UDP data 18..1472 B (full 1500-byte IP MTU); short mode
-                // sweeps 0..17 B in opposite directions for the two
+                // sweeps ICMP 0..17 B up and UDP 18..1 B down
                 fk         <= kind;
                 q_dm       <= DM;
                 q_di       <= DI;
@@ -576,7 +576,7 @@ module sfp_lb_tester (
                     K_ARP:  plen <= 16'd0;
                     K_ICMP: plen <= short ? {11'd0, short_step}
                                           : {8'd0, icmp_step};
-                    K_UDP:  plen <= short ? {11'd0, 5'd17 - short_step}
+                    K_UDP:  plen <= short ? {11'd0, 5'd18 - short_step}
                                           : udp_step;
                     default: begin      // K_NEG: variant neg_var
                         fk   <= (neg_var == 3'd2) ? K_ARP :

@@ -14,9 +14,9 @@ emacZero demo on SFP0 and checks every reply. The tests:
   links      identity, reference clock, both 1000BASE-X links up
   traffic    ARP / ICMP / UDP traffic for --seconds, every reply correct
   negative   frames the demo must ignore (wrong MAC / IP / ARP target / UDP
-             port) get no reply; variants 4..7 (bad IP or ICMP checksum,
-             bad FCS, GMII tx_er) are reported as findings, not failures
-  short      0..17-byte payloads (padded frames); informational
+             port, bad IP or ICMP checksum, bad FCS, GMII tx_er) get no reply
+  short      ICMP 0..17-byte and UDP 1..18-byte payloads (padded frames):
+             every reply correct
   sfp1-laser SFP1 laser off for 1 s: both links drop and come back, then
              traffic is clean again (skipped if the link never drops: a
              board jumper can force the transmitter on)
@@ -99,7 +99,6 @@ NEG_VARIANTS = ["wrong destination MAC", "wrong destination IP",
                 "ARP for another IP", "UDP to another port",
                 "bad IPv4 header checksum", "bad ICMP checksum",
                 "bad FCS", "GMII tx_er mid-frame"]
-NEG_MUST_IGNORE = 0x0F     # variants 0..3 are hard requirements here
 
 
 class Board:
@@ -277,12 +276,8 @@ def t_negative(b, r, a):
             f"{s['ok_neg'] + s['neg_replies']} negative frames sent")
     for v, name in enumerate(NEG_VARIANTS):
         answered = bool(fail >> v & 1)
-        if NEG_MUST_IGNORE >> v & 1:
-            r.check("negative", not answered,
-                    f"variant {v} ({name}) {'ANSWERED' if answered else 'ignored'}")
-        else:
-            r.add("FINDING" if answered else "PASS", "negative",
-                  f"variant {v} ({name}) {'answered' if answered else 'ignored'}")
+        r.check("negative", not answered,
+                f"variant {v} ({name}) {'ANSWERED' if answered else 'ignored'}")
     r.check("negative", ok_valid(s) + s["ok_neg"] + s["neg_replies"] == s["tx_count"]
             and s["bad"] == 0 and s["timeouts"] == 0,
             "valid requests in between all answered correctly")
@@ -292,12 +287,12 @@ def t_short(b, r, a):
     s = b.traffic(5.0, extra=SHORT)
     show(s, "  final")
     n = s["tx_count"] - s["ok_arp"]
-    r.add("INFO", "short", f"{s['ok_icmp'] + s['ok_udp']} of {n} ICMP/UDP "
-          "requests with 0..17-byte payloads answered correctly")
-    if s["bad"]:
+    if s["bad"] or s["timeouts"]:
         r.add("INFO", "short", first_failure(s))
-    r.check("short", s["timeouts"] == 0 and s["ok_arp"] > 0,
-            "ARP correct, no timeouts")
+    r.check("short", ok_valid(s) == s["tx_count"] and s["ok_icmp"] > 0
+            and s["ok_udp"] > 0 and s["bad"] == 0 and s["timeouts"] == 0,
+            f"{s['ok_icmp'] + s['ok_udp']} of {n} ICMP/UDP requests with "
+            "short payloads answered correctly")
 
 
 def link_event(b, r, test, bits, hold, expect_down=True, skip_text=""):

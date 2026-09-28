@@ -189,11 +189,11 @@ module zcu106_eth_demo #(
     );
 
     wire [7:0]  netrx_icmp_data;
-    wire        netrx_icmp_valid, netrx_icmp_last;
+    wire        netrx_icmp_valid, netrx_icmp_last, netrx_icmp_err;
     wire [31:0] netrx_icmp_src_ip;
     wire [47:0] netrx_rx_src_mac;
     wire [7:0]  netrx_udp_data;
-    wire        netrx_udp_valid, netrx_udp_last;
+    wire        netrx_udp_valid, netrx_udp_last, netrx_udp_err;
     wire [31:0] netrx_udp_src_ip;
     wire [15:0] netrx_udp_src_port, netrx_udp_dst_port, netrx_udp_length;
 
@@ -211,10 +211,12 @@ module zcu106_eth_demo #(
         .icmp_data      (netrx_icmp_data),
         .icmp_valid     (netrx_icmp_valid),
         .icmp_last      (netrx_icmp_last),
+        .icmp_err       (netrx_icmp_err),
         .icmp_src_ip    (netrx_icmp_src_ip),
         .udp_data       (netrx_udp_data),
         .udp_valid      (netrx_udp_valid),
         .udp_last       (netrx_udp_last),
+        .udp_err        (netrx_udp_err),
         .udp_src_ip     (netrx_udp_src_ip),
         .udp_src_port   (netrx_udp_src_port),
         .udp_dst_port   (netrx_udp_dst_port),
@@ -231,6 +233,7 @@ module zcu106_eth_demo #(
         .icmp_rx_data   (netrx_icmp_data),
         .icmp_rx_valid  (netrx_icmp_valid),
         .icmp_rx_last   (netrx_icmp_last),
+        .icmp_rx_err    (netrx_icmp_err),
         .icmp_rx_src_ip (netrx_icmp_src_ip),
         .rx_src_mac     (netrx_rx_src_mac),
         .tx_data        (icmp_tx_tdata),
@@ -251,6 +254,7 @@ module zcu106_eth_demo #(
         .udp_rx_data     (netrx_udp_data),
         .udp_rx_valid    (netrx_udp_valid),
         .udp_rx_last     (netrx_udp_last),
+        .udp_rx_err      (netrx_udp_err),
         .udp_rx_src_ip   (netrx_udp_src_ip),
         .udp_rx_src_port (netrx_udp_src_port),
         .udp_rx_dst_port (netrx_udp_dst_port),

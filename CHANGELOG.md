@@ -22,8 +22,7 @@ This project does not yet maintain long-lived release branches.
   script runs these as a test suite over one hw_server session. Tested on
   a ZCU106 with both reference clocks and 10GBASE-SR modules: 10-minute
   soaks of about 32 million requests each, all correct; links recover from
-  resets and AN changes. The tests found issues in `net_rx`, `icmp_echo`
-  and `eth_mac_tx`, listed in `fpga/zcu106/README.md`.
+  resets and AN changes. The bugs these tests found are fixed below.
 - `fcapz` submodule updated to the current fpgacapZero main.
 - **Arty GMII fabric-loopback self-test** (`fpga/arty_a7/rtl/gmii_lb_selftest.v`,
   built with `fpga/arty_a7/scripts/build_arty_gmii_lb.tcl`). A second

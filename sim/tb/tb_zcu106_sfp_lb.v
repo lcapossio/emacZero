@@ -11,15 +11,11 @@
 //   2. One reply corrupted on the wire (a flipped data bit, so the tester's
 //      MAC flags it with terror on the FCS check): exactly one bad reply,
 //      reason terror, and traffic carries on.
-//   3. Negative mode: frames to another MAC / IP / UDP port get no reply,
-//      and the normal requests in between are still answered. Variants 4..7
-//      (bad IP / ICMP checksum, bad FCS, tx_er) are informational: the
-//      current rtl/net blocks answer them (no checksum checks, and net_rx
-//      still ends the payload stream on a terror frame).
-//   4. Short payloads (0..17 bytes, padded frames): informational only -
-//      prints how many were answered correctly (see net_rx padding note in
-//      sfp_lb_tester.v); only checks that ARP stays correct and nothing
-//      times out.
+//   3. Negative mode: no variant gets a reply (another MAC / IP / ARP
+//      target / UDP port, bad IPv4 or ICMP checksum, bad FCS, tx_er), and
+//      the normal requests in between are still answered.
+//   4. Short payloads (ICMP 0..17, UDP 1..18 bytes, mostly padded frames):
+//      every request answered with exactly its own payload, not the padding.
 // Verilog 2001
 // =============================================================================
 `timescale 1ns / 1ps
@@ -192,24 +188,24 @@ module tb_zcu106_sfp_lb;
         check(ok_neg + neg_rep >= 16, "negative: >= 16 negative frames (every variant twice)");
         check(neg_fail[3:0] == 4'd0,
               "negative: wrong MAC / IP / ARP target / UDP port get no reply");
+        check(neg_fail[7:4] == 4'd0,
+              "negative: bad IP / ICMP checksum, bad FCS, tx_er get no reply");
         check(ok_valid + ok_neg + neg_rep == tx_count && bad == 0 && timeouts == 0,
               "negative: all valid requests answered correctly");
-        $display("INFO: negative variants answered (bit 4 IP csum, 5 ICMP csum, 6 FCS, 7 tx_er): %b",
-                 neg_fail);
 
-        // ---- 4. short payloads (informational) ----
+        // ---- 4. short payloads ----
         ctrl = 4'b0010;
         repeat (10) @(posedge clk);
         ctrl = 4'b1001;                             // run + short
         run_until(54);                              // 18 of each kind
         ctrl = 4'b0000;
         repeat (40000) @(posedge clk);
-        $display("short-payload run (informational):");
+        $display("short-payload run:");
         show;
-        $display("INFO: short payloads: %0d of %0d ICMP/UDP requests answered correctly",
-                 ok_icmp + ok_udp, tx_count - ok_arp);
-        check(ok_arp * 3 >= tx_count - 2 && timeouts == 0,
-              "short: ARP still correct, no timeouts");
+        check(ok_icmp >= 18 && ok_udp >= 18,
+              "short: >= 18 ICMP (0..17 B) and UDP (1..18 B) requests");
+        check(ok_valid == tx_count && bad == 0 && timeouts == 0,
+              "short: every short request answered with its own payload");
 
         if (fail == 0) begin
             $display("PASS: %0d tests passed", pass);

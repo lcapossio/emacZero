@@ -130,7 +130,7 @@ python fpga/zcu106/scripts/sfp_lb_test.py --tests links,soak --soak 3600
 | `links` | Bitstream identity, reference clock, userclk2 frequency, both links up |
 | `traffic` | ARP / ICMP / UDP for `--seconds`; every reply must be correct |
 | `negative` | Frames the demo must ignore, mixed with normal traffic (see below) |
-| `short` | 0..17-byte payloads, which need Ethernet padding; informational |
+| `short` | ICMP 0..17-byte and UDP 1..18-byte payloads (padded frames); every reply must be correct |
 | `sfp1-laser`, `sfp0-laser` | Laser off for 1 s, links must recover; skipped when the link never drops |
 | `sfp1-reset` | Resets the SFP1 PCS/PMA; both links must drop and recover |
 | `an-off` | Auto-negotiation off on both cores, then back on; traffic each way |
@@ -157,11 +157,14 @@ build:
 The negative test sends eight variants, each one change from a valid ping
 (or ARP, or UDP frame): 0 another destination MAC, 1 another destination
 IP, 2 ARP for another IP, 3 UDP to another port, 4 bad IPv4 header checksum,
-5 bad ICMP checksum, 6 bad FCS, 7 GMII `tx_er` in mid-frame. Variants 0..3
-must get no reply. Variants 4..7 are reported as FINDING: the current
-`rtl/net` blocks answer them (see "Known issues" below).
+5 bad ICMP checksum, 6 bad FCS, 7 GMII `tx_er` in mid-frame. None of them
+may get a reply.
 
-The normal payloads start at 18 bytes, the smallest that needs no padding.
+The normal payloads start at 18 bytes, the smallest that needs no padding;
+the `short` test covers the padded sizes below that. It sends no 0-byte UDP
+datagram: `net_rx` passes UDP payload on byte by byte, with the end marked on
+the last byte, so an empty datagram never reaches `udp_echo` and gets no
+reply.
 The `ZCU106-SFP-LB` simulation runs the same tester, in all its modes,
 against the demo back to back.
 
@@ -180,9 +183,14 @@ With a pair of Cable Matters 10GBASE-SR modules, on both reference clocks:
 | 10 min soak | 32,135,265 requests, all correct | 31,961,598 requests, all correct |
 | Bit error rate (95% confidence) | < 2e-11 | < 1.8e-11 |
 | Worst round trip | 59.3 us (1472-byte UDP) | 59.3 us |
-| Negative variants 0..3 | ignored | ignored |
+| Negative variants 0..7 | all ignored | all ignored |
+| Short payloads (5 s) | 583,048 of 583,048 correct | 580,698 of 580,698 correct |
 | SFP1 reset, AN off / on, AN restart | links recover in 0.1-0.2 s, clean traffic after | same |
 | Laser off (either cage) | no link drop: skipped | same |
+
+The soak and bit error rate rows come from the build before the `net_rx` /
+`eth_mac_tx` / `udp_echo` fixes below; the other rows are from the current
+build.
 
 The progress lines can show more replies than requests: counters change
 during a JTAG read. Only the final read, after the tester stops, is checked.
@@ -190,23 +198,30 @@ during a JTAG read. Only the final read, after the tester stops, is checked.
 Neither `TX_DISABLE` output drops the link on this board. For SFP0, jumper
 J16 forces the laser on; SFP1 probably has the same kind of override.
 
-### Known issues
+### Found by these tests
 
-The loopback tests found these in the shared blocks. They are not fixed
-here:
+The loopback tests found these bugs in the shared blocks, now fixed:
 
-- `net_rx` takes the ICMP / UDP payload up to the end of the Ethernet frame,
-  not the IPv4 total length, so the padding of a short request is echoed
-  back as payload, with an IP length to match. No short request (0..17 bytes)
-  gets a correct reply.
-- `eth_mac_tx` pads a 59-byte frame to 61 bytes instead of 60 (`S_PAD`
-  always sends one more byte after `S_DATA` sent the first pad byte). The
-  frame is still valid, one pad byte too long.
-- `net_rx` does not check the IPv4 header checksum, and `icmp_echo` does not
-  check the ICMP checksum, so requests with a bad checksum are answered.
-- On a frame with `terror` (bad FCS, or `rx_er`), `net_rx` resets its parser
-  but still passes the last byte on with `icmp_last` / `udp_last`, so the
-  echo blocks answer the damaged frame.
+- `net_rx` took the ICMP / UDP payload up to the end of the Ethernet frame,
+  not the IPv4 total length, so the padding of a short request was echoed
+  back as payload. It now stops at the IPv4 total length.
+- `eth_mac_tx` padded a 59-byte frame to 61 bytes instead of 60.
+- `net_rx` did not check the IPv4 header checksum or the ICMP checksum, so
+  requests with a bad checksum were answered. It now drops frames with a bad
+  IPv4 header (version, IHL, checksum, total length) and flags an ICMP
+  message with a bad checksum as an error.
+- On a frame with `terror` (bad FCS, or `rx_er`), `net_rx` still passed the
+  last byte on with `icmp_last` / `udp_last`, so the echo blocks answered
+  the damaged frame. `net_rx` now marks the last byte with `icmp_err` /
+  `udp_err` (also for a frame shorter than its IPv4 total length), and every
+  consumer drops the message.
+- `udp_echo` never ended its reply to a 1-byte datagram (no `tlast`), which
+  hung the transmit path. The padding bug above had hidden it.
+
+Still open:
+
+- The UDP checksum is not checked (RFC 1122 says a nonzero one should be).
+- The destination IP check in `net_rx` assumes a 20-byte IPv4 header.
 - One earlier loopback build with the Si5328 clock (from the first version
   of this test) never got a reply, with both links up; it failed every time
   it was loaded, while later builds of both clocks passed every time. It has
