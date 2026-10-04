@@ -36,6 +36,7 @@ async def _setup(dut, speed, sys_ns=SYS_NS):
     dut.gmii_rxd_in.value = 0
     dut.gmii_rx_dv_in.value = 0
     dut.gmii_rx_er_in.value = 0
+    dut.gmii_rx_ce_in.value = 1   # every dv cycle carries a byte (1G / GMII)
     dut.sys_rst_n.value = 0
     for _ in range(16):
         await RisingEdge(dut.media_clk)

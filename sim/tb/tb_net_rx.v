@@ -11,7 +11,16 @@
 //   T3: IPv4 ICMP frame to broadcast (255.255.255.255) -> accepted
 //   T4: IPv4 ICMP frame to wrong IP -> dropped (no icmp_valid)
 //   T5: IPv4 UDP frame -> dropped (no icmp_valid)
-//   T6: rx_src_mac captured correctly
+//   T6: bad IPv4 header checksum -> dropped
+//   T7: bad ICMP checksum -> passed on, icmp_err with icmp_last
+//   T8: terror on the last beat -> icmp_err with icmp_last
+//   T9: short ICMP padded to 60 bytes -> only the 8 ICMP bytes passed on
+//   T10: frame shorter than the IPv4 total length -> icmp_err
+//   T11: UDP with 5 payload bytes, padded -> 5 bytes, udp_last, no udp_err
+//   T12: two ICMP frames back to back -> both complete, no error
+//   T13: IP version 6 in an IPv4 ethertype frame -> dropped
+// (rx_src_mac is checked in T1 and T2; frames carry valid checksums unless
+// a test corrupts one.)
 // Verilog 2001
 // =============================================================================
 `timescale 1ns / 1ps
@@ -35,7 +44,13 @@ module tb_net_rx;
     wire [7:0]  icmp_data;
     wire        icmp_valid;
     wire        icmp_last;
+    wire        icmp_err;
     wire [31:0] icmp_src_ip;
+
+    wire [7:0]  udp_data;
+    wire        udp_valid;
+    wire        udp_last;
+    wire        udp_err;
 
     wire [47:0] rx_src_mac;
 
@@ -55,7 +70,12 @@ module tb_net_rx;
         .icmp_data     (icmp_data),
         .icmp_valid    (icmp_valid),
         .icmp_last     (icmp_last),
+        .icmp_err      (icmp_err),
         .icmp_src_ip   (icmp_src_ip),
+        .udp_data      (udp_data),
+        .udp_valid     (udp_valid),
+        .udp_last      (udp_last),
+        .udp_err       (udp_err),
         .rx_src_mac    (rx_src_mac),
         .our_ip        (OUR_IP)
     );
@@ -116,6 +136,11 @@ module tb_net_rx;
     integer icmp_byte_cnt;
     reg     arp_last_seen;
     reg     icmp_last_seen;
+    integer icmp_last_cnt;
+    reg     icmp_err_seen;
+    integer udp_byte_cnt;
+    reg     udp_last_seen;
+    reg     udp_err_seen;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -123,11 +148,21 @@ module tb_net_rx;
             icmp_byte_cnt  <= 0;
             arp_last_seen  <= 1'b0;
             icmp_last_seen <= 1'b0;
+            icmp_last_cnt  <= 0;
+            icmp_err_seen  <= 1'b0;
+            udp_byte_cnt   <= 0;
+            udp_last_seen  <= 1'b0;
+            udp_err_seen   <= 1'b0;
         end else begin
             if (arp_valid)  arp_byte_cnt  <= arp_byte_cnt  + 1;
             if (arp_last)   arp_last_seen <= 1'b1;
             if (icmp_valid) icmp_byte_cnt <= icmp_byte_cnt + 1;
             if (icmp_last)  icmp_last_seen <= 1'b1;
+            if (icmp_last)  icmp_last_cnt <= icmp_last_cnt + 1;
+            if (icmp_last && icmp_err) icmp_err_seen <= 1'b1;
+            if (udp_valid)  udp_byte_cnt  <= udp_byte_cnt + 1;
+            if (udp_last)   udp_last_seen <= 1'b1;
+            if (udp_last && udp_err) udp_err_seen <= 1'b1;
         end
     end
 
@@ -138,12 +173,20 @@ module tb_net_rx;
             icmp_byte_cnt  = 0;
             arp_last_seen  = 1'b0;
             icmp_last_seen = 1'b0;
+            icmp_last_cnt  = 0;
+            icmp_err_seen  = 1'b0;
+            udp_byte_cnt   = 0;
+            udp_last_seen  = 1'b0;
+            udp_err_seen   = 1'b0;
         end
     endtask
 
     // ---- Frame buffer ----
     reg [7:0] frame [0:255];
     integer   frame_len;
+
+    reg       terror_on_last = 1'b0;   // MAC flags the frame at tlast
+    reg       back_to_back   = 1'b0;   // no idle cycle after this frame
 
     task feed_frame;
         integer k;
@@ -154,15 +197,44 @@ module tb_net_rx;
                 s_tvalid = 1'b1;
                 s_tsof   = (k == 0);
                 s_tlast  = (k == frame_len - 1);
-                s_terror = 1'b0;
-                @(negedge clk);
+                s_terror = terror_on_last && (k == frame_len - 1);
+                if (!(back_to_back && k == frame_len - 1))
+                    @(negedge clk);
             end
-            s_tdata  = 8'd0;
-            s_tvalid = 1'b0;
-            s_tlast  = 1'b0;
-            s_tsof   = 1'b0;
-            // settle
-            repeat (4) @(negedge clk);
+            if (!back_to_back) begin
+                s_tdata  = 8'd0;
+                s_tvalid = 1'b0;
+                s_tlast  = 1'b0;
+                s_tsof   = 1'b0;
+                s_terror = 1'b0;
+                // settle
+                repeat (4) @(negedge clk);
+            end
+        end
+    endtask
+
+    // IPv4 header checksum (bytes 14..33) and, for ICMP, the ICMP checksum
+    // over the IPv4 payload given by the total length.
+    task fix_csums;
+        integer i, sum, tot;
+        begin
+            frame[24] = 8'h00; frame[25] = 8'h00;
+            sum = 0;
+            for (i = 14; i < 34; i = i + 2)
+                sum = sum + {frame[i], frame[i+1]};
+            sum = (sum & 32'hFFFF) + (sum >> 16);
+            sum = (sum & 32'hFFFF) + (sum >> 16);
+            frame[24] = ~sum[15:8]; frame[25] = ~sum[7:0];
+            if (frame[23] == 8'h01) begin
+                tot = {frame[16], frame[17]};
+                frame[36] = 8'h00; frame[37] = 8'h00;
+                sum = 0;
+                for (i = 34; i < 14 + tot; i = i + 2)
+                    sum = sum + {frame[i], (i + 1 < 14 + tot) ? frame[i+1] : 8'h00};
+                sum = (sum & 32'hFFFF) + (sum >> 16);
+                sum = (sum & 32'hFFFF) + (sum >> 16);
+                frame[36] = ~sum[15:8]; frame[37] = ~sum[7:0];
+            end
         end
     endtask
 
@@ -205,7 +277,7 @@ module tb_net_rx;
             frame[18]=8'h00; frame[19]=8'h01;     // id
             frame[20]=8'h40; frame[21]=8'h00;     // flags
             frame[22]=8'h40; frame[23]=8'h01;     // TTL=64, proto=ICMP(1)
-            frame[24]=8'h00; frame[25]=8'h00;     // header csum (don't care here)
+            frame[24]=8'h00; frame[25]=8'h00;     // header csum (fix_csums)
             // src ip = 192.168.1.50
             frame[26]=8'hC0; frame[27]=8'hA8; frame[28]=8'h01; frame[29]=8'h32;
             // dst ip
@@ -217,6 +289,7 @@ module tb_net_rx;
             frame[38]=8'h00; frame[39]=8'h01;     // id
             frame[40]=8'h00; frame[41]=8'h02;     // seq
             frame_len = 42;
+            fix_csums;
         end
     endtask
 
@@ -244,8 +317,11 @@ module tb_net_rx;
             // UDP-ish payload
             for (i = 34; i < 42; i = i + 1) frame[i] = i[7:0];
             frame_len = 42;
+            fix_csums;
         end
     endtask
+
+    integer i;
 
     initial begin
         $dumpfile("tb_net_rx.vcd");
@@ -308,6 +384,99 @@ module tb_net_rx;
         check_int("T5 icmp_byte_cnt = 0 (UDP)",  icmp_byte_cnt, 0);
         check_int("T5 icmp_last_seen = 0 (UDP)", icmp_last_seen, 0);
         check_int("T5 arp_byte_cnt = 0  (UDP)",  arp_byte_cnt, 0);
+
+        // =================================================================
+        // T6: bad IPv4 header checksum -> dropped
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[25] = frame[25] ^ 8'h01;
+        feed_frame;
+        check_int("T6 icmp_byte_cnt = 0 (bad IP csum)",  icmp_byte_cnt, 0);
+        check_int("T6 icmp_last_seen = 0 (bad IP csum)", icmp_last_seen, 0);
+
+        // =================================================================
+        // T7: bad ICMP checksum -> icmp_err with icmp_last
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[37] = frame[37] ^ 8'h01;
+        feed_frame;
+        check_int("T7 icmp_last_seen = 1", icmp_last_seen, 1);
+        check_int("T7 icmp_err = 1 (bad ICMP csum)", icmp_err_seen, 1);
+
+        // =================================================================
+        // T8: terror on the last beat -> icmp_err
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        terror_on_last = 1'b1;
+        feed_frame;
+        terror_on_last = 1'b0;
+        check_int("T8 icmp_last_seen = 1", icmp_last_seen, 1);
+        check_int("T8 icmp_err = 1 (terror)", icmp_err_seen, 1);
+
+        // =================================================================
+        // T9: ICMP padded to the 60-byte minimum -> padding not passed on
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        for (i = 42; i < 60; i = i + 1) frame[i] = 8'hAA;
+        frame_len = 60;
+        feed_frame;
+        check_int("T9 icmp_byte_cnt = 8 (padding dropped)", icmp_byte_cnt, 8);
+        check_int("T9 icmp_last_seen = 1", icmp_last_seen, 1);
+        check_int("T9 icmp_err = 0", icmp_err_seen, 0);
+
+        // =================================================================
+        // T10: IPv4 total length 40 in a 42-byte frame -> icmp_err
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[17] = 8'h28;
+        fix_csums;
+        feed_frame;
+        check_int("T10 icmp_last_seen = 1", icmp_last_seen, 1);
+        check_int("T10 icmp_err = 1 (truncated)", icmp_err_seen, 1);
+
+        // =================================================================
+        // T11: UDP with 5 payload bytes, padded to 60
+        // =================================================================
+        reset_counters;
+        load_udp;
+        frame[17] = 8'h21;                        // total len = 33
+        frame[38] = 8'h00; frame[39] = 8'h0D;     // UDP length = 13
+        for (i = 42; i < 47; i = i + 1) frame[i] = 8'h50 + i[7:0];
+        for (i = 47; i < 60; i = i + 1) frame[i] = 8'hAA;
+        frame_len = 60;
+        fix_csums;
+        feed_frame;
+        check_int("T11 udp_byte_cnt = 5", udp_byte_cnt, 5);
+        check_int("T11 udp_last_seen = 1", udp_last_seen, 1);
+        check_int("T11 udp_err = 0", udp_err_seen, 0);
+
+        // =================================================================
+        // T12: two ICMP frames back to back
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        back_to_back = 1'b1;
+        feed_frame;
+        back_to_back = 1'b0;
+        feed_frame;
+        check_int("T12 icmp_byte_cnt = 16", icmp_byte_cnt, 16);
+        check_int("T12 icmp_last_cnt = 2", icmp_last_cnt, 2);
+        check_int("T12 icmp_err = 0", icmp_err_seen, 0);
+
+        // =================================================================
+        // T13: IP version 6 -> dropped
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[14] = 8'h65;
+        fix_csums;
+        feed_frame;
+        check_int("T13 icmp_byte_cnt = 0 (version 6)", icmp_byte_cnt, 0);
 
         // =================================================================
         // Summary

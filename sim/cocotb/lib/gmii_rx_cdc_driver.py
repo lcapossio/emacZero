@@ -16,6 +16,8 @@ class GmiiRxCdcDriver:
         dut.gmii_rxd_in.value = 0
         dut.gmii_rx_dv_in.value = 0
         dut.gmii_rx_er_in.value = 0
+        # One byte per rx_dv cycle, as on GMII / RGMII at 1G.
+        dut.gmii_rx_ce_in.value = 1
 
     async def idle(self, n):
         self.dut.gmii_rx_dv_in.value = 0

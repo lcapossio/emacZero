@@ -13,9 +13,10 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] Ethernet FCS generation on TX
 - [x] Ethernet FCS validation on RX with `m_axis_terror`
 - [x] RX error tagging for FCS, receive error, FIFO overflow, and oversize
-- [x] Jumbo-frame gate up to `MAX_FRAME` (RGMII path only; the MII 10/100
-      path is standard-MTU only — its TX FIFO and RX replay buffer are 4096
-      bytes and cannot hold a jumbo frame, so jumbo TX/RX requires RGMII)
+- [x] Jumbo frames up to `MAX_FRAME` on TX and RX (GMII and RGMII paths; the
+      MII 10/100 path is standard-MTU only — its TX FIFO and RX replay buffer
+      are 4096 bytes and cannot hold a jumbo frame, so jumbo requires GMII or
+      RGMII). The `gmii_cdc` RX CDC FIFO is sized from `MAX_FRAME`
 - [x] 802.3x PAUSE frame parse and TX gating
 - [x] Firmware-triggered PAUSE frame transmit through `PAUSE_CTRL`
 - [x] Single primary unicast MAC address filter
@@ -33,15 +34,24 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 
 ## PHY / Line Side
 
-- [x] MII 10/100 path (standard MTU only; jumbo requires the RGMII path)
+- [x] MII 10/100 path (standard MTU only; jumbo TX requires GMII or RGMII)
 - [x] MII and RGMII (`gmii_cdc`) store-and-forward CDCs use EOF-sideband frame
       markers with a committed-frame counter, without separate length FIFOs
 - [x] RGMII 10/100/1G path with runtime speed selection
 - [x] RGMII build-time speed trimming through `RGMII_SPEEDS`
 - [x] MDIO clause-22
 - [x] MDIO clause-45 through `MDIO_CMD[12]` and `MDIO_CMD[14:13]`
-- [ ] Pure GMII top-level path
-- [ ] SGMII
+- [x] Pure GMII top-level path (`PHY_INTERFACE="GMII"`, `rtl/gmii_if.v`):
+      1000 Mbps only, registered SDR I/O, GTX_CLK (`phy_gmii_txc`) forwarded from `clk_125`
+      inverted (180 deg), placing its rising edge mid data-window.
+      GMII is gigabit-only by definition - a tri-speed PHY exposing GMII
+      reverts to 4-bit MII at 10/100, which is the existing `"MII"` mode - so
+      this path pins `gmii_cdc` pacing to 1G and ignores the `cfg_speed` speed
+      field. Jumbo TX works here as on RGMII (RX shares the cap noted
+      above). Chief use: feeding a vendor
+      1G PCS/PMA core, which presents GMII rather than PHY pins
+- [ ] SGMII (reachable by attaching a vendor 1G PCS/PMA core to the GMII path
+      above; no native serdes implementation in this repo)
 - [ ] RMII
 
 ## Network Layer (`rtl/net/`)
@@ -79,16 +89,20 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 ## Verification
 
 - [x] Directed Icarus regression (`python build_and_test.py --sim-only`)
-- [x] 37 directed simulation tests
+- [x] 54 directed simulation tests
 - [x] Verilator lint in `build_and_test.py` and CI for `rtl/eth_mac_sys.f`
       with style waivers
+- [x] Vivado RTL elaboration gate in `build_and_test.py` (skipped where
+      Vivado is unavailable) - catches elaboration-only errors that both
+      linters accept
 - [x] Arty A7 UDP throughput tests
 - [x] Recent 100 Mbps MII measurements:
-      95.14 Mbps FPGA-to-host UDP payload with 0 loss;
+      95.68 Mbps FPGA-to-host UDP payload with 0 loss;
       94.2 Mbit/s host-to-FPGA iperf2 traffic with FPGA-side counters;
-      95.14/95.73 Mbps simultaneous bidirectional payload over 60 s after
-      the MII EOF-sideband FIFO cleanup, XPM FIFO advanced-feature trim, and
-      13-bit TX FIFO count fix
+      95.68/95.78 Mbps simultaneous bidirectional payload over 60 s with 0 gaps
+      in both directions, after the MII EOF-sideband FIFO cleanup, XPM FIFO
+      advanced-feature trim, 13-bit TX FIFO count fix, and the AXIS `tlast`
+      back-pressure fix in the L3 frame generators
 - [ ] Cocotb packet-level harness
 - [ ] UVM environment
 - [ ] Formal AXIS/FSM stall properties

@@ -3,7 +3,8 @@
 [![sim](https://github.com/lcapossio/emacZero/actions/workflows/sim.yml/badge.svg?branch=main)](https://github.com/lcapossio/emacZero/actions/workflows/sim.yml?query=branch%3Amain)
 
 Open-source Ethernet MAC in Verilog 2001. Supports 10/100/1G operation through
-either MII (10/100 only) or RGMII (10/100/1G with runtime speed selection).
+MII (10/100 only), GMII (1000 Mbps only), or RGMII (10/100/1G with runtime
+speed selection).
 Provides AXI4-Stream interfaces, AXI4-Lite register control, MDIO management,
 hardware statistics counters, jumbo-frame support, optional ICMP echo
 responder, and optional IPv4/UDP TX checksum offload.
@@ -28,12 +29,28 @@ responder, and optional IPv4/UDP TX checksum offload.
 - **AXI4-Stream TX/RX** - standard streaming interface for packet data with buffered RX backpressure
 - **AXI4-Lite CSR** - control/status block with runtime MAC address, TX/RX enable, promiscuous mode, **runtime speed select (10/100/1G)**, full-duplex, jumbo-enable, TX-csum-offload
 - **MII PHY interface** - 10/100 Mbps with store-and-forward async FIFOs
-  (standard MTU only; jumbo frames require the RGMII path)
+  (standard MTU only; jumbo TX requires the GMII or RGMII path)
+- **GMII PHY interface** - 1000 Mbps, registered SDR I/O with forwarded GTX_CLK
+  (`PHY_INTERFACE="GMII"`, `rtl/gmii_if.v`). GMII is gigabit-only by definition -
+  a tri-speed PHY exposing GMII falls back to 4-bit MII at 10/100, which is the
+  `"MII"` mode above - so this path pins the internal pacing to 1G and ignores
+  the `cfg_speed` speed field. Its main use is driving a vendor 1G PCS/PMA core
+  for **SGMII / 1000BASE-X**, which presents a GMII bus rather than PHY pins.
+  Jumbo TX and RX work here as on RGMII.
 - **RGMII PHY interface** - 10/100/1G with **runtime speed selection** via `cfg_speed[1:0]` and parameterizable `RGMII_SPEEDS = "ALL" | "1G_ONLY" | "10_100"` for resource-conscious builds
-- **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`) on the
-  **RGMII** path. The MII 10/100 path is standard-MTU only: its 4096-byte TX
-  FIFO and RX replay buffer cannot buffer a jumbo frame while the slow MII side
-  drains it, so set `MAX_FRAME=1518` for MII builds.
+- **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`) on TX and
+  RX for the **GMII** and **RGMII** paths. `gmii_cdc`'s store-and-forward RX
+  CDC FIFO is sized from `MAX_FRAME` (16K words at the 9018 default, 4K floor),
+  so a full `MAX_FRAME` frame is received intact. If that FIFO does overflow
+  (sustained line-rate 1G reception when `clk` is slower than the 125 MHz
+  media clock - the reader drains one byte per `clk`), the
+  affected frame is truncated and tagged with `rx_er` - delivered with
+  `m_axis_terror` and counted in `RX_ERR_ALIGN` - or dropped whole; frame
+  boundaries are never merged. Builds that don't need jumbo RX can set
+  `MAX_FRAME=1518` to keep the RX CDC FIFO at 4K words.
+  The MII 10/100 path is standard-MTU only: its 4096-byte TX FIFO and RX replay
+  buffer cannot buffer a jumbo frame while the slow MII side drains it, so set
+  `MAX_FRAME=1518` for MII builds.
 - **TX checksum offload** - optional IPv4 header + UDP checksum patcher (`TX_CSUM_OFFLOAD=1`, `rtl/net/tx_csum_off.v`)
 - **CRC-32** - IEEE 802.3 FCS generation (TX) and validation (RX)
 - **MDIO master** - PHY register read/write, accessible through AXI4-Lite CSR
@@ -42,7 +59,7 @@ responder, and optional IPv4/UDP TX checksum offload.
 - **Interrupt support** - TX done, RX frame, MDIO done with enable/mask
 - **Minimum frame padding** - auto-pads to 64 bytes
 - **Inter-frame gap** - 12-byte IFG enforcement
-- **Vendor-agnostic** - DDR I/O wrappers for Xilinx/Intel/simulation, async FIFO wraps XPM or behavioral
+- **Vendor-agnostic** - DDR I/O wrappers for Xilinx/Intel/simulation; portable async FIFO with selectable block-RAM or distributed-RAM storage (`mii_if` uses XPM FIFOs on Xilinx)
 - **Optional L3** - Ethernet/IP/ICMP/UDP RX parser, ICMP echo, UDP echo, UDP blast generator, and passive iperf2 sink/stat responder (`rtl/net/`)
 
 ## Architecture
@@ -65,12 +82,13 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 | `eth_mac_rx.v` | RX path: preamble detect, data, CRC check, MAC filter |
 | `mii_if.v` | MII PHY interface with store-and-forward CDC FIFOs |
 | `sync_fifo.v` | Synchronous FIFO used by MAC RX/TX buffering |
-| `gmii_cdc.v` | GMII clock domain crossing bridge (for RGMII mode) |
+| `gmii_cdc.v` | GMII clock domain crossing bridge (GMII and RGMII modes) |
 | `rgmii_if.v` | RGMII DDR interface using vendor-agnostic wrappers |
+| `gmii_if.v` | GMII pin interface: registered SDR I/O + transmit-clock (GTX_CLK) forwarding |
 | `ddr_output.v` | Vendor-agnostic DDR output (Xilinx ODDR / Intel / behavioral) |
 | `ddr_input.v` | Vendor-agnostic DDR input (Xilinx IDDR / Intel / behavioral) |
 | `crc32.v` | IEEE 802.3 CRC-32 (reflected polynomial 0xEDB88320) |
-| `async_fifo.v` | Async FIFO (XPM for Xilinx synthesis, behavioral for sim) |
+| `async_fifo.v` | Gray-pointer async FIFO, first-word-fall-through; `RAM_STYLE="BLOCK"` (block RAM, registered read) or `"DISTRIBUTED"` (LUTRAM) |
 | `mdio_master.v` | MDIO serial interface for PHY register access |
 | `eth_mac.v` | Bare MAC wrapper (TX + RX + MII, no CSR) for simple designs |
 | `tx_csum_off.v` | IPv4/UDP TX checksum insertion helper |
@@ -87,7 +105,7 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 
 ```verilog
 module eth_mac_sys #(
-    parameter PHY_INTERFACE     = "MII",  // "MII" or "RGMII"
+    parameter PHY_INTERFACE     = "MII",  // "MII", "GMII" or "RGMII"
     parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash
     parameter MAX_FRAME         = 9018,   // jumbo MTU + Ethernet headers
     // RX AXIS buffer depth (address width). Defaults to one full MAX_FRAME
@@ -95,9 +113,16 @@ module eth_mac_sys #(
     // backpressure; lower to save BRAM on standard-MTU builds.
     parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
     parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize checksum patcher
+    parameter CDC_RAM_STYLE     = "BLOCK",// GMII/RGMII CDC FIFOs: "BLOCK" | "DISTRIBUTED"
+    // clk frequency: sets the pause-quanta and MDC dividers. A build that can
+    // run at 1G (GMII, or RGMII with RGMII_SPEEDS != "10_100") needs >= 125 MHz
+    // and fails elaboration below that: a slower clk cannot drain the RX CDC
+    // FIFO at gigabit line rate.
+    parameter CLK_FREQ_HZ       = 100_000_000,
+    parameter RGMII_SPEEDS      = "ALL",  // "ALL" | "1G_ONLY" | "10_100"
     parameter MII_DEBUG         = 0       // 0 = debug capture/counters off
 )(
-    input  wire        clk,           // system clock (100 MHz)
+    input  wire        clk,           // system clock, CLK_FREQ_HZ
     input  wire        rst_n,
 
     // AXI4-Lite CSR (32-bit data, 8-bit byte address)
@@ -130,10 +155,21 @@ module eth_mac_sys #(
     input  wire        clk_125, clk_125_90,
     input  wire        clk_25,           // 100M reference (cfg_speed=01)
     input  wire        clk_2_5,          // 10M reference (cfg_speed=10)
+                                         // clk_25 / clk_2_5 must share a source with
+                                         // clk_125 (e.g. one MMCM): they sample the
+                                         // clk_125-domain TX byte directly
     output wire [3:0]  rgmii_txd,
     output wire        rgmii_tx_ctl, rgmii_txc,
     input  wire [3:0]  rgmii_rxd,
     input  wire        rgmii_rx_ctl, rgmii_rxc,
+
+    // GMII PHY pins (PHY_INTERFACE="GMII"; uses clk_125 above, not clk_125_90)
+    output wire [7:0]  phy_gmii_txd,
+    output wire        phy_gmii_tx_en, phy_gmii_tx_er,
+    output wire        phy_gmii_txc,     // GTX_CLK: clk_125, inverted (180 deg)
+    input  wire        phy_gmii_rx_clk,  // 125 MHz, PHY-sourced
+    input  wire [7:0]  phy_gmii_rxd,
+    input  wire        phy_gmii_rx_dv, phy_gmii_rx_er,
 
     // MDIO
     output wire        mdc,
@@ -219,6 +255,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | CRC32 | Known test vectors, residue verification | 3 |
 | ASYNC-FIFO | Async FIFO pointer, full/empty, wraparound behavior | 11 |
 | ETH-MAC-FCS | FCS generation for multiple frame sizes | 4 |
+| ETH-MAC-TX-PAD | Minimum-frame padding in `eth_mac_tx` and `mii_tx_saf`: 14/58/59/60/61-byte frames, wire length, zero pad, FCS | 31 |
 | ETH-MAC-MULTIFRAME | Back-to-back frames, minimum padding, IFG | 1 |
 | ETH-MAC-JUMBO | Jumbo-frame TX/RX behavior | 6 |
 | MII-TX-BRIDGE | GMII-to-MII byte-to-nibble conversion | 1 |
@@ -233,14 +270,14 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-CDC | GMII CDC bridge: loopback, data integrity, back-to-back | 7 |
 | ETH-MAC-SYS | Full integration: AXI-Lite config, MII loopback, stats, MDIO | 10 |
 | RGMII-IF | RGMII DDR pin packing/unpacking at 1G | 14 |
-| RGMII-IF-100M | 100M nibble pairing through RGMII loopback | 2 |
+| RGMII-IF-100M | 100M RGMII pin loopback: low-nibble-first TX, byte-exact RX pairing, one unbroken `gmii_rx_dv` envelope per burst | 5 |
 | MCAST-FILTER | Multicast hash filter accept/drop behavior | 6 |
 | ETH-MAC-RX-BACKPRESSURE | RX path holds frames when downstream stalls | 3 |
 | ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate | 3 |
 | ETH-MAC-RX-BYTE0 | RX byte-zero/start-of-frame handling | 4 |
 | MDIO-MASTER | MDIO master read/write protocol, 1-bit shift fix | 10 |
 | TX-CSUM-OFF | Inline IPv4/UDP TX checksum offload patcher | 5 |
-| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage | 16 |
+| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage: IPv4 header and ICMP checksums, payload cut at the IPv4 total length, `terror` and truncated frames flagged | 34 |
 | ICMP-ECHO | ICMP echo responder packet generation | 35 |
 | UDP-IPERF-SINK | iperf2 UDP header parsing, counters, gap tracking | 16 |
 | UDP-BLAST-TRIGGER | trigger payload parsing and busy/port filtering | 13 |
@@ -256,6 +293,11 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-CDC-10M | 10M rate adaptation pacing in gmii_cdc | 4 |
 | RGMII-IF-VARIANTS | RGMII speed/DDR variant handling | 6 |
 | RGMII-LOOPBACK | Full system + RGMII PHY loopback at 1G | 5 |
+| RGMII-100M-LOOPBACK | Full system + RGMII pin-level loopback at 100M: min/MTU/back-to-back/9018-byte jumbo byte-exact, IFG >= 12 byte times | 12 |
+| RGMII-10M-LOOPBACK | As RGMII-100M-LOOPBACK at 10M (no jumbo) | 11 |
+| GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er` on the last kept byte, whole-frame drop, EOF-only frames, no merged frames, recovery | 31 |
+| GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, back-to-back frames with IFG >= 12 byte times, oversize gate, GTX_CLK integrity | 27 |
+| GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |
 
 ## Hardware Test (Arty A7-100T)
 
@@ -265,14 +307,14 @@ UDP blast, host-to-FPGA iperf sink, bidirectional UDP, regression profile, and
 troubleshooting details are canonical in
 [fpga/arty_a7/README.md](fpga/arty_a7/README.md).
 
-Current Arty A7-100T hardware throughput, re-validated on 2026-06-14 (after the
-RTL review fixes) with the DP83848J MII PHY at 100 Mbps full duplex and
+Current Arty A7-100T hardware throughput, re-validated on 2026-09-23 (after the
+`tlast` back-pressure fix) with the DP83848J MII PHY at 100 Mbps full duplex and
 1472-byte UDP payloads:
 
 | Test | Result |
 |------|--------|
-| 5 s bidirectional smoke | PASS, FPGA->host 95.16 Mbps, host->FPGA 70.00 Mbps, 0 gaps |
-| 60 s bidirectional stress | PASS, FPGA->host 95.14 Mbps, host->FPGA 95.72 Mbps, 31 FPGA->host gaps, 0 host->FPGA gaps |
+| 5 s bidirectional smoke | PASS, FPGA->host 95.68 Mbps, host->FPGA 70.00 Mbps, 0 gaps |
+| 60 s bidirectional stress | PASS, FPGA->host 95.68 Mbps, host->FPGA 95.78 Mbps, 0 gaps both directions |
 
 These are UDP payload Mbps, not raw wire Mbps. Around 95 Mbps payload is
 expected on a 100 Mbps Ethernet link once preamble, IFG, headers, and FCS are

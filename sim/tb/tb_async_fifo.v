@@ -16,6 +16,15 @@ module tb_async_fifo;
     localparam DATA_WIDTH = 8;
     localparam ADDR_WIDTH = 4;            // depth = 16
     localparam DEPTH      = (1 << ADDR_WIDTH);
+    // Built twice by the regression: ASYNC-FIFO (distributed) and
+    // ASYNC-FIFO-BLOCK (-DASYNC_FIFO_BLOCK).
+`ifdef ASYNC_FIFO_BLOCK
+    localparam RAM_STYLE  = "BLOCK";
+    localparam CAPACITY   = DEPTH + 1;    // + the loaded output-stage word
+`else
+    localparam RAM_STYLE  = "DISTRIBUTED";
+    localparam CAPACITY   = DEPTH;
+`endif
 
     // ---- Clocks ----
     // wr_clk faster than rd_clk for T2/T3 (asymmetric CDC).
@@ -37,7 +46,8 @@ module tb_async_fifo;
 
     async_fifo #(
         .DATA_WIDTH(DATA_WIDTH),
-        .ADDR_WIDTH(ADDR_WIDTH)
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .RAM_STYLE (RAM_STYLE)
     ) dut (
         .wr_clk   (wr_clk),
         .wr_rst_n (wr_rst_n),
@@ -168,9 +178,23 @@ module tb_async_fifo;
         @(negedge wr_clk);
         wr_en = 1'b0;
 
-        // After DEPTH writes wr_full must assert
+`ifdef ASYNC_FIFO_BLOCK
+        // The output stage has pulled the first word out of memory by now, so
+        // one more write fits: capacity is DEPTH + 1.
+        repeat (8) @(posedge rd_clk);
+        check_bool("T3 head loaded", rd_empty, 1'b0);
+        check_bool("T3 room for word DEPTH+1", wr_full, 1'b0);
+        @(negedge wr_clk);
+        wr_data = 8'h10 + DEPTH[7:0];
+        wr_en   = 1'b1;
+        @(posedge wr_clk);
+        @(negedge wr_clk);
+        wr_en   = 1'b0;
+`endif
+
+        // After CAPACITY writes wr_full must assert
         repeat (4) @(posedge wr_clk);
-        check_bool("T3 wr_full after DEPTH writes", wr_full, 1'b1);
+        check_bool("T3 wr_full after CAPACITY writes", wr_full, 1'b1);
 
         // Try to push one more — must NOT increment internal pointer
         @(negedge wr_clk);
@@ -185,7 +209,7 @@ module tb_async_fifo;
         // =================================================================
         // T4: drain all and confirm sequence + empty/full deassertion
         // =================================================================
-        for (i = 0; i < DEPTH; i = i + 1) begin
+        for (i = 0; i < CAPACITY; i = i + 1) begin
             rd_pop(popped);
             if (popped !== (8'h10 + i[7:0])) begin
                 $display("FAIL: T4 byte %0d got 0x%02x exp 0x%02x",

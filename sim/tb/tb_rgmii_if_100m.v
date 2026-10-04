@@ -2,8 +2,12 @@
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
 // tb_rgmii_if_100m.v - Test rgmii_if at 100M (cfg_speed=01)
-// Verifies: TX duplicates the lower nibble on both DDR halves; RX pairs two
-// consecutive RXC cycles into a single byte.
+// Verifies, through a TX -> RX pin loopback:
+//   - TX sends each byte as two TXC cycles, TXD[3:0] then TXD[7:4], with the
+//     same nibble on both DDR halves of a cycle.
+//   - RX pairs the two RXC cycles back into the original byte.
+//   - RX holds gmii_rx_dv high across the whole burst and strobes gmii_rx_ce
+//     once per byte, so a consumer sees one unbroken frame, not one per byte.
 // Verilog 2001
 // =============================================================================
 
@@ -20,6 +24,13 @@ module tb_rgmii_if_100m;
     wire       rgmii_tx_ctl;
     wire       rgmii_txc;
 
+    // Pin delay well inside the 40 ns RXC period, like a PHY/board path, so
+    // RX samples each nibble mid-cycle rather than racing the launch edge.
+    wire [3:0] rgmii_rxd;
+    wire       rgmii_rx_ctl;
+    assign #10 rgmii_rxd    = rgmii_txd;
+    assign #10 rgmii_rx_ctl = rgmii_tx_ctl;
+
     // TX side GMII inputs
     reg  [7:0] tx_gmii_txd;
     reg        tx_gmii_tx_en;
@@ -29,6 +40,7 @@ module tb_rgmii_if_100m;
     wire [7:0] rx_gmii_rxd;
     wire       rx_gmii_rx_dv;
     wire       rx_gmii_rx_er;
+    wire       rx_gmii_rx_ce;
 
     rgmii_if u_tx (
         .clk_125     (1'b0),       // unused at 100M
@@ -50,7 +62,8 @@ module tb_rgmii_if_100m;
         .gmii_tx_er  (tx_gmii_tx_er),
         .gmii_rxd    (),
         .gmii_rx_dv  (),
-        .gmii_rx_er  ()
+        .gmii_rx_er  (),
+        .gmii_rx_ce  ()
     );
 
     rgmii_if u_rx (
@@ -64,37 +77,57 @@ module tb_rgmii_if_100m;
         .rgmii_txd   (),
         .rgmii_tx_ctl(),
         .rgmii_txc   (),
-        // Loopback TX -> RX
-        .rgmii_rxd   (rgmii_txd),
-        .rgmii_rx_ctl(rgmii_tx_ctl),
-        .rgmii_rxc   (clk_25),  // RX clock = TX clock for sim
+        .rgmii_rxd   (rgmii_rxd),
+        .rgmii_rx_ctl(rgmii_rx_ctl),
+        .rgmii_rxc   (clk_25),
 
         .gmii_txd    (8'd0),
         .gmii_tx_en  (1'b0),
         .gmii_tx_er  (1'b0),
         .gmii_rxd    (rx_gmii_rxd),
         .gmii_rx_dv  (rx_gmii_rx_dv),
-        .gmii_rx_er  (rx_gmii_rx_er)
+        .gmii_rx_er  (rx_gmii_rx_er),
+        .gmii_rx_ce  (rx_gmii_rx_ce)
     );
 
     integer pass_cnt = 0, fail_cnt = 0;
 
-    // Capture RX bytes
+    // Capture RX bytes (dv && ce) and count dv envelopes (rising edges)
     reg [7:0]  rx_buf [0:31];
     integer    rx_idx = 0;
+    integer    dv_bursts = 0;
+    integer    er_bytes = 0;
+    reg        dv_d = 0;
 
-    always @(posedge clk_25 or negedge rst_n) begin
-        if (!rst_n)
-            rx_idx <= 0;
-        else if (rx_gmii_rx_dv) begin
-            if (rx_idx < 32) rx_buf[rx_idx] <= rx_gmii_rxd;
-            rx_idx <= rx_idx + 1;
+    always @(posedge clk_25) begin
+        if (rst_n) begin
+            if (rx_gmii_rx_dv && rx_gmii_rx_ce) begin
+                if (rx_idx < 32) rx_buf[rx_idx] = rx_gmii_rxd;
+                rx_idx = rx_idx + 1;
+                if (rx_gmii_rx_er) er_bytes = er_bytes + 1;
+            end
+            if (rx_gmii_rx_dv && !dv_d) dv_bursts = dv_bursts + 1;
+            dv_d = rx_gmii_rx_dv;
         end
     end
 
+    // Each byte is held for two clk_25 cycles, as gmii_cdc's 100M pacer does.
+    task send_byte;
+        input [7:0] b;
+        begin
+            tx_gmii_txd = b;
+            @(negedge clk_25);
+            @(negedge clk_25);
+        end
+    endtask
+
+    localparam N = 6;
+    reg [7:0] pattern [0:N-1];
+    integer k, bad;
+
     initial begin
-        $dumpfile("tb_rgmii_if_100m.vcd");
-        $dumpvars(0, tb_rgmii_if_100m);
+        pattern[0] = 8'h12; pattern[1] = 8'h34; pattern[2] = 8'h56;
+        pattern[3] = 8'h78; pattern[4] = 8'hA5; pattern[5] = 8'h0F;
 
         tx_gmii_txd = 0; tx_gmii_tx_en = 0; tx_gmii_tx_er = 0;
         rst_n = 0;
@@ -102,39 +135,50 @@ module tb_rgmii_if_100m;
         rst_n = 1;
         #100;
 
-        // Drive 4 bytes at clk_25 rate (the 100M rate). At 100M, the rgmii_if
-        // should transmit each byte twice (once per DDR edge with same nibble),
-        // and the RX side should pair two consecutive nibbles into a byte.
-        // For correct loopback the RX clock should sample the same nibble.
         @(negedge clk_25);
         tx_gmii_tx_en = 1'b1;
-        tx_gmii_txd   = 8'h12;
-        @(negedge clk_25);
-        tx_gmii_txd   = 8'h34;
-        @(negedge clk_25);
-        tx_gmii_txd   = 8'h56;
-        @(negedge clk_25);
-        tx_gmii_txd   = 8'h78;
-        @(negedge clk_25);
+        for (k = 0; k < N; k = k + 1)
+            send_byte(pattern[k]);
         tx_gmii_tx_en = 1'b0;
         tx_gmii_txd   = 8'h00;
 
-        // Wait for RX to drain.
         repeat (20) @(posedge clk_25);
 
-        // RX should produce 4 bytes (one per pair of TX nibbles? actually
-        // the rgmii_if at 100M pairs two RXC cycles into a byte, but the TX
-        // sends the same nibble twice, so two pairs = 4 distinct bytes from
-        // 4 source bytes — but each becomes two paired half-bytes that may
-        // re-construct as the original byte if alignment is right, or as
-        // {byte_K[3:0], byte_K[3:0]} = a byte with both nibbles equal. The
-        // exact behavior depends on RGMII semantics. We just check RX got
-        // *some* bytes that aren't all zero.)
-        if (rx_idx > 0) begin
+        if (rx_idx == N) begin
             $display("PASS: 100M RX received %0d bytes", rx_idx);
             pass_cnt = pass_cnt + 1;
         end else begin
-            $display("FAIL: 100M RX received no bytes");
+            $display("FAIL: 100M RX received %0d bytes, expected %0d", rx_idx, N);
+            fail_cnt = fail_cnt + 1;
+        end
+
+        bad = 0;
+        for (k = 0; k < N && k < rx_idx; k = k + 1)
+            if (rx_buf[k] !== pattern[k]) begin
+                $display("  byte %0d: got %02x expected %02x", k, rx_buf[k], pattern[k]);
+                bad = bad + 1;
+            end
+        if (bad == 0 && rx_idx == N) begin
+            $display("PASS: 100M bytes round-trip exactly (low nibble first)");
+            pass_cnt = pass_cnt + 1;
+        end else begin
+            $display("FAIL: 100M %0d byte(s) corrupted", bad);
+            fail_cnt = fail_cnt + 1;
+        end
+
+        if (dv_bursts == 1) begin
+            $display("PASS: gmii_rx_dv is one unbroken envelope for the burst");
+            pass_cnt = pass_cnt + 1;
+        end else begin
+            $display("FAIL: gmii_rx_dv rose %0d times for one burst", dv_bursts);
+            fail_cnt = fail_cnt + 1;
+        end
+
+        if (er_bytes == 0) begin
+            $display("PASS: no RX_ER on any byte");
+            pass_cnt = pass_cnt + 1;
+        end else begin
+            $display("FAIL: RX_ER on %0d byte(s)", er_bytes);
             fail_cnt = fail_cnt + 1;
         end
 

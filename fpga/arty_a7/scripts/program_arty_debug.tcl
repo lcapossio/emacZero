@@ -7,7 +7,9 @@
 # Run from the repository root directory.
 # =============================================================================
 
+# Optional argument: bitstream path (e.g. build_arty_gmii_lb/arty_a7_top.bit).
 set bitfile build_arty_debug/arty_a7_top.bit
+if {$argc > 0} { set bitfile [lindex $argv 0] }
 
 if {![file exists $bitfile]} {
     puts "ERROR: Bitstream not found: $bitfile"

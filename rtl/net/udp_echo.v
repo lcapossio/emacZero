@@ -39,6 +39,7 @@ module udp_echo #(
     input  wire [7:0]  udp_rx_data,
     input  wire        udp_rx_valid,
     input  wire        udp_rx_last,
+    input  wire        udp_rx_err,      // with last: discard (net_rx verdict)
     input  wire [31:0] udp_rx_src_ip,
     input  wire [15:0] udp_rx_src_port,
     input  wire [15:0] udp_rx_dst_port,
@@ -114,7 +115,7 @@ module udp_echo #(
                     if (udp_rx_last) begin
                         payload_len    <= rx_cnt + 1'b1;
                         rx_cnt         <= {(ADDR_W+1){1'b0}};
-                        if ((rx_cnt + 1'b1) <= BUF_SIZE[ADDR_W:0]) begin
+                        if (!udp_rx_err && (rx_cnt + 1'b1) <= BUF_SIZE[ADDR_W:0]) begin
                             pkt_ready      <= 1'b1;
                             reply_dst_ip   <= udp_rx_src_ip;
                             reply_dst_mac  <= rx_src_mac;
@@ -175,7 +176,11 @@ module udp_echo #(
         end else begin
             if (tx_ready && tx_valid)
                 tx_start <= 1'b0;
-            src_last <= 1'b0;
+            // Hold tlast until the output slice captures it: the slice samples
+            // src_* only while src_ready is high, so an unconditional clear drops
+            // tlast when the sink stalls on that beat and merges two frames.
+            if (src_ready)
+                src_last <= 1'b0;
 
             case (tx_state)
                 TX_IDLE: begin
@@ -230,6 +235,9 @@ module udp_echo #(
                     if (src_ready && src_valid) begin
                         tx_cnt <= tx_cnt + 6'd1;
                         if (tx_cnt == 6'd7) begin
+                            // A 1-byte payload is also the last byte.
+                            if (payload_len == {{ADDR_W{1'b0}}, 1'b1})
+                                src_last <= 1'b1;
                             tx_state       <= TX_PAYLOAD;
                             tx_cnt         <= 6'd0;
                             payload_tx_cnt <= {(ADDR_W+1){1'b0}};

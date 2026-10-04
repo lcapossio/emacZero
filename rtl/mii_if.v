@@ -112,8 +112,8 @@ module mii_if #(
 
     assign mii_tx_clk_out = mii_tx_clk;
 
-    reg rx_rst_n_s1, rx_rst_n_s2;
-    reg tx_rst_n_s1, tx_rst_n_s2;
+    (* ASYNC_REG = "TRUE" *) reg rx_rst_n_s1, rx_rst_n_s2;
+    (* ASYNC_REG = "TRUE" *) reg tx_rst_n_s1, tx_rst_n_s2;
 
     always @(posedge mii_rx_clk or negedge rst_n) begin
         if (!rst_n) {rx_rst_n_s2, rx_rst_n_s1} <= 2'b00;
@@ -810,7 +810,8 @@ module mii_if #(
     reg [12:0] tx_fifo_count;
 `ifndef XILINX_7SERIES
     reg tx_rd_toggle;
-    reg tx_rd_sync1, tx_rd_sync2, tx_rd_sync3;
+    (* ASYNC_REG = "TRUE" *) reg tx_rd_sync1, tx_rd_sync2;
+    reg tx_rd_sync3;
     wire tx_rd_pulse_sys = tx_rd_sync2 ^ tx_rd_sync3;
 `endif
     localparam [12:0] TX_FIFO_DEPTH      = 13'd4096;
@@ -904,7 +905,8 @@ module mii_if #(
     reg [3:0]  tx_frame_rd_count_bin;
     // Drain counter CDC: toggle in mii_tx_clk, sync to sys_clk
     reg        drain_toggle;
-    reg        drain_sync1, drain_sync2, drain_sync3;
+    (* ASYNC_REG = "TRUE" *) reg drain_sync1, drain_sync2;
+    reg        drain_sync3;
     wire       drain_pulse = drain_sync2 ^ drain_sync3;
     wire       tx_len_write_ok = tx_eof_wr_accept;
 
@@ -1206,7 +1208,7 @@ module mii_if #(
     end
 
     // CDC: sync mii_cap_done to sys_clk domain
-    reg mii_cap_done_s1, mii_cap_done_s2;
+    (* ASYNC_REG = "TRUE" *) reg mii_cap_done_s1, mii_cap_done_s2;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             if (MII_DEBUG != 0) begin

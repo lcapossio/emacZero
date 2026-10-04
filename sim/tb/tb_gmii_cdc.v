@@ -60,6 +60,7 @@ module tb_gmii_cdc;
         .gmii_rxd_in    (media_txd),
         .gmii_rx_dv_in  (media_tx_en),
         .gmii_rx_er_in  (media_tx_er),
+        .gmii_rx_ce_in  (1'b1),
         // Status
         .tx_busy        (tx_busy),
         .tx_fifo_level  (tx_fifo_level)

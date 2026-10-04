@@ -18,8 +18,9 @@
 //                   wrapper is responsible for priority-muxing this source
 //                   into eth_mac_tx ahead of normal user traffic.
 //
-// Pause-quantum tick period (sys_clk = 100 MHz):
-//     1G   : 512 bit-times = 512 ns       =   52 sys_clk cycles (round)
+// Pause-quantum tick period, in clk cycles (defaults are for clk = 100 MHz;
+// eth_mac_sys derives them from its CLK_FREQ_HZ):
+//     1G   : 512 bit-times = 512 ns       =   52 clk cycles (rounded up)
 //     100M :                = 5.12 us     =  512 cycles
 //     10M  :                = 51.2 us     = 5120 cycles
 //
@@ -27,9 +28,9 @@
 // =============================================================================
 
 module eth_pause #(
-    parameter [12:0] TICK_DIV_1G   = 13'd52,
-    parameter [12:0] TICK_DIV_100M = 13'd512,
-    parameter [12:0] TICK_DIV_10M  = 13'd5120
+    parameter [15:0] TICK_DIV_1G   = 16'd52,
+    parameter [15:0] TICK_DIV_100M = 16'd512,
+    parameter [15:0] TICK_DIV_10M  = 16'd5120
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -62,22 +63,22 @@ module eth_pause #(
     // ============================================================
     // Pause-quantum tick prescaler (speed-dependent)
     // ============================================================
-    reg  [12:0] tick_cnt;
-    wire [12:0] tick_div = (cfg_speed == 2'b00) ? TICK_DIV_1G   :
+    reg  [15:0] tick_cnt;
+    wire [15:0] tick_div = (cfg_speed == 2'b00) ? TICK_DIV_1G   :
                            (cfg_speed == 2'b01) ? TICK_DIV_100M :
                                                   TICK_DIV_10M;
     reg pause_tick;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            tick_cnt   <= 13'd0;
+            tick_cnt   <= 16'd0;
             pause_tick <= 1'b0;
         end else begin
-            if (tick_cnt >= tick_div - 13'd1) begin
-                tick_cnt   <= 13'd0;
+            if (tick_cnt >= tick_div - 16'd1) begin
+                tick_cnt   <= 16'd0;
                 pause_tick <= 1'b1;
             end else begin
-                tick_cnt   <= tick_cnt + 13'd1;
+                tick_cnt   <= tick_cnt + 16'd1;
                 pause_tick <= 1'b0;
             end
         end

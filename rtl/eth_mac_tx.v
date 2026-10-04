@@ -146,11 +146,19 @@ module eth_mac_tx #(
                 S_DATA: begin
                     if (frame_ended) begin
                         stall_cnt <= 4'd0;
-                        if (data_cnt < MIN_FRAME) begin
+                        if (data_cnt < MIN_FRAME - 1) begin
                             state          <= S_PAD;
                             gmii_txd       <= 8'h00;
                             crc_accum      <= crc_step_byte(crc_accum, 8'h00);
                             data_cnt       <= data_cnt + 14'd1;
+                        end else if (data_cnt == MIN_FRAME - 1) begin
+                            // One pad byte completes the frame: S_PAD would
+                            // always send a second one, so go straight to CRC.
+                            gmii_txd       <= 8'h00;
+                            crc_saved      <= ~crc_step_byte(crc_accum, 8'h00);
+                            data_cnt       <= data_cnt + 14'd1;
+                            state          <= S_CRC;
+                            count          <= 4'd0;
                         end else begin
                             // crc_saved was precomputed when the final data byte
                             // was accepted, so it already includes that byte.

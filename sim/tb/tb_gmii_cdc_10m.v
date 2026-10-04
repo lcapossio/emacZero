@@ -54,6 +54,7 @@ module tb_gmii_cdc_10m;
         .gmii_rxd_in    (8'd0),
         .gmii_rx_dv_in  (1'b0),
         .gmii_rx_er_in  (1'b0),
+        .gmii_rx_ce_in  (1'b1),
 
         .tx_busy        (tx_busy),
         .tx_fifo_level  (tx_fifo_level)
@@ -116,8 +117,9 @@ module tb_gmii_cdc_10m;
             tx_data = 8'd0;
         end
 
-        // 8 bytes * 100 media_clk cycles/byte = 800 cycles = 6.4us. Wait 12us.
-        #12000;
+        // 1200-cycle (9.6us) inter-frame gap before the first byte, then
+        // 8 bytes * 100 media_clk cycles/byte = 800 cycles = 6.4us. Wait 20us.
+        #20000;
 
         // ---------------------------------------------------------------------
         // Verify: 8 distinct bytes on media side
