@@ -209,6 +209,25 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **`icmp_echo` corrupted or dropped pings over 248 bytes of data.** It
+  buffered 256 bytes of ICMP and counted the length in 9 bits: a ping with
+  249..503 bytes of data was answered with every byte from 248 on wrong and a
+  bad checksum, and one of 504 bytes or more (512+ bytes of ICMP) got no
+  reply. An ICMP message arriving while a reply was going out also overwrote
+  the buffer and the length mid-reply. The buffer is now `MAX_LEN` bytes
+  (parameter, default 1480: a full 1500-byte IPv4 packet). A request that is
+  longer, or that starts arriving before the previous reply has gone out, is
+  dropped whole and leaves the buffer alone. Found pinging the ZCU106 demo
+  from a PC through a 1000BASE-T SFP. New `ICMP-ECHO-SIZES` checks
+  8..1480-byte requests byte for byte, oversize and jumbo requests, and
+  traffic during a stalled reply; `sfp_lb_tester` now pings with 18..1472
+  bytes of data. The buffer is now distributed RAM (240 LUTs on the ZCU106)
+  rather than flip-flops, so the ZCU106 demo uses fewer LUTs and registers
+  than before.
+- `fpga/zcu106/scripts/build_zcu106.tcl` failed when rerun into an existing
+  build directory (`synth_ip` would not overwrite the PCS/PMA checkpoint, and
+  with `-force` it kept the old netlist). It now deletes its PCS/PMA IP
+  folders first.
 - `net_rx` passed ICMP / UDP payload up to the end of the Ethernet frame,
   so the echo blocks sent the padding of a short request back as payload. It
   now stops at the IPv4 total length.

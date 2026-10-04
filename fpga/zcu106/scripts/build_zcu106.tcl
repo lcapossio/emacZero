@@ -56,6 +56,9 @@ proc read_verilog_filelist {path} {
     }
 }
 
+# Start the IP from scratch: synth_ip will not overwrite the checkpoint of an
+# earlier build (an error even with -force, which then keeps the old netlist).
+file delete -force $outdir/ip/pcs_pma_1000basex $outdir/ip/pcs_pma_1000basex_ns
 file mkdir $outdir/ip
 create_project -in_memory -part $part
 set_property target_language Verilog [current_project]

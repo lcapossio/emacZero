@@ -600,6 +600,11 @@ TESTS = [
         "out": "sim/tb_icmp_echo_backpressure.vvp",
     },
     {
+        "name": "ICMP-ECHO-SIZES",
+        "srcs": ["rtl/net/icmp_echo.v", "sim/tb/tb_icmp_echo_sizes.v"],
+        "out": "sim/tb_icmp_echo_sizes.vvp",
+    },
+    {
         "name": "UDP-ECHO-BACKPRESSURE",
         "srcs": ["rtl/net/udp_echo.v", "sim/tb/tb_udp_echo_backpressure.v"],
         "out": "sim/tb_udp_echo_backpressure.vvp",

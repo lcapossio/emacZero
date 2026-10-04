@@ -8,7 +8,7 @@
 // (zcu106_eth_demo: 02:00:00:00:00:01, 192.168.137.200) and checks each reply:
 //
 //   ARP request  who-has 192.168.137.200       -> ARP reply
-//   ICMP echo    id 0xBEEF, seq n, 18..248 B   -> echo reply, same payload
+//   ICMP echo    id 0xBEEF, seq n, 18..1472 B  -> echo reply, same payload
 //   UDP to 9999  18..1472 B payload            -> echo, ports swapped
 //
 // Payloads start at 18 bytes, the smallest that needs no Ethernet padding;
@@ -237,7 +237,7 @@ module sfp_lb_tester (
     reg  [15:0] ip_csum, icmp_csum;
     reg  [31:0] sum_acc;
     reg  [15:0] idx;
-    reg  [7:0]  icmp_step;
+    reg  [15:0] icmp_step;
     reg  [15:0] udp_step;
     reg  [16:0] timer;
     reg  [15:0] rtt;
@@ -505,7 +505,7 @@ module sfp_lb_tester (
             icmp_csum  <= 16'd0;
             sum_acc    <= 32'd0;
             idx        <= 16'd0;
-            icmp_step  <= 8'd18;
+            icmp_step  <= 16'd18;
             udp_step   <= 16'd18;
             timer      <= 17'd0;
             rtt        <= 16'd0;
@@ -561,8 +561,7 @@ module sfp_lb_tester (
                     state <= S_PREP;
             end
             S_PREP: begin
-                // ICMP data 18..248 B (icmp_echo buffers 256 B of ICMP),
-                // UDP data 18..1472 B (full 1500-byte IP MTU); short mode
+                // ICMP and UDP data 18..1472 B (full 1500-byte IP MTU); short mode
                 // sweeps ICMP 0..17 B up and UDP 18..1 B down
                 fk         <= kind;
                 q_dm       <= DM;
@@ -575,7 +574,7 @@ module sfp_lb_tester (
                 case (kind)
                     K_ARP:  plen <= 16'd0;
                     K_ICMP: plen <= short ? {11'd0, short_step}
-                                          : {8'd0, icmp_step};
+                                          : icmp_step;
                     K_UDP:  plen <= short ? {11'd0, 5'd18 - short_step}
                                           : udp_step;
                     default: begin      // K_NEG: variant neg_var
@@ -677,9 +676,12 @@ module sfp_lb_tester (
                     if (kind == K_UDP)
                         short_step <= (short_step == 5'd17) ? 5'd0
                                                             : short_step + 5'd1;
+                    // +37 in a cycle of 1455 (18..1472): coprime, so in
+                    // time every payload length is sent, crossing the
+                    // icmp_echo boundaries that once failed (249, 504 B)
                     if (kind == K_ICMP)
-                        icmp_step <= (icmp_step >= 8'd212) ? icmp_step - 8'd194
-                                                           : icmp_step + 8'd37;
+                        icmp_step <= (icmp_step >= 16'd1436) ? icmp_step - 16'd1418
+                                                             : icmp_step + 16'd37;
                     if (kind == K_UDP)
                         udp_step  <= (udp_step > 16'd1375) ? udp_step - 16'd1358
                                                            : udp_step + 16'd97;

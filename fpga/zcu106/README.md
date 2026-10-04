@@ -108,7 +108,7 @@ emacZero demo  <-> PCS/PMA <-> SFP0 ==fiber== SFP1 <-> PCS/PMA <-> tester
 ```
 
 `rtl/sfp_lb_tester.v` has its own MAC and plays the host: it sends ARP
-requests, pings (18 to 248 bytes of data) and UDP frames to port 9999 (18 to
+requests, pings (18 to 1472 bytes of data) and UDP frames to port 9999 (18 to
 1472 bytes), one at a time, and checks every reply byte by byte, including
 its length, FCS, IPv4 header checksum and ICMP checksum. No reply within
 about 1 ms counts as a timeout. The second PCS/PMA shares the first one's
@@ -217,6 +217,12 @@ The loopback tests found these bugs in the shared blocks, now fixed:
   consumer drops the message.
 - `udp_echo` never ended its reply to a 1-byte datagram (no `tlast`), which
   hung the transmit path. The padding bug above had hidden it.
+
+Pinging the demo from a PC through a 1000BASE-T SFP in SFP0 found one more,
+also fixed: `icmp_echo` buffered only 256 bytes of ICMP, so pings with more
+than 248 bytes of data came back corrupt, and from 504 bytes on not at all
+(the loopback tester only sent up to 248). It now takes a full 1500-byte
+packet, and the tester pings with 18 to 1472 bytes.
 
 Still open:
 
