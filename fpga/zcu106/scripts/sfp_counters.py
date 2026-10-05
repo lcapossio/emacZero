@@ -22,11 +22,12 @@ since the host load can drop frames on the host side.
 Reading the result: TX frames counts the MAC's TX_EN falling edges, every
 frame that left the MAC toward the PCS/PMA (blast frames plus ARP / ping /
 stats replies). Blast frames generated below what was triggered is a
-generator problem; TX frames below blast frames is a frame lost in the MAC
-transmit path. When TX frames covers every blast frame, the FPGA logic sent
-everything, and a loss seen by the host happened in the PCS/PMA, the SFP,
-the cable or the host NIC. The PCS event counters show physical-layer events
-on the SFP0 receive side.
+generator problem. TX frames minus blast frames should be the few replies
+the board sent; below zero, the MAC lost frames. A frame lost in the MAC
+could hide behind a reply, so a host loss can be put outside the FPGA only
+when it is larger than that difference; then it happened in the PCS/PMA,
+the SFP, the cable or the host NIC. The PCS event counters show
+physical-layer events on the SFP0 receive side.
 """
 
 import argparse
@@ -51,7 +52,7 @@ MAC_REGS = [
     ("tx_bytes", 0x2C),          # saturates at 2^32 - 1 within one long run
     ("rx_frames", 0x30),
     ("rx_bytes", 0x34),
-    ("rx_err_fcs", 0x38),
+    ("rx_bad_frames", 0x38),     # every RX frame ending with an error, any cause
     ("rx_err_align", 0x4C),      # rx_er during a frame
     ("rx_err_overflow", 0x50),
     ("rx_err_oversize", 0x54),
@@ -72,6 +73,7 @@ EIO_FIELDS = [
     ("layout", 240, 4),
     ("marker", 244, 12),
 ]
+EIO_IN_W, EIO_OUT_W = 256, 8
 EIO_CLEAR = 0x01
 PAUSE_CTRL = 0x84               # [1] honor received PAUSE frames (reset 0)
 
@@ -82,46 +84,72 @@ def transport(args):
                                    **_chain_shape_kwargs(fpga))
 
 
+class WrongBuild(Exception):
+    """The board is not running the throughput build; retrying cannot help."""
+
+
+def read_eio(eio):
+    # The counters cross into TCK unsynchronized and are read as 32-bit
+    # words; take a value only when two whole reads agree.
+    prev = None
+    for _ in range(10):
+        raw = eio.read_inputs()
+        if raw == prev:
+            return {n: (raw >> lsb) & ((1 << w) - 1) for n, lsb, w in EIO_FIELDS}
+        prev = raw
+    raise RuntimeError("EIO inputs changed on every read")
+
+
+def eio_write(eio, value):
+    # write_outputs does not report a failed scan; read the value back.
+    eio.write_outputs(value)
+    got = eio.read_outputs()
+    if got != value:
+        raise RuntimeError("EIO output reads 0x%02x after writing 0x%02x" % (got, value))
+
+
 def eio_session(args, clear):
     eio = EioController(transport(args), chain=3)
-    eio.connect()
     try:
+        eio.connect()
+        if (eio.in_w, eio.out_w) != (EIO_IN_W, EIO_OUT_W):
+            raise WrongBuild("EIO on USER3 is %d in / %d out, expected %d / %d"
+                             % (eio.in_w, eio.out_w, EIO_IN_W, EIO_OUT_W))
+        # Check the build before writing: in the loopback build the same
+        # output bit starts the tester.
+        fields = read_eio(eio)
+        if fields["marker"] != MARKER or fields["layout"] != LAYOUT:
+            raise WrongBuild("EIO marker 0x%03x layout %d, expected 0x%03x layout %d"
+                             % (fields["marker"], fields["layout"], MARKER, LAYOUT))
         if clear:
-            eio.write_outputs(EIO_CLEAR)
+            eio_write(eio, EIO_CLEAR)
             time.sleep(0.05)
-            eio.write_outputs(0)
-        # The counters cross into TCK unsynchronized as a word; read until
-        # two reads agree.
-        prev = None
-        for _ in range(10):
-            raw = eio.read_inputs()
-            if raw == prev:
-                break
-            prev = raw
-        fields = {n: (raw >> lsb) & ((1 << w) - 1) for n, lsb, w in EIO_FIELDS}
+            eio_write(eio, 0)
+            fields = read_eio(eio)
+        return fields
     finally:
         eio.close()
-    return fields
-
-
-def check_marker(fields):
-    if fields["marker"] != MARKER or fields["layout"] != LAYOUT:
-        sys.exit("EIO marker 0x%03x layout %d: not the throughput build "
-                 "(expected 0x%03x layout %d)"
-                 % (fields["marker"], fields["layout"], MARKER, LAYOUT))
 
 
 def mac_session(args, clear, pause=None):
     axi = EjtagAxiController(transport(args), chain=4)
-    axi.connect()
+
+    def write(addr, data):
+        resp = axi.axi_write(addr, data)
+        if resp != 0:
+            raise RuntimeError("AXI write to 0x%02x: response %d" % (addr, resp))
+
     try:
+        axi.connect()
         if pause is not None:
-            axi.axi_write(PAUSE_CTRL, 2 if pause else 0)
+            write(PAUSE_CTRL, 2 if pause else 0)
         if clear:
             for _, addr in MAC_REGS:
-                axi.axi_write(addr, 0)
+                write(addr, 0)
         regs = {name: axi.axi_read(addr) for name, addr in MAC_REGS}
         regs["pause_ctrl"] = axi.axi_read(PAUSE_CTRL)
+        if pause is not None and bool(regs["pause_ctrl"] & 2) != pause:
+            raise RuntimeError("PAUSE_CTRL reads 0x%x after the write" % regs["pause_ctrl"])
         return regs
     finally:
         axi.close()
@@ -131,7 +159,8 @@ def retry(session, *args, tries=3):
     """Run one JTAG session, opening a new one if it fails.
 
     hw_server sometimes answers 'JTAG node is not accessible' for a scan. A
-    session only writes clears and the PAUSE switch, so it can run again.
+    session only writes clears and the PAUSE switch, and checks its writes,
+    so it can run again.
     """
     for attempt in range(1, tries + 1):
         try:
@@ -152,8 +181,9 @@ def report(mac, pcs):
     print("  other TX frames   %12d  (ARP / ping / stats replies; negative = lost in the MAC)"
           % (mac["tx_frames"] - pcs["blast_frames"]))
     print("MAC RX frames       %12d" % mac["rx_frames"])
-    print("MAC RX errors       FCS %d, rx_er %d, overflow %d, oversize %d"
-          % (mac["rx_err_fcs"], mac["rx_err_align"], mac["rx_err_overflow"],
+    print("MAC RX bad frames   %d (any error: FCS, undersize, ...; among them rx_er %d, "
+          "overflow %d, oversize %d)"
+          % (mac["rx_bad_frames"], mac["rx_err_align"], mac["rx_err_overflow"],
              mac["rx_err_oversize"]))
     print("MAC PAUSE frames    received %d, sent %d (PAUSE honored: %s)"
           % (mac["pause_rx"], mac["pause_tx"], "yes" if mac["pause_ctrl"] & 2 else "no"))
@@ -176,8 +206,10 @@ def main():
                          "resets to off with the board")
     args = ap.parse_args()
 
-    pcs = retry(eio_session, args, args.clear)
-    check_marker(pcs)
+    try:
+        pcs = retry(eio_session, args, args.clear)
+    except WrongBuild as e:
+        sys.exit("%s: not the throughput build" % e)
     mac = retry(mac_session, args, args.clear,
                 None if args.pause is None else args.pause == "on")
     if args.json:
