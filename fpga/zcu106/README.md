@@ -156,13 +156,13 @@ python fpga/zcu106/scripts/sfp_counters.py           # after it
 ```
 
 MAC TX frames counts every frame that left the MAC toward the PCS/PMA: the
-blast frames plus the ARP, ping and stats replies. TX frames minus blast
-frames should be those few replies; below zero, the MAC lost frames. A blast
-frame lost in the MAC could hide behind a reply, so when the host loses more
-frames than that difference, the loss is outside the FPGA logic: in the
-PCS/PMA, the SFP, the cable or the host NIC. Read the counters before and
-after a run, not during it: polling adds host load, and a busy host drops
-frames on its side.
+blast frames plus the replies (ARP, ping, UDP echo, stats). TX frames minus
+blast frames is the replies sent less any frames the MAC lost. Each request
+the host sends gets at most one reply, so the MAC lost at most
+(requests - difference) frames; a host loss larger than that happened, at
+least in part, outside the FPGA logic: in the PCS/PMA, the SFP, the cable or
+the host NIC. Read the counters before and after a run, not during it:
+polling adds host load, and a busy host drops frames on its side.
 
 ### Throughput results
 

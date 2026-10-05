@@ -21,13 +21,13 @@ since the host load can drop frames on the host side.
 
 Reading the result: TX frames counts the MAC's TX_EN falling edges, every
 frame that left the MAC toward the PCS/PMA (blast frames plus ARP / ping /
-stats replies). Blast frames generated below what was triggered is a
-generator problem. TX frames minus blast frames should be the few replies
-the board sent; below zero, the MAC lost frames. A frame lost in the MAC
-could hide behind a reply, so a host loss can be put outside the FPGA only
-when it is larger than that difference; then it happened in the PCS/PMA,
-the SFP, the cable or the host NIC. The PCS event counters show
-physical-layer events on the SFP0 receive side.
+UDP echo / stats replies). Blast frames generated below what was triggered
+is a generator problem. TX frames minus blast frames is the replies sent
+less any frames the MAC lost. Each request gets at most one reply, so the
+MAC lost at most (requests - difference) frames; a host loss larger than
+that happened, at least in part, in the PCS/PMA, the SFP, the cable or the
+host NIC. The PCS event counters show physical-layer events on the SFP0
+receive side.
 """
 
 import argparse
@@ -178,7 +178,7 @@ def report(mac, pcs):
           % (st, st & 1, (st >> 1) & 1))
     print("MAC TX frames       %12d" % mac["tx_frames"])
     print("blast frames        %12d" % pcs["blast_frames"])
-    print("  other TX frames   %12d  (ARP / ping / stats replies; negative = lost in the MAC)"
+    print("  other TX frames   %12d  (replies sent less frames lost in the MAC)"
           % (mac["tx_frames"] - pcs["blast_frames"]))
     print("MAC RX frames       %12d" % mac["rx_frames"])
     print("MAC RX bad frames   %d (any error: FCS, undersize, ...; among them rx_er %d, "
