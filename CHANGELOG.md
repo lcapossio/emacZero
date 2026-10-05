@@ -209,6 +209,14 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **1G transmit ran at 14-byte inter-frame gaps, not 12.** `eth_mac_tx` held
+  TX_EN low for its 12 `S_IFG` cycles and then two more in `S_IDLE` (one to
+  raise `s_axis_tready`, one for the handshake), so back-to-back frames left
+  every 1G path at most 99.87% of line rate with 1518-byte frames and 97.6%
+  with 64-byte frames. `S_IFG` now counts those two cycles, for exactly 12.
+  At GMII / RGMII, `gmii_cdc` still sets the gap on the wire (exactly 12
+  byte times); the MII paths never took their gap from this count. Found by
+  `ZCU106-PERF`.
 - **`icmp_echo` corrupted or dropped pings over 248 bytes of data.** It
   buffered 256 bytes of ICMP and counted the length in 9 bits: a ping with
   249..503 bytes of data was answered with every byte from 248 on wrong and a

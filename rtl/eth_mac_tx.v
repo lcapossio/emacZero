@@ -238,12 +238,19 @@ module eth_mac_tx #(
                     endcase
                 end
 
+                // TX_EN stays low through S_IDLE too, for at least two more
+                // cycles (s_axis_tready is registered, so the next frame's
+                // handshake comes a cycle after it rises). Counting those
+                // here makes the gap exactly IFG_BYTES between back-to-back
+                // frames. Counting them on top gave IFG_BYTES + 2, which held
+                // 1G to 99.87% of line rate at 1518-byte frames and 97.6% at
+                // 64-byte frames.
                 S_IFG: begin
                     gmii_tx_en <= 1'b0;
                     gmii_txd   <= 8'd0;
                     stall_cnt  <= 4'd0;
                     count      <= count + 4'd1;
-                    if (count >= IFG_BYTES - 1)
+                    if (count >= IFG_BYTES - 3)
                         state <= S_IDLE;
                 end
 
