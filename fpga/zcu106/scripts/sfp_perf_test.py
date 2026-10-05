@@ -36,8 +36,8 @@ NIC counters are read with PowerShell on Windows and from sysfs on Linux
 (--nic names the interface; omit it to skip them).
 
 Usage:
-  python fpga/zcu106/scripts/sfp_perf_test.py --nic Ethernet
-  python fpga/zcu106/scripts/sfp_perf_test.py --nic Ethernet --tests rx --count 5000000
+  python fpga/zcu106/scripts/sfp_perf_test.py --nic <interface>
+  python fpga/zcu106/scripts/sfp_perf_test.py --nic <interface> --tests rx --count 5000000
 """
 
 import argparse

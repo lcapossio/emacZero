@@ -8,9 +8,10 @@ has the Arty demo's throughput test: an iperf2 UDP sink and a line-rate UDP
 generator.
 
 > **Status: tested on hardware with both reference clocks (Si570 and
-> Si5328) through the SFP0 <-> SFP1 loopback tests below, and to a PC through
-> a 1000BASE-T copper SFP at the full 1 Gb/s line rate in both directions at
-> once (see [Throughput test](#throughput-test)).**
+> Si5328) through the SFP0 <-> SFP1 loopback tests below (on an earlier
+> build), and to a PC through a 1000BASE-T copper SFP in both directions at
+> once: 100% of line rate from the FPGA, and as fast as the PC sends (99.8%)
+> to it (see [Throughput test](#throughput-test)).**
 
 ## Data path
 

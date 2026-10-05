@@ -15,6 +15,8 @@
 //   4. Full duplex: a 1472-byte blast while the host sends line-rate sink
 //      traffic; both directions complete with nothing lost.
 //   5. A stats query sent during a blast is answered before it ends.
+//   6. A trigger that arrives while the last frame of a burst is still being
+//      generated is ignored; the next trigger after it starts at sequence 0.
 // Verilog 2001
 // =============================================================================
 `timescale 1ns / 1ps
@@ -374,6 +376,23 @@ module tb_zcu106_perf;
         wait_blast(n);
         check(b_frames == n && b_bad == 0 && b_seq_err == 0,
               "blast with a reply in it: complete and in sequence");
+
+        // ---- 6. trigger during the last frame of a burst ----
+        // The second trigger arrives while the only frame of the first burst
+        // is still being generated: the count is already 0, but the blast
+        // is busy until that frame is done.
+        reset_blast_stats(1472);
+        send_trigger(16'd5002, 1, 16'd1472);
+        send_trigger(16'd5002, 2, 16'd1472);
+        wait_blast(1);
+        repeat (6000) @(posedge clk);
+        check(b_frames == 1 && b_bad == 0 && b_seq_err == 0,
+              "trigger during the last frame: ignored, burst intact");
+        reset_blast_stats(1472);
+        send_trigger(16'd5002, 2, 16'd1472);
+        wait_blast(2);
+        check(b_frames == 2 && b_bad == 0 && b_seq_err == 0,
+              "next trigger: new burst from sequence 0");
 
         check(tx_er_seen == 0 && other_frames == 0, "no tx_er, no unexpected frames");
 

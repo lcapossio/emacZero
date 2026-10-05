@@ -376,8 +376,13 @@ module zcu106_eth_demo #(
     reg  [23:0] blast_ifg_delay;
     reg  [31:0] blast_remaining;
     reg         blast_tx_start_d;
+    reg         blast_in_frame;
     wire        blast_tx_start;
+    wire        blast_frame_done;
     wire        blast_enable = (blast_remaining != 32'd0);
+    // The count reaches 0 when the last frame starts, but that frame still
+    // uses the latched destination and sequence. Stay busy until it is done.
+    wire        blast_busy   = blast_enable || blast_in_frame;
 
     udp_blast_trigger #(
         .TRIGGER_PORT    (BLAST_TRIGGER_PORT),
@@ -395,7 +400,7 @@ module zcu106_eth_demo #(
         .udp_rx_src_ip   (netrx_udp_src_ip),
         .udp_rx_src_port (netrx_udp_src_port),
         .udp_rx_dst_port (netrx_udp_dst_port),
-        .busy            (blast_enable),
+        .busy            (blast_busy),
         .start           (trig_start),
         .dst_mac         (trig_dst_mac),
         .dst_ip          (trig_dst_ip),
@@ -420,9 +425,14 @@ module zcu106_eth_demo #(
             blast_ifg_delay  <= 24'd0;
             blast_remaining  <= 32'd0;
             blast_tx_start_d <= 1'b0;
+            blast_in_frame   <= 1'b0;
         end else begin
             blast_tx_start_d <= blast_tx_start;
-            if (trig_start && !blast_enable) begin
+            if (blast_tx_start && !blast_tx_start_d)
+                blast_in_frame <= 1'b1;
+            else if (blast_frame_done)
+                blast_in_frame <= 1'b0;
+            if (trig_start && !blast_busy) begin
                 blast_dst_mac   <= trig_dst_mac;
                 blast_dst_ip    <= trig_dst_ip;
                 blast_dst_port  <= trig_dst_port;
@@ -453,7 +463,7 @@ module zcu106_eth_demo #(
         .enable            (blast_enable),
         .inter_frame_delay (blast_ifg_delay),
         .pkts_sent         (),
-        .pkt_done_pulse    (),
+        .pkt_done_pulse    (blast_frame_done),
         .tx_data           (blast_tx_tdata),
         .tx_valid          (blast_tx_tvalid),
         .tx_last           (blast_tx_tlast),

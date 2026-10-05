@@ -83,8 +83,8 @@ This project does not yet maintain long-lived release branches.
     `gtx_clk`: "gtx" collides with the Xilinx GTX serial transceivers, so a
     wildcard constraint such as `[get_ports *gtx*]` aimed at those would
     otherwise pick up this Ethernet pin. It also matches the existing
-    `rgmii_txc`. Reuses the existing `clk_125` /
-    `clk_125_90` inputs; `clk_25` / `clk_2_5` are unused on this branch.
+    `rgmii_txc`. Uses only the existing `clk_125` input; `clk_125_90`,
+    `clk_25` and `clk_2_5` are unused on this branch.
     GTX_CLK is forwarded out of a DDR cell driven by `clk_125` with the
     waveform inverted (`d1=0`/`d2=1`), putting its rising edge at `clk_125`'s
     falling edge - ~4 ns into the 8 ns data window, leaving ~4 ns each of setup
@@ -104,10 +104,10 @@ This project does not yet maintain long-lived release branches.
     received PAUSE quanta ~100x while the datapath keeps running at 1G.
   - Principal use is feeding a vendor 1G PCS/PMA core for SGMII / 1000BASE-X,
     which presents a GMII bus rather than PHY pins.
-  - The `"MII"` and `"RGMII"` branches are untouched, including their
-    hierarchical instance names (`gen_mii.*`, `gen_rgmii.*`), which existing
-    testbenches and debug probes reference by path.
-- `sim/tb/tb_gmii_loopback.v` (`GMII-LOOPBACK`, 20 checks). Closes the loop at
+  - The `"MII"` and `"RGMII"` branches keep their hierarchical instance
+    names (`gen_mii.*`, `gen_rgmii.*`), which existing testbenches and debug
+    probes reference by path.
+- `sim/tb/tb_gmii_loopback.v` (`GMII-LOOPBACK`, 26 checks). Closes the loop at
   the actual GMII pins rather than forcing internal `gmii_cdc` nets - GMII is
   single-data-rate, so no DDR behavioural model sits in the path and
   `gmii_if` itself is covered. Verifies byte-exact payload and FCS-stripped
@@ -256,7 +256,8 @@ This project does not yet maintain long-lived release branches.
   total length) and drops a bad one, and checks the ICMP checksum. New
   outputs `icmp_err` / `udp_err`, valid with `icmp_last` / `udp_last`, flag
   a bad ICMP checksum, a frame with `terror` (bad FCS or `rx_er`, which were
-  answered before) and a frame shorter than its IPv4 total length.
+  answered before) and a frame shorter than its IPv4 total length. A frame
+  that ends on its last IPv4 header byte does not affect the next frame.
   `icmp_echo`, `udp_echo`, `udp_iperf_sink`, `udp_blast_trigger` and
   `udp_stats_reply` take the matching `*_rx_err` input and drop the message.
   Integrators instantiating these blocks must connect the new ports.
