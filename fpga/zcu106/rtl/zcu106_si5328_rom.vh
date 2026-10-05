@@ -19,7 +19,8 @@
 //   N1  = 10 x 4      -> CKOUT1 = CKOUT2 = fosc / 40  = 125.000 MHz
 // These are the divider values ARTIQ uses for 125 MHz from the same crystal
 // (m-labs/artiq, rtio_clocking.rs, "Int_125"), with BWSEL = 4. Register
-// fields per the Si5328 datasheet. Not yet verified on hardware.
+// fields per the Si5328 datasheet. Verified on hardware: the si5328 build
+// passes the SFP0 <-> SFP1 loopback tests (fpga/zcu106/README.md).
 //
 // Entry format: {last[1:0], b0, b1, b2}; b0 is the address+W byte and `last`
 // is the index of the final byte (1 = 2-byte write, 2 = 3-byte write).
