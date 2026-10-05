@@ -59,7 +59,26 @@ module tb_zcu106_sfp_lb;
         .gmii_rx_dv (t_tx_en),
         .gmii_rx_er (t_tx_er),
         .rx_frame   (),
-        .tx_frame   ()
+        .tx_frame   (),
+        .s_axi_awaddr  (8'd0),
+        .s_axi_awvalid (1'b0),
+        .s_axi_awready (),
+        .s_axi_wdata   (32'd0),
+        .s_axi_wstrb   (4'd0),
+        .s_axi_wvalid  (1'b0),
+        .s_axi_wready  (),
+        .s_axi_bresp   (),
+        .s_axi_bvalid  (),
+        .s_axi_bready  (1'b1),
+        .s_axi_araddr  (8'd0),
+        .s_axi_arvalid (1'b0),
+        .s_axi_arready (),
+        .s_axi_rdata   (),
+        .s_axi_rresp   (),
+        .s_axi_rvalid  (),
+        .s_axi_rready  (1'b1),
+        .blast_frames_clear (1'b0),
+        .blast_frames  ()
     );
 
     wire [383:0] st;

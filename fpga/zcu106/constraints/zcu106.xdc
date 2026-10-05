@@ -63,6 +63,25 @@ set_clock_groups -asynchronous \
     -group [get_clocks -include_generated_clocks sysclk_300] \
     -group [get_clocks -include_generated_clocks sfp_refclk]
 
+# ---- fcapz JTAG cores: TCK from BSCANE2 ----
+# The fcapz EIO and JTAG-to-AXI bridge cross between TCK and the fabric
+# through their own synchronizers and async FIFOs (EIO outputs are
+# synchronized where they are used), so TCK is asynchronous to every fabric
+# clock.
+create_clock -name tck_bscan -period 100.0 \
+    [get_pins -of_objects [get_cells -hierarchical -filter {REF_NAME == BSCANE2}] \
+              -filter {REF_PIN_NAME == TCK}]
+# On UltraScale+ the BSCANE2 TCK output has a timing arc from the JTAG port,
+# so Vivado flags a clock defined on it (TIMING-2). It is still the point
+# that starts the TCK domain, as in the fcapz examples.
+create_waiver -type METHODOLOGY -id TIMING-2 -user emacZero \
+    -objects [get_clocks tck_bscan] \
+    -description "fcapz BSCANE2 TCK is the intended JTAG clock source"
+set_clock_groups -asynchronous \
+    -group [get_clocks tck_bscan] \
+    -group [get_clocks -include_generated_clocks sysclk_300] \
+    -group [get_clocks -include_generated_clocks sfp_refclk]
+
 # Static / slow board inputs and LED outputs
 set_false_path -from [get_ports {CPU_RESET DIP_AN_DISABLE}]
 set_false_path -to   [get_ports {LED[*] SFP0_TX_DISABLE_B}]

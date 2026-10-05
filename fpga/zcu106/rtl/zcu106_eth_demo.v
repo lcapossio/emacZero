@@ -18,9 +18,10 @@
 //             payload size; see udp_blast_trigger.v)
 //
 // Everything runs on one 125 MHz clock: the MAC system clock and both of its
-// GMII clocks. On the ZCU106 that is the PCS/PMA userclk2. The CSRs stay at
-// their reset values (TX/RX enabled, 1G, IP 192.168.137.200); OUR_MAC sets
-// the address the ARP/ICMP/UDP responders answer with.
+// GMII clocks. On the ZCU106 that is the PCS/PMA userclk2. The CSRs start at
+// their reset values (TX/RX enabled, 1G, IP 192.168.137.200) and are on the
+// s_axi port, for reading the MAC statistics; tie it off if unused. OUR_MAC
+// sets the address the ARP/ICMP/UDP responders answer with.
 // Verilog 2001
 // =============================================================================
 
@@ -44,7 +45,31 @@ module zcu106_eth_demo #(
 
     // One-cycle pulses at the end of each received / transmitted frame
     output wire       rx_frame,
-    output wire       tx_frame
+    output wire       tx_frame,
+
+    // MAC CSRs (eth_mac_sys AXI4-Lite, clk domain)
+    input  wire [7:0]  s_axi_awaddr,
+    input  wire        s_axi_awvalid,
+    output wire        s_axi_awready,
+    input  wire [31:0] s_axi_wdata,
+    input  wire [3:0]  s_axi_wstrb,
+    input  wire        s_axi_wvalid,
+    output wire        s_axi_wready,
+    output wire [1:0]  s_axi_bresp,
+    output wire        s_axi_bvalid,
+    input  wire        s_axi_bready,
+    input  wire [7:0]  s_axi_araddr,
+    input  wire        s_axi_arvalid,
+    output wire        s_axi_arready,
+    output wire [31:0] s_axi_rdata,
+    output wire [1:0]  s_axi_rresp,
+    output wire        s_axi_rvalid,
+    input  wire        s_axi_rready,
+
+    // Blast frames generated since reset or the last blast_frames_clear, to
+    // compare with the MAC's TX frame count
+    input  wire        blast_frames_clear,
+    output reg  [31:0] blast_frames
 );
 
     // =========================================================================
@@ -119,24 +144,23 @@ module zcu106_eth_demo #(
     ) u_mac_sys (
         .clk            (clk),
         .rst_n          (rst_n),
-        // AXI4-Lite unused
-        .s_axi_awaddr   (8'd0),
-        .s_axi_awvalid  (1'b0),
-        .s_axi_awready  (),
-        .s_axi_wdata    (32'd0),
-        .s_axi_wstrb    (4'd0),
-        .s_axi_wvalid   (1'b0),
-        .s_axi_wready   (),
-        .s_axi_bresp    (),
-        .s_axi_bvalid   (),
-        .s_axi_bready   (1'b1),
-        .s_axi_araddr   (8'd0),
-        .s_axi_arvalid  (1'b0),
-        .s_axi_arready  (),
-        .s_axi_rdata    (),
-        .s_axi_rresp    (),
-        .s_axi_rvalid   (),
-        .s_axi_rready   (1'b1),
+        .s_axi_awaddr   (s_axi_awaddr),
+        .s_axi_awvalid  (s_axi_awvalid),
+        .s_axi_awready  (s_axi_awready),
+        .s_axi_wdata    (s_axi_wdata),
+        .s_axi_wstrb    (s_axi_wstrb),
+        .s_axi_wvalid   (s_axi_wvalid),
+        .s_axi_wready   (s_axi_wready),
+        .s_axi_bresp    (s_axi_bresp),
+        .s_axi_bvalid   (s_axi_bvalid),
+        .s_axi_bready   (s_axi_bready),
+        .s_axi_araddr   (s_axi_araddr),
+        .s_axi_arvalid  (s_axi_arvalid),
+        .s_axi_arready  (s_axi_arready),
+        .s_axi_rdata    (s_axi_rdata),
+        .s_axi_rresp    (s_axi_rresp),
+        .s_axi_rvalid   (s_axi_rvalid),
+        .s_axi_rready   (s_axi_rready),
         // AXI4-Stream
         .s_axis_tdata   (mac_tx_tdata),
         .s_axis_tvalid  (mac_tx_tvalid),
@@ -426,7 +450,12 @@ module zcu106_eth_demo #(
             blast_remaining  <= 32'd0;
             blast_tx_start_d <= 1'b0;
             blast_in_frame   <= 1'b0;
+            blast_frames     <= 32'd0;
         end else begin
+            if (blast_frames_clear)
+                blast_frames <= 32'd0;
+            else if (blast_frame_done)
+                blast_frames <= blast_frames + 32'd1;
             blast_tx_start_d <= blast_tx_start;
             if (blast_tx_start && !blast_tx_start_d)
                 blast_in_frame <= 1'b1;

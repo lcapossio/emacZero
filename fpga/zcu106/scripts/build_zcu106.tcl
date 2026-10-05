@@ -116,16 +116,18 @@ read_verilog [list \
     fpga/zcu106/rtl/i2c_init.v \
     fpga/zcu106/rtl/zcu106_eth_demo.v \
     fpga/zcu106/rtl/zcu106_top.v \
+    fcapz/rtl/jtag_tap/jtag_tap_xilinx7.v \
+    fcapz/rtl/jtag_reg_iface.v \
+    fcapz/rtl/fcapz_eio.v \
+    fcapz/rtl/fcapz_eio_xilinx7.v \
+    fcapz/rtl/fcapz_eio_xilinxus.v \
+    fcapz/rtl/fcapz_async_fifo.v \
+    fcapz/rtl/fcapz_ejtagaxi.v \
+    fcapz/rtl/fcapz_ejtagaxi_xilinx7.v \
+    fcapz/rtl/fcapz_ejtagaxi_xilinxus.v \
 ]
 if {$lb} {
-    read_verilog [list \
-        fpga/zcu106/rtl/sfp_lb_tester.v \
-        fcapz/rtl/jtag_tap/jtag_tap_xilinx7.v \
-        fcapz/rtl/jtag_reg_iface.v \
-        fcapz/rtl/fcapz_eio.v \
-        fcapz/rtl/fcapz_eio_xilinx7.v \
-        fcapz/rtl/fcapz_eio_xilinxus.v \
-    ]
+    read_verilog fpga/zcu106/rtl/sfp_lb_tester.v
 }
 # The refclk file creates sfp_refclk, which zcu106.xdc's clock groups use,
 # so it has to be read first.

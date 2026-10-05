@@ -36,6 +36,11 @@
 // The EIO can also switch either laser off, reset the SFP1 core, turn
 // auto-negotiation off or restart it, and reads per-hop GMII frame counters
 // and a userclk2 frequency meter (see the EIO block).
+//
+// Both builds have JTAG access to the MAC's CSRs, for its statistics
+// counters: an fcapz JTAG-to-AXI bridge on USER4. Without the loopback, an
+// fcapz EIO on USER3 adds PCS/PMA event counters (see the counter block);
+// scripts/sfp_counters.py reads both.
 // Verilog 2001
 // =============================================================================
 
@@ -286,6 +291,57 @@ module zcu106_top #(
     // emacZero MAC + demo L3 stack on SFP0
     // =========================================================================
     wire demo_rx_frame, demo_tx_frame;
+    wire        demo_cnt_clear;
+    wire [31:0] demo_blast_frames;
+
+    // JTAG-to-AXI bridge (USER4) -> MAC CSRs. Single-beat accesses; the CSR
+    // address is the low byte of the AXI address.
+    wire [31:0] jaxi_awaddr, jaxi_araddr, jaxi_wdata, jaxi_rdata;
+    wire [3:0]  jaxi_wstrb;
+    wire [1:0]  jaxi_bresp, jaxi_rresp;
+    wire        jaxi_awvalid, jaxi_awready, jaxi_wvalid, jaxi_wready;
+    wire        jaxi_bvalid, jaxi_bready, jaxi_arvalid, jaxi_arready;
+    wire        jaxi_rvalid, jaxi_rready;
+
+    fcapz_ejtagaxi_xilinxus #(
+        .ADDR_W (32),
+        .DATA_W (32),
+        .CHAIN  (4)
+    ) u_jtag_axi (
+        .axi_clk        (userclk2),
+        .axi_rst        (~rst_n),
+        .m_axi_awaddr   (jaxi_awaddr),
+        .m_axi_awlen    (),
+        .m_axi_awsize   (),
+        .m_axi_awburst  (),
+        .m_axi_awvalid  (jaxi_awvalid),
+        .m_axi_awready  (jaxi_awready),
+        .m_axi_awprot   (),
+        .m_axi_wdata    (jaxi_wdata),
+        .m_axi_wstrb    (jaxi_wstrb),
+        .m_axi_wvalid   (jaxi_wvalid),
+        .m_axi_wready   (jaxi_wready),
+        .m_axi_wlast    (),
+        .m_axi_bresp    (jaxi_bresp),
+        .m_axi_bvalid   (jaxi_bvalid),
+        .m_axi_bready   (jaxi_bready),
+        .m_axi_araddr   (jaxi_araddr),
+        .m_axi_arlen    (),
+        .m_axi_arsize   (),
+        .m_axi_arburst  (),
+        .m_axi_arvalid  (jaxi_arvalid),
+        .m_axi_arready  (jaxi_arready),
+        .m_axi_arprot   (),
+        .m_axi_rdata    (jaxi_rdata),
+        .m_axi_rresp    (jaxi_rresp),
+        .m_axi_rvalid   (jaxi_rvalid),
+        .m_axi_rlast    (1'b1),
+        .m_axi_rready   (jaxi_rready),
+        .debug_tck      (),
+        .debug_tck_edge (),
+        .debug_axi      (),
+        .debug_axi_edge ()
+    );
 
     zcu106_eth_demo #(
         .OUR_MAC       (OUR_MAC),
@@ -300,8 +356,94 @@ module zcu106_top #(
         .gmii_rx_dv (gmii_rx_dv),
         .gmii_rx_er (gmii_rx_er),
         .rx_frame   (demo_rx_frame),
-        .tx_frame   (demo_tx_frame)
+        .tx_frame   (demo_tx_frame),
+        .s_axi_awaddr  (jaxi_awaddr[7:0]),
+        .s_axi_awvalid (jaxi_awvalid),
+        .s_axi_awready (jaxi_awready),
+        .s_axi_wdata   (jaxi_wdata),
+        .s_axi_wstrb   (jaxi_wstrb),
+        .s_axi_wvalid  (jaxi_wvalid),
+        .s_axi_wready  (jaxi_wready),
+        .s_axi_bresp   (jaxi_bresp),
+        .s_axi_bvalid  (jaxi_bvalid),
+        .s_axi_bready  (jaxi_bready),
+        .s_axi_araddr  (jaxi_araddr[7:0]),
+        .s_axi_arvalid (jaxi_arvalid),
+        .s_axi_arready (jaxi_arready),
+        .s_axi_rdata   (jaxi_rdata),
+        .s_axi_rresp   (jaxi_rresp),
+        .s_axi_rvalid  (jaxi_rvalid),
+        .s_axi_rready  (jaxi_rready),
+        .blast_frames_clear (demo_cnt_clear),
+        .blast_frames  (demo_blast_frames)
     );
+
+`ifndef ZCU106_SFP1_LB
+    // =========================================================================
+    // PCS/PMA event counters (32-bit, wrapping), read over the EIO (USER3)
+    // with the MAC statistics, to tell a physical-layer event on SFP0 from a
+    // frame lost in the logic. All in userclk2; status_vector bits per PG047:
+    // [0] link, [1] sync, [4] RUDI(INVALID), [5] RXDISPERR, [6] RXNOTINTABLE.
+    // eio-write: [0] clear (these counters and the demo's blast_frames).
+    // eio-read:  [15:0] status_vector, [47:16] link-down events,
+    //   [79:48] sync-loss events, [111:80] RUDI(INVALID) events,
+    //   [143:112] disparity-error cycles, [175:144] not-in-table cycles,
+    //   [207:176] GMII rx_er events, [239:208] blast frames generated,
+    //   [243:240] layout version 1, [255:244] marker 12'h107.
+    // =========================================================================
+    wire [7:0] cnt_ctrl;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] cnt_clr_sync;
+    always @(posedge userclk2) cnt_clr_sync <= {cnt_clr_sync[0], cnt_ctrl[0]};
+    assign demo_cnt_clear = cnt_clr_sync[1];
+
+    reg        st_link_q, st_sync_q, st_rudi_q, st_rxer_q;
+    reg [31:0] link_downs, sync_losses, rudi_inv_events;
+    reg [31:0] disperr_cycles, notintable_cycles, rx_er_events;
+    always @(posedge userclk2 or negedge rst_n) begin
+        if (!rst_n) begin
+            {st_link_q, st_sync_q, st_rudi_q, st_rxer_q} <= 4'd0;
+            link_downs        <= 32'd0;
+            sync_losses       <= 32'd0;
+            rudi_inv_events   <= 32'd0;
+            disperr_cycles    <= 32'd0;
+            notintable_cycles <= 32'd0;
+            rx_er_events      <= 32'd0;
+        end else begin
+            st_link_q <= pcs_status[0];
+            st_sync_q <= pcs_status[1];
+            st_rudi_q <= pcs_status[4];
+            st_rxer_q <= gmii_rx_er;
+            if (demo_cnt_clear) begin
+                link_downs        <= 32'd0;
+                sync_losses       <= 32'd0;
+                rudi_inv_events   <= 32'd0;
+                disperr_cycles    <= 32'd0;
+                notintable_cycles <= 32'd0;
+                rx_er_events      <= 32'd0;
+            end else begin
+                if (st_link_q && !pcs_status[0]) link_downs      <= link_downs + 32'd1;
+                if (st_sync_q && !pcs_status[1]) sync_losses     <= sync_losses + 32'd1;
+                if (!st_rudi_q && pcs_status[4]) rudi_inv_events <= rudi_inv_events + 32'd1;
+                if (pcs_status[5]) disperr_cycles    <= disperr_cycles + 32'd1;
+                if (pcs_status[6]) notintable_cycles <= notintable_cycles + 32'd1;
+                if (!st_rxer_q && gmii_rx_er)    rx_er_events    <= rx_er_events + 32'd1;
+            end
+        end
+    end
+
+    fcapz_eio_xilinxus #(
+        .IN_W  (256),
+        .OUT_W (8),
+        .CHAIN (3)
+    ) u_cnt_eio (
+        .probe_in  ({12'h107, 4'd1, demo_blast_frames, rx_er_events,
+                     notintable_cycles, disperr_cycles, rudi_inv_events,
+                     sync_losses, link_downs, pcs_status}),
+        .probe_out (cnt_ctrl)
+    );
+`else
+    assign demo_cnt_clear = 1'b0;
+`endif
 
 `ifdef ZCU106_SFP1_LB
     // =========================================================================

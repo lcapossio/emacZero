@@ -34,6 +34,14 @@ This project does not yet maintain long-lived release branches.
   1472-byte datagrams each way, FPGA -> host at 957.1 Mb/s (100.00% of line
   rate) and host -> FPGA at the host's 954.9 Mb/s, with no frame lost and no
   FCS error (bit error rate < 2.5e-12).
+- **ZCU106 board counters.** `zcu106_eth_demo` brings the MAC's AXI4-Lite
+  CSR port out (it was tied off) and counts the blast frames it generates.
+  `zcu106_top` connects the CSRs to an fcapz JTAG-to-AXI bridge in both
+  builds, and the throughput build adds an fcapz EIO with PCS/PMA event
+  counters (link down, sync loss, RUDI(INVALID), disparity and not-in-table
+  errors, GMII `rx_er`). New `fpga/zcu106/scripts/sfp_counters.py` reads and
+  clears them, to tell a frame lost in the FPGA from one lost on the link.
+  `ZCU106-PERF` checks the MAC's TX frame count against every frame on GMII.
 - `udp_blast_trigger` takes an optional UDP payload size in trigger bytes
   9..10 (`payload_size` output, `DEFAULT_PAYLOAD` parameter). Shorter
   triggers behave as before.

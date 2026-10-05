@@ -17,6 +17,9 @@
 //   5. A stats query sent during a blast is answered before it ends.
 //   6. A trigger that arrives while the last frame of a burst is still being
 //      generated is ignored; the next trigger after it starts at sequence 0.
+//   7. MAC statistics over the s_axi port: TX_FRAME equals every frame seen
+//      on GMII and the demo's blast_frames every blast frame; a write clears
+//      TX_FRAME.
 // Verilog 2001
 // =============================================================================
 `timescale 1ns / 1ps
@@ -32,6 +35,14 @@ module tb_zcu106_perf;
     wire [7:0] txd;
     wire       tx_en, tx_er;
 
+    // MAC CSRs (AXI4-Lite)
+    reg  [7:0]  awaddr = 8'd0, araddr = 8'd0;
+    reg         awvalid = 1'b0, wvalid = 1'b0, arvalid = 1'b0;
+    reg  [31:0] wdata = 32'd0;
+    wire        awready, wready, bvalid, arready, rvalid;
+    wire [31:0] rdata;
+    wire [31:0] blast_frames;
+
     zcu106_eth_demo #(
         .BLAST_START_DELAY (32'd0)
     ) dut (
@@ -44,8 +55,63 @@ module tb_zcu106_perf;
         .gmii_rx_dv (rx_dv),
         .gmii_rx_er (1'b0),
         .rx_frame   (),
-        .tx_frame   ()
+        .tx_frame   (),
+        .s_axi_awaddr  (awaddr),
+        .s_axi_awvalid (awvalid),
+        .s_axi_awready (awready),
+        .s_axi_wdata   (wdata),
+        .s_axi_wstrb   (4'hF),
+        .s_axi_wvalid  (wvalid),
+        .s_axi_wready  (wready),
+        .s_axi_bresp   (),
+        .s_axi_bvalid  (bvalid),
+        .s_axi_bready  (1'b1),
+        .s_axi_araddr  (araddr),
+        .s_axi_arvalid (arvalid),
+        .s_axi_arready (arready),
+        .s_axi_rdata   (rdata),
+        .s_axi_rresp   (),
+        .s_axi_rvalid  (rvalid),
+        .s_axi_rready  (1'b1),
+        .blast_frames_clear (1'b0),
+        .blast_frames  (blast_frames)
     );
+
+    // ------------------------------------------------- MAC CSRs (AXI4-Lite)
+    // Handshakes are sampled mid-cycle (negedge): a valid/ready pair high
+    // there completes at the next posedge. The slave raises arready together
+    // with rvalid, for one cycle with rready tied high.
+    reg ahs, whs, rgot;
+    task axi_read;
+        input  [7:0]  a;
+        output [31:0] d;
+        begin
+            @(negedge clk); araddr = a; arvalid = 1'b1; rgot = 1'b0;
+            while (arvalid || !rgot) begin
+                if (rvalid && !rgot) begin d = rdata; rgot = 1'b1; end
+                ahs = arvalid && arready;
+                @(negedge clk);
+                if (ahs) arvalid = 1'b0;
+            end
+        end
+    endtask
+
+    task axi_write;
+        input [7:0]  a;
+        input [31:0] d;
+        begin
+            @(negedge clk); awaddr = a; wdata = d; awvalid = 1'b1; wvalid = 1'b1;
+            while (awvalid || wvalid) begin
+                ahs = awvalid && awready;
+                whs = wvalid && wready;
+                @(negedge clk);
+                if (ahs) awvalid = 1'b0;
+                if (whs) wvalid  = 1'b0;
+            end
+            while (!bvalid) @(negedge clk);
+            @(negedge clk);
+        end
+    endtask
 
     localparam [47:0] DUT_MAC  = 48'h02_00_00_00_00_01;
     localparam [47:0] HOST_MAC = 48'h02_00_00_00_00_99;
@@ -174,6 +240,7 @@ module tb_zcu106_perf;
     integer    b_exp_plen = 1472;
     reg [31:0] b_next_seq = 0;
     integer    other_frames = 0, tx_er_seen = 0;
+    integer    tx_total = 0, blast_total = 0;   // every frame / blast frame seen
     // Last stats reply
     integer    st_replies = 0, st_reply_cyc = 0;
     reg [31:0] st_packets, st_bytes, st_gaps, st_ooo;
@@ -200,6 +267,7 @@ module tb_zcu106_perf;
             idle = idle + 1;
             if (in_frame) begin
                 in_frame = 1'b0;
+                tx_total = tx_total + 1;
                 // m[0..6] preamble, m[7] SFD, m[8..mlen-5] data, last 4 FCS
                 mc = 32'hFFFFFFFF;
                 for (k = 8; k < mlen - 4; k = k + 1) mc = crc_byte(mc, m[k]);
@@ -224,6 +292,7 @@ module tb_zcu106_perf;
                         b_seq_err = b_seq_err + 1;
                     b_next_seq = {m[8+42], m[8+43], m[8+44], m[8+45]} + 1;
                     b_frames = b_frames + 1;
+                    blast_total = blast_total + 1;
                 end else if ({m[8+12], m[8+13]} == 16'h0800 &&
                              {m[8+34], m[8+35]} == 16'd9996 &&
                              {m[8+42], m[8+43], m[8+44], m[8+45]} == "IPS0") begin
@@ -285,6 +354,7 @@ module tb_zcu106_perf;
     endtask
 
     integer i, e, n, sent;
+    reg [31:0] rd;
     integer t_q;
     initial begin
         repeat (20) @(posedge clk);
@@ -395,6 +465,17 @@ module tb_zcu106_perf;
               "next trigger: new burst from sequence 0");
 
         check(tx_er_seen == 0 && other_frames == 0, "no tx_er, no unexpected frames");
+
+        // ---- 7. MAC statistics over s_axi ----
+        repeat (100) @(posedge clk);
+        axi_read(8'h28, rd);
+        $display("TX_FRAME %0d, frames seen %0d; blast_frames %0d, blast frames seen %0d",
+                 rd, tx_total, blast_frames, blast_total);
+        check(rd == tx_total && blast_frames == blast_total,
+              "TX_FRAME = frames on GMII, blast_frames = blast frames");
+        axi_write(8'h28, 32'd0);
+        axi_read(8'h28, rd);
+        check(rd == 0, "TX_FRAME cleared by a write");
 
         if (fail == 0) begin
             $display("PASS: %0d tests passed", pass);

@@ -137,6 +137,30 @@ Line rate for 1518-byte frames (1472-byte UDP payload) is 81,274 frames/s:
 957.1 Mb/s of UDP payload, 987 Mb/s of Ethernet frames, 1000 Mb/s on the
 wire with preamble and the 12-byte gap.
 
+### Board counters
+
+To tell where a lost frame went, `scripts/sfp_counters.py` reads counters on
+the board over JTAG (hw_server on :3121):
+
+- the MAC's own statistics (`eth_mac_sys` CSRs, through an fcapz JTAG-to-AXI
+  bridge on USER4): TX and RX frames and bytes, RX errors by type
+- an fcapz EIO on USER3: the PCS/PMA `status_vector`, link-down, sync-loss
+  and RUDI(INVALID) events, disparity-error and not-in-table cycles, GMII
+  `rx_er` events, and the frames the blast generated
+
+```bash
+python fpga/zcu106/scripts/sfp_counters.py --clear   # before the run
+python fpga/zcu106/scripts/sfp_perf_test.py --nic <interface> --tests duplex --count 48800000
+python fpga/zcu106/scripts/sfp_counters.py           # after it
+```
+
+MAC TX frames counts every frame that left the MAC toward the PCS/PMA: the
+blast frames plus the ARP, ping and stats replies. If it covers every blast
+frame, the FPGA logic sent everything, and a frame the host lost went missing
+in the PCS/PMA, the SFP, the cable or the host NIC. Read the counters before
+and after a run, not during it: polling adds host load, and a busy host
+drops frames on its side.
+
 ### Throughput results
 
 ZCU106 (Si570 reference clock), a 1000BASE-T copper SFP in SFP0, an
@@ -350,6 +374,7 @@ On the test board the loopback build's frequency meter read userclk2 at
 | `scripts/program_zcu106.tcl` | Program a bitstream (default `build_zcu106/zcu106_top.bit`) over JTAG |
 | `scripts/sfp_lb_test.py` | Run the loopback tests through the fcapz EIO |
 | `scripts/sfp_perf_test.py` | Host throughput test against the demo's iperf2 sink and UDP blast |
+| `scripts/sfp_counters.py` | Read or clear the MAC statistics and PCS/PMA event counters over JTAG |
 
 The ARP responder and TX arbiter are reused from `fpga/arty_a7/rtl/`.
 The I2C sequence is simulated by `ZCU106-I2C-INIT` in `build_and_test.py`.
