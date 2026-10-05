@@ -101,11 +101,14 @@ def eio_session(args, clear):
         fields = {n: (raw >> lsb) & ((1 << w) - 1) for n, lsb, w in EIO_FIELDS}
     finally:
         eio.close()
-    if fields["marker"] != MARKER or fields["layout"] != LAYOUT:
-        raise RuntimeError("EIO marker 0x%03x layout %d: not the throughput build "
-                           "(expected 0x%03x layout %d)"
-                           % (fields["marker"], fields["layout"], MARKER, LAYOUT))
     return fields
+
+
+def check_marker(fields):
+    if fields["marker"] != MARKER or fields["layout"] != LAYOUT:
+        sys.exit("EIO marker 0x%03x layout %d: not the throughput build "
+                 "(expected 0x%03x layout %d)"
+                 % (fields["marker"], fields["layout"], MARKER, LAYOUT))
 
 
 def mac_session(args, clear, pause=None):
@@ -122,6 +125,22 @@ def mac_session(args, clear, pause=None):
         return regs
     finally:
         axi.close()
+
+
+def retry(session, *args, tries=3):
+    """Run one JTAG session, opening a new one if it fails.
+
+    hw_server sometimes answers 'JTAG node is not accessible' for a scan. A
+    session only writes clears and the PAUSE switch, so it can run again.
+    """
+    for attempt in range(1, tries + 1):
+        try:
+            return session(*args)
+        except (RuntimeError, OSError) as e:
+            if attempt == tries:
+                raise
+            print("%s failed (%s), retrying" % (session.__name__, e), file=sys.stderr)
+            time.sleep(1.0)
 
 
 def report(mac, pcs):
@@ -157,9 +176,10 @@ def main():
                          "resets to off with the board")
     args = ap.parse_args()
 
-    pcs = eio_session(args, args.clear)
-    mac = mac_session(args, args.clear,
-                      None if args.pause is None else args.pause == "on")
+    pcs = retry(eio_session, args, args.clear)
+    check_marker(pcs)
+    mac = retry(mac_session, args, args.clear,
+                None if args.pause is None else args.pause == "on")
     if args.json:
         print(json.dumps({"mac": mac, "pcs": pcs}, indent=2))
     else:
