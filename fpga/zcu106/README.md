@@ -143,7 +143,7 @@ Ethernet cable to a 1 Gb/s port on a PC:
 
 | Run | FPGA -> host | Host -> FPGA |
 |-----|--------------|--------------|
-| 1 M frames each way, one direction at a time | 957.1 Mb/s, 100.00% of line rate, 0 lost | 959.8 Mb/s sent by the host, all 1,000,000 counted by the FPGA |
+| 1 M frames each way, one direction at a time | 957.1 Mb/s, 100.00% of line rate, 0 lost | as fast as the host sends, all 1,000,000 counted by the FPGA, 0 lost |
 | 10 min full duplex, 48.8 M frames each way | 957.1 Mb/s, 100.00% of line rate, 0 lost, 0 out of order, 0 NIC errors | 954.9 Mb/s (99.77%; the host's send rate), all 48,800,000 counted, 0 lost |
 
 The 10-minute run moved about 1.19e12 bits with no FCS error in either
@@ -151,6 +151,14 @@ direction, so the bit error rate is below 2.5e-12 at 95% confidence. Its
 host -> FPGA side had 36 datagrams arrive out of order: the host stack
 reordered them (the FPGA receive path is a single in-order pipeline) and
 none were lost.
+
+During a 5-million-frame line-rate blast, 20 of 20 pings were answered in
+under 1 ms and a stats query was answered, and the host still received all
+5,000,000 blast datagrams in order at 957.1 Mb/s.
+
+The host -> FPGA rate is the host's own send rate, measured over the run; on
+a short run the host's send buffering can make it read slightly above line
+rate.
 
 The `sweep` test shows the host's limit, not the link's: the NIC counts every
 frame at 1518 and 1024 bytes, but from 512 bytes down it tops out at a
@@ -252,8 +260,10 @@ With a pair of Cable Matters 10GBASE-SR modules, on both reference clocks:
 | Laser off (either cage) | no link drop: skipped | same |
 
 The soak and bit error rate rows come from the build before the `net_rx` /
-`eth_mac_tx` / `udp_echo` fixes below; the other rows are from the current
-build.
+`eth_mac_tx` / `udp_echo` fixes below; the other rows are from a later build,
+still before the `icmp_echo` fix, the 12-byte `eth_mac_tx` gap and the
+throughput blocks. The loopback tests have not been rerun on hardware since
+those changes; the throughput results above are from the current RTL.
 
 The progress lines can show more replies than requests: counters change
 during a JTAG read. Only the final read, after the tester stops, is checked.
