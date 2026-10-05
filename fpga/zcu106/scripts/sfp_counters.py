@@ -55,6 +55,8 @@ MAC_REGS = [
     ("rx_err_align", 0x4C),      # rx_er during a frame
     ("rx_err_overflow", 0x50),
     ("rx_err_oversize", 0x54),
+    ("pause_rx", 0x8C),          # PAUSE frames received from the link partner
+    ("pause_tx", 0x90),
 ]
 
 # EIO probe_in fields (name, lsb, width), see the counter block in zcu106_top.v
@@ -71,6 +73,7 @@ EIO_FIELDS = [
     ("marker", 244, 12),
 ]
 EIO_CLEAR = 0x01
+PAUSE_CTRL = 0x84               # [1] honor received PAUSE frames (reset 0)
 
 
 def transport(args):
@@ -105,14 +108,18 @@ def eio_session(args, clear):
     return fields
 
 
-def mac_session(args, clear):
+def mac_session(args, clear, pause=None):
     axi = EjtagAxiController(transport(args), chain=4)
     axi.connect()
     try:
+        if pause is not None:
+            axi.axi_write(PAUSE_CTRL, 2 if pause else 0)
         if clear:
             for _, addr in MAC_REGS:
                 axi.axi_write(addr, 0)
-        return {name: axi.axi_read(addr) for name, addr in MAC_REGS}
+        regs = {name: axi.axi_read(addr) for name, addr in MAC_REGS}
+        regs["pause_ctrl"] = axi.axi_read(PAUSE_CTRL)
+        return regs
     finally:
         axi.close()
 
@@ -129,6 +136,8 @@ def report(mac, pcs):
     print("MAC RX errors       FCS %d, rx_er %d, overflow %d, oversize %d"
           % (mac["rx_err_fcs"], mac["rx_err_align"], mac["rx_err_overflow"],
              mac["rx_err_oversize"]))
+    print("MAC PAUSE frames    received %d, sent %d (PAUSE honored: %s)"
+          % (mac["pause_rx"], mac["pause_tx"], "yes" if mac["pause_ctrl"] & 2 else "no"))
     print("PCS events          link down %d, sync loss %d, RUDI(INVALID) %d, "
           "disparity-error cycles %d, not-in-table cycles %d, GMII rx_er %d"
           % (pcs["link_downs"], pcs["sync_losses"], pcs["rudi_invalid_events"],
@@ -143,10 +152,14 @@ def main():
     ap.add_argument("--tap", default="xczu7.tap")
     ap.add_argument("--clear", action="store_true", help="clear all counters, then read them")
     ap.add_argument("--json", action="store_true", help="print the raw counters as JSON")
+    ap.add_argument("--pause", choices=["on", "off"],
+                    help="honor received PAUSE frames (MAC PAUSE_CTRL[1]); "
+                         "resets to off with the board")
     args = ap.parse_args()
 
     pcs = eio_session(args, args.clear)
-    mac = mac_session(args, args.clear)
+    mac = mac_session(args, args.clear,
+                      None if args.pause is None else args.pause == "on")
     if args.json:
         print(json.dumps({"mac": mac, "pcs": pcs}, indent=2))
     else:
