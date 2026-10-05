@@ -3,11 +3,14 @@
 This directory runs emacZero on the AMD ZCU106 (`xczu7ev-ffvc1156-2-e`)
 through **SFP cage 0** at 1 Gb/s. It uses the MAC's `PHY_INTERFACE="GMII"`
 mode behind the AMD 1G/2.5G Ethernet PCS/PMA IP (1000BASE-X on a GTH
-transceiver). The demo answers ARP and ping, and echoes UDP on port 9999.
+transceiver). The demo answers ARP and ping, echoes UDP on port 9999, and
+has the Arty demo's throughput test: an iperf2 UDP sink and a line-rate UDP
+generator.
 
 > **Status: tested on hardware with both reference clocks (Si570 and
-> Si5328), through the SFP0 <-> SFP1 loopback tests below. A link to a PC is
-> not yet tested.**
+> Si5328) through the SFP0 <-> SFP1 loopback tests below, and to a PC through
+> a 1000BASE-T copper SFP at the full 1 Gb/s line rate in both directions at
+> once (see [Throughput test](#throughput-test)).**
 
 ## Data path
 
@@ -51,7 +54,8 @@ over the GT reference clock routing between neighboring quads.
 - Demo FPGA MAC: `02:00:00:00:00:01`.
 - Demo FPGA IP: `192.168.137.200`. This is the `IP_ADDR` CSR reset value;
   nothing in this demo writes the CSRs.
-- Host NIC: 1 Gb/s SFP port (or a switch), for example `192.168.137.1/24`.
+- Host NIC: 1 Gb/s SFP port, a switch, or an RJ45 port through a 1000BASE-T
+  copper SFP in SFP0, with an address such as `192.168.137.1/24`.
 - 1000BASE-X auto-negotiation is on by default. Set **DIP switch 0** to
   turn it off for link partners that do not negotiate.
 
@@ -95,6 +99,65 @@ ping 192.168.137.200
 Bring-up normally shows LED 0, then LED 7 and LED 2 (in the `si5328` build,
 possibly after up to ~20 s while the Si5328 locks), then LEDs 3 and 4 once a
 link partner is connected.
+
+## Throughput test
+
+The demo has the Arty demo's throughput blocks, on the same ports:
+
+| Port | Block | Use |
+|-----:|-------|-----|
+| UDP/9997 | `udp_blast_trigger` + `udp_blast` | A trigger datagram starts a bounded, back-to-back burst of iperf2-format datagrams to the sender. Its payload sets the extra gap, the frame count, the destination port and the payload size (18 to 1472 bytes). |
+| UDP/5001 | `udp_iperf_sink` | Counts iperf2 datagrams: packets, bytes, sequence gaps, out of order |
+| UDP/9996 | `udp_stats_reply` | `G` reads the sink counters, `C` reads and clears them |
+
+The blast is the lowest-priority transmit source, so ARP, ping and stats
+replies still go out between its frames. Its first frame comes 1 s after the
+trigger, which gives a plain `iperf -u -s` time to start.
+
+`scripts/sfp_perf_test.py` runs the test from the host in Python, with no
+iperf needed. It also reads the NIC's own counters (`--nic`, the host's name
+for the port facing the board), so frames the host stack drops are not
+mistaken for link loss:
+
+```bash
+python fpga/zcu106/scripts/sfp_perf_test.py --nic <interface>
+python fpga/zcu106/scripts/sfp_perf_test.py --nic <interface> --tests duplex --count 48800000
+python fpga/zcu106/scripts/sfp_perf_test.py --nic <interface> --tests sweep
+```
+
+| Test | What it checks |
+|------|----------------|
+| `rx` | FPGA -> host, 1472-byte payloads at line rate: every datagram received, in sequence, right length; no NIC errors or loss |
+| `tx` | Host -> FPGA, 1472-byte payloads as fast as the host sends: the FPGA counts every packet and byte |
+| `duplex` | Both at the same time |
+| `sweep` | Information only: one second of line-rate frames at each of 1518, 1024, 512, 256, 128 and 64 bytes, counted by the NIC |
+
+Line rate for 1518-byte frames (1472-byte UDP payload) is 81,274 frames/s:
+957.1 Mb/s of UDP payload, 987 Mb/s of Ethernet frames, 1000 Mb/s on the
+wire with preamble and the 12-byte gap.
+
+### Throughput results
+
+ZCU106 (Si570 reference clock), a 1000BASE-T copper SFP in SFP0, an
+Ethernet cable to a 1 Gb/s port on a PC:
+
+| Run | FPGA -> host | Host -> FPGA |
+|-----|--------------|--------------|
+| 1 M frames each way, one direction at a time | 957.1 Mb/s, 100.00% of line rate, 0 lost | 959.8 Mb/s sent by the host, all 1,000,000 counted by the FPGA |
+| 10 min full duplex, 48.8 M frames each way | 957.1 Mb/s, 100.00% of line rate, 0 lost, 0 out of order, 0 NIC errors | 954.9 Mb/s (99.77%; the host's send rate), all 48,800,000 counted, 0 lost |
+
+The 10-minute run moved about 1.19e12 bits with no FCS error in either
+direction, so the bit error rate is below 2.5e-12 at 95% confidence. Its
+host -> FPGA side had 36 datagrams arrive out of order: the host stack
+reordered them (the FPGA receive path is a single in-order pipeline) and
+none were lost.
+
+The `sweep` test shows the host's limit, not the link's: the NIC counts every
+frame at 1518 and 1024 bytes, but from 512 bytes down it tops out at a
+roughly fixed 200-350 kframes/s whatever the frame size (64-byte frames reach
+only about 170 Mb/s), the receive ceiling of one UDP flow on that PC. The FPGA sends
+64-byte frames at the full 1.488 Mframe/s with exactly 12-byte gaps in the
+`ZCU106-PERF` simulation, which this host cannot count.
 
 ## SFP0 <-> SFP1 loopback test
 
@@ -275,6 +338,7 @@ On the test board the loopback build's frequency meter read userclk2 at
 | `scripts/build_zcu106.tcl` | Non-project Vivado build, including IP generation |
 | `scripts/program_zcu106.tcl` | Program a bitstream (default `build_zcu106/zcu106_top.bit`) over JTAG |
 | `scripts/sfp_lb_test.py` | Run the loopback tests through the fcapz EIO |
+| `scripts/sfp_perf_test.py` | Host throughput test against the demo's iperf2 sink and UDP blast |
 
 The ARP responder and TX arbiter are reused from `fpga/arty_a7/rtl/`.
 The I2C sequence is simulated by `ZCU106-I2C-INIT` in `build_and_test.py`.

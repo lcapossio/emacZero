@@ -301,6 +301,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |
 | ZCU106-I2C-INIT | ZCU106 Si5328 I2C write sequence against the register list, NACK retry at the alternate address | 3 |
 | ZCU106-SFP-LB | ZCU106 loopback tester against the emacZero demo back to back: ARP / ICMP / UDP requests all answered exactly, a corrupted reply caught, frames for another MAC / IP / port or with a bad checksum / FCS / `tx_er` ignored, short (padded) payloads echoed exactly | 15 |
+| ZCU106-PERF | ZCU106 demo throughput blocks on GMII at 1G: UDP blast of 1518- and 64-byte frames at exactly 100% of line rate (every gap 12 byte times, FCS and iperf2 sequence checked), iperf2 sink counting line-rate traffic, both at once, stats replies during a blast | 12 |
 
 ## Hardware Test (Arty A7-100T)
 
@@ -327,8 +328,11 @@ included.
 
 The AMD ZCU106 port runs the MAC in `PHY_INTERFACE="GMII"` mode behind the
 AMD 1G/2.5G Ethernet PCS/PMA IP (1000BASE-X on a GTH transceiver) through SFP
-cage 0, with the ARP/ICMP/UDP-echo demo. It passes the SFP0 <-> SFP1 fiber
-loopback tests on hardware with both reference clocks. The GTH reference clock is the on-board
+cage 0, with the ARP/ICMP/UDP-echo demo and the iperf2 sink / UDP blast
+throughput test. It passes the SFP0 <-> SFP1 fiber loopback tests on hardware
+with both reference clocks, and through a 1000BASE-T copper SFP to a PC it
+ran a 10-minute full-duplex test at the full 1 Gb/s line rate (957 Mb/s of
+UDP payload each way) with no frame lost. The GTH reference clock is the on-board
 USER_MGT_SI570 (156.25 MHz, no setup) by default, with an optional Si5328
 build, and a loopback build tests SFP0 against SFP1 over a fiber. Setup and
 LED meanings are in

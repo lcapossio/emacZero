@@ -24,6 +24,19 @@ This project does not yet maintain long-lived release branches.
   soaks of about 32 million requests each, all correct; links recover from
   resets and AN changes. The bugs these tests found are fixed below.
 - `fcapz` submodule updated to the current fpgacapZero main.
+- **ZCU106 throughput test.** `zcu106_eth_demo` has the Arty demo's iperf2
+  UDP sink (UDP/5001), its stats (UDP/9996) and the line-rate UDP blast
+  (trigger on UDP/9997). The blast is the lowest-priority transmit source,
+  so the Arty's idle service window is off here. New
+  `fpga/zcu106/scripts/sfp_perf_test.py` runs it from a host in Python and
+  reads the NIC's counters; new `ZCU106-PERF` simulates it. Through a
+  1000BASE-T copper SFP to a PC: a 10-minute full-duplex run, 48.8 million
+  1472-byte datagrams each way, FPGA -> host at 957.1 Mb/s (100.00% of line
+  rate) and host -> FPGA at the host's 954.9 Mb/s, with no frame lost and no
+  FCS error (bit error rate < 2.5e-12).
+- `udp_blast_trigger` takes an optional UDP payload size in trigger bytes
+  9..10 (`payload_size` output, `DEFAULT_PAYLOAD` parameter). Shorter
+  triggers behave as before.
 - **Arty GMII fabric-loopback self-test** (`fpga/arty_a7/rtl/gmii_lb_selftest.v`,
   built with `fpga/arty_a7/scripts/build_arty_gmii_lb.tcl`). A second
   `eth_mac_sys` in GMII mode (`MAX_FRAME=9018`, 125 MHz from an MMCM) has its

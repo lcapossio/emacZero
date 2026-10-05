@@ -7,19 +7,24 @@
 //   bytes 0..2: extra inter-frame delay in 100 MHz cycles
 //   bytes 3..6: packet count
 //   bytes 7..8: destination UDP port override
+//   bytes 9..10: UDP payload size override (bytes, iperf2 header included)
 //
 // Short packets are accepted:
 //   0..2 bytes -> defaults
 //   3 bytes    -> delay only
 //   7 bytes    -> delay + count
-//   9+ bytes   -> delay + count + dst-port override
+//   9 bytes    -> delay + count + dst-port override
+//   11+ bytes  -> delay + count + dst-port + payload size
+// payload_size is DEFAULT_PAYLOAD unless the trigger carries a nonzero size;
+// the instantiating design range-checks it against what its generator takes.
 // Verilog 2001
 // =============================================================================
 
 module udp_blast_trigger #(
     parameter [15:0] TRIGGER_PORT = 16'd9997,
     parameter [15:0] IGNORE_SRC_PORT = 16'd5001,
-    parameter [31:0] DEFAULT_COUNT = 32'd1000000
+    parameter [31:0] DEFAULT_COUNT = 32'd1000000,
+    parameter [15:0] DEFAULT_PAYLOAD = 16'd1472
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -40,7 +45,8 @@ module udp_blast_trigger #(
     output reg  [15:0] dst_port,
     output reg  [15:0] src_port,
     output reg  [23:0] ifg_delay,
-    output reg  [31:0] packet_count
+    output reg  [31:0] packet_count,
+    output reg  [15:0] payload_size
 );
 
     reg        active;
@@ -49,6 +55,7 @@ module udp_blast_trigger #(
     reg [23:0] delay_acc;
     reg [31:0] count_acc;
     reg [15:0] port_acc;
+    reg [15:0] size_acc;
 
     wire is_first = !active;
     wire first_accept =
@@ -57,7 +64,7 @@ module udp_blast_trigger #(
         !busy;
 
     wire this_accept = is_first ? first_accept : accept;
-    wire take_byte = udp_rx_valid && this_accept && byte_cnt < 4'd9;
+    wire take_byte = udp_rx_valid && this_accept && byte_cnt < 4'd11;
 
     wire [3:0] byte_cnt_next = take_byte ? (byte_cnt + 4'd1) : byte_cnt;
     wire [23:0] delay_next =
@@ -66,7 +73,10 @@ module udp_blast_trigger #(
         (take_byte && byte_cnt >= 4'd3 && byte_cnt < 4'd7) ?
             {count_acc[23:0], udp_rx_data} : count_acc;
     wire [15:0] port_next =
-        (take_byte && byte_cnt >= 4'd7) ? {port_acc[7:0], udp_rx_data} : port_acc;
+        (take_byte && byte_cnt >= 4'd7 && byte_cnt < 4'd9) ?
+            {port_acc[7:0], udp_rx_data} : port_acc;
+    wire [15:0] size_next =
+        (take_byte && byte_cnt >= 4'd9) ? {size_acc[7:0], udp_rx_data} : size_acc;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -76,6 +86,7 @@ module udp_blast_trigger #(
             delay_acc    <= 24'd0;
             count_acc    <= 32'd0;
             port_acc     <= 16'd0;
+            size_acc     <= 16'd0;
             start        <= 1'b0;
             dst_mac      <= 48'd0;
             dst_ip       <= 32'd0;
@@ -83,6 +94,7 @@ module udp_blast_trigger #(
             src_port     <= 16'd0;
             ifg_delay    <= 24'd0;
             packet_count <= 32'd0;
+            payload_size <= DEFAULT_PAYLOAD;
         end else begin
             start <= 1'b0;
 
@@ -94,6 +106,7 @@ module udp_blast_trigger #(
                     delay_acc <= 24'd0;
                     count_acc <= 32'd0;
                     port_acc  <= 16'd0;
+                    size_acc  <= 16'd0;
                 end
 
                 if (this_accept) begin
@@ -101,6 +114,7 @@ module udp_blast_trigger #(
                     delay_acc <= delay_next;
                     count_acc <= count_next;
                     port_acc  <= port_next;
+                    size_acc  <= size_next;
                 end
 
                 if (udp_rx_last) begin
@@ -114,6 +128,8 @@ module udp_blast_trigger #(
                         ifg_delay    <= (byte_cnt_next >= 4'd3) ? delay_next : 24'd0;
                         packet_count <= (byte_cnt_next >= 4'd7 && count_next != 32'd0) ?
                                         count_next : DEFAULT_COUNT;
+                        payload_size <= (byte_cnt_next >= 4'd11 && size_next != 16'd0) ?
+                                        size_next : DEFAULT_PAYLOAD;
                     end
                     active <= 1'b0;
                     accept <= 1'b0;

@@ -6,6 +6,16 @@
 //   GMII <-> eth_mac_sys (PHY_INTERFACE="GMII") <-> ARP responder
 //                                               <-> net_rx -> ICMP echo
 //                                                          -> UDP echo (port)
+//                                                          -> iperf2 sink, stats
+//                                                          -> blast trigger
+//                                          UDP blast generator -> TX
+//
+// Throughput test ports (as on the Arty demo, see fpga/zcu106/README.md):
+//   UDP/5001  iperf2 UDP sink: counts packets, bytes and sequence gaps
+//   UDP/9996  sink stats: "G" reads them, "C" reads and clears them
+//   UDP/9997  blast trigger: a bounded line-rate burst of iperf2-format
+//             datagrams back to the sender (payload: IFG delay, count, port,
+//             payload size; see udp_blast_trigger.v)
 //
 // Everything runs on one 125 MHz clock: the MAC system clock and both of its
 // GMII clocks. On the ZCU106 that is the PCS/PMA userclk2. The CSRs stay at
@@ -16,7 +26,10 @@
 
 module zcu106_eth_demo #(
     parameter [47:0] OUR_MAC       = 48'h02_00_00_00_00_01,
-    parameter [15:0] UDP_ECHO_PORT = 16'd9999
+    parameter [15:0] UDP_ECHO_PORT = 16'd9999,
+    // Cycles from a blast trigger to the first frame. 1 s gives a plain
+    // `iperf -u -s` time to start; 0 starts at once.
+    parameter [31:0] BLAST_START_DELAY = 32'd125_000_000
 ) (
     input  wire       clk,            // 125 MHz
     input  wire       rst_n,
@@ -45,11 +58,22 @@ module zcu106_eth_demo #(
     wire        icmp_tx_tvalid, icmp_tx_tready, icmp_tx_tlast;
     wire [7:0]  udp_tx_tdata;
     wire        udp_tx_tvalid, udp_tx_tready, udp_tx_tlast;
+    wire [7:0]  stats_tx_tdata;
+    wire        stats_tx_tvalid, stats_tx_tready, stats_tx_tlast;
+    wire [7:0]  blast_tx_tdata;
+    wire        blast_tx_tvalid, blast_tx_tready, blast_tx_tlast;
 
     wire [7:0]  mac_tx_tdata;
     wire        mac_tx_tvalid, mac_tx_tready, mac_tx_tlast;
 
-    arty_tx_arbiter u_tx_arb (
+    // The blast has the lowest priority, so a pending ARP / ping / stats
+    // reply already wins at the next frame boundary of a line-rate blast.
+    // The Arty's idle service window (0.3% of the line rate at 64-byte
+    // frames) is turned off.
+    arty_tx_arbiter #(
+        .BLAST_SERVICE_INTERVAL    (8'd255),
+        .BLAST_SERVICE_IDLE_CYCLES (12'd0)
+    ) u_tx_arb (
         .clk           (clk),
         .rst_n         (rst_n),
         .arp_tx_active (1'b0),
@@ -65,18 +89,18 @@ module zcu106_eth_demo #(
         .icmp_tvalid   (icmp_tx_tvalid),
         .icmp_tready   (icmp_tx_tready),
         .icmp_tlast    (icmp_tx_tlast),
-        .stats_tdata   (8'd0),
-        .stats_tvalid  (1'b0),
-        .stats_tready  (),
-        .stats_tlast   (1'b0),
+        .stats_tdata   (stats_tx_tdata),
+        .stats_tvalid  (stats_tx_tvalid),
+        .stats_tready  (stats_tx_tready),
+        .stats_tlast   (stats_tx_tlast),
         .udp_tdata     (udp_tx_tdata),
         .udp_tvalid    (udp_tx_tvalid),
         .udp_tready    (udp_tx_tready),
         .udp_tlast     (udp_tx_tlast),
-        .blast_tdata   (8'd0),
-        .blast_tvalid  (1'b0),
-        .blast_tready  (),
-        .blast_tlast   (1'b0),
+        .blast_tdata   (blast_tx_tdata),
+        .blast_tvalid  (blast_tx_tvalid),
+        .blast_tready  (blast_tx_tready),
+        .blast_tlast   (blast_tx_tlast),
         .m_axis_tdata  (mac_tx_tdata),
         .m_axis_tvalid (mac_tx_tvalid),
         .m_axis_tready (mac_tx_tready),
@@ -265,6 +289,176 @@ module zcu106_eth_demo #(
         .tx_last         (udp_tx_tlast),
         .tx_ready        (udp_tx_tready),
         .tx_start        ()
+    );
+
+    // =========================================================================
+    // Throughput test: iperf2 UDP sink with stats on UDP/9996, and the
+    // line-rate UDP blast generator triggered from UDP/9997
+    // =========================================================================
+    localparam [15:0] IPERF_SINK_PORT    = 16'd5001;
+    localparam [15:0] IPERF_STATS_PORT   = 16'd9996;
+    localparam [15:0] BLAST_TRIGGER_PORT = 16'd9997;
+
+    wire [31:0] iperf_stat_packets, iperf_stat_bytes;
+    wire [31:0] iperf_stat_first_seq, iperf_stat_last_seq;
+    wire [31:0] iperf_stat_seq_gaps, iperf_stat_out_of_order;
+    wire [31:0] iperf_stat_final_packets, iperf_stat_last_src_ip;
+    wire [15:0] iperf_stat_last_src_port;
+    wire        iperf_stats_clear;
+
+    udp_iperf_sink #(
+        .LISTEN_PORT (IPERF_SINK_PORT)
+    ) u_iperf_sink (
+        .clk                (clk),
+        .rst_n              (rst_n),
+        .udp_rx_data        (netrx_udp_data),
+        .udp_rx_valid       (netrx_udp_valid),
+        .udp_rx_last        (netrx_udp_last),
+        .udp_rx_err         (netrx_udp_err),
+        .udp_rx_src_ip      (netrx_udp_src_ip),
+        .udp_rx_src_port    (netrx_udp_src_port),
+        .udp_rx_dst_port    (netrx_udp_dst_port),
+        .udp_rx_length      (netrx_udp_length),
+        .clear_stats        (iperf_stats_clear),
+        .stat_packets       (iperf_stat_packets),
+        .stat_bytes         (iperf_stat_bytes),
+        .stat_first_seq     (iperf_stat_first_seq),
+        .stat_last_seq      (iperf_stat_last_seq),
+        .stat_seq_gaps      (iperf_stat_seq_gaps),
+        .stat_out_of_order  (iperf_stat_out_of_order),
+        .stat_final_packets (iperf_stat_final_packets),
+        .stat_last_src_ip   (iperf_stat_last_src_ip),
+        .stat_last_src_port (iperf_stat_last_src_port)
+    );
+
+    udp_stats_reply u_iperf_stats (
+        .clk                (clk),
+        .rst_n              (rst_n),
+        .our_mac            (OUR_MAC),
+        .our_ip             (cfg_ip_addr),
+        .stats_port         (IPERF_STATS_PORT),
+        .udp_rx_data        (netrx_udp_data),
+        .udp_rx_valid       (netrx_udp_valid),
+        .udp_rx_last        (netrx_udp_last),
+        .udp_rx_err         (netrx_udp_err),
+        .udp_rx_src_ip      (netrx_udp_src_ip),
+        .udp_rx_src_port    (netrx_udp_src_port),
+        .udp_rx_dst_port    (netrx_udp_dst_port),
+        .rx_src_mac         (netrx_rx_src_mac),
+        .stat_packets       (iperf_stat_packets),
+        .stat_bytes         (iperf_stat_bytes),
+        .stat_first_seq     (iperf_stat_first_seq),
+        .stat_last_seq      (iperf_stat_last_seq),
+        .stat_seq_gaps      (iperf_stat_seq_gaps),
+        .stat_out_of_order  (iperf_stat_out_of_order),
+        .stat_final_packets (iperf_stat_final_packets),
+        .stat_last_src_ip   (iperf_stat_last_src_ip),
+        .stat_last_src_port (iperf_stat_last_src_port),
+        .clear_stats        (iperf_stats_clear),
+        .tx_data            (stats_tx_tdata),
+        .tx_valid           (stats_tx_tvalid),
+        .tx_last            (stats_tx_tlast),
+        .tx_ready           (stats_tx_tready),
+        .tx_start           ()
+    );
+
+    wire        trig_start;
+    wire [47:0] trig_dst_mac;
+    wire [31:0] trig_dst_ip;
+    wire [15:0] trig_dst_port, trig_src_port, trig_payload;
+    wire [23:0] trig_ifg_delay;
+    wire [31:0] trig_count;
+
+    reg  [47:0] blast_dst_mac;
+    reg  [31:0] blast_dst_ip;
+    reg  [15:0] blast_dst_port, blast_src_port;
+    reg  [13:0] blast_payload;
+    reg  [23:0] blast_ifg_delay;
+    reg  [31:0] blast_remaining;
+    reg         blast_tx_start_d;
+    wire        blast_tx_start;
+    wire        blast_enable = (blast_remaining != 32'd0);
+
+    udp_blast_trigger #(
+        .TRIGGER_PORT    (BLAST_TRIGGER_PORT),
+        .IGNORE_SRC_PORT (IPERF_SINK_PORT),
+        .DEFAULT_COUNT   (32'd1000000),
+        .DEFAULT_PAYLOAD (16'd1472)
+    ) u_blast_trigger (
+        .clk             (clk),
+        .rst_n           (rst_n),
+        .udp_rx_data     (netrx_udp_data),
+        .udp_rx_valid    (netrx_udp_valid),
+        .udp_rx_last     (netrx_udp_last),
+        .udp_rx_err      (netrx_udp_err),
+        .udp_rx_src_mac  (netrx_rx_src_mac),
+        .udp_rx_src_ip   (netrx_udp_src_ip),
+        .udp_rx_src_port (netrx_udp_src_port),
+        .udp_rx_dst_port (netrx_udp_dst_port),
+        .busy            (blast_enable),
+        .start           (trig_start),
+        .dst_mac         (trig_dst_mac),
+        .dst_ip          (trig_dst_ip),
+        .dst_port        (trig_dst_port),
+        .src_port        (trig_src_port),
+        .ifg_delay       (trig_ifg_delay),
+        .packet_count    (trig_count),
+        .payload_size    (trig_payload)
+    );
+
+    // Latch a trigger while idle and count frames down as each one starts.
+    // The burst mirrors the trigger's 4-tuple so the host sees a reply flow.
+    // A payload size outside 18..1472 (a 60..1514-byte frame: no padding,
+    // standard MTU) falls back to 1472.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            blast_dst_mac    <= 48'd0;
+            blast_dst_ip     <= 32'd0;
+            blast_dst_port   <= 16'd0;
+            blast_src_port   <= 16'd0;
+            blast_payload    <= 14'd1472;
+            blast_ifg_delay  <= 24'd0;
+            blast_remaining  <= 32'd0;
+            blast_tx_start_d <= 1'b0;
+        end else begin
+            blast_tx_start_d <= blast_tx_start;
+            if (trig_start && !blast_enable) begin
+                blast_dst_mac   <= trig_dst_mac;
+                blast_dst_ip    <= trig_dst_ip;
+                blast_dst_port  <= trig_dst_port;
+                blast_src_port  <= trig_src_port;
+                blast_ifg_delay <= trig_ifg_delay;
+                blast_remaining <= trig_count;
+                blast_payload   <= (trig_payload >= 16'd18 && trig_payload <= 16'd1472) ?
+                                   trig_payload[13:0] : 14'd1472;
+            end else if (blast_tx_start && !blast_tx_start_d && blast_enable) begin
+                blast_remaining <= blast_remaining - 32'd1;
+            end
+        end
+    end
+
+    udp_blast #(
+        .START_DELAY_CYCLES (BLAST_START_DELAY),
+        .USEC_TICK_CYCLES   (7'd125)            // iperf2 timestamps at 125 MHz
+    ) u_blast (
+        .clk               (clk),
+        .rst_n             (rst_n),
+        .our_mac           (OUR_MAC),
+        .our_ip            (cfg_ip_addr),
+        .dst_mac           (blast_dst_mac),
+        .dst_ip            (blast_dst_ip),
+        .dst_port          (blast_dst_port),
+        .src_port          (blast_src_port),
+        .payload_size      (blast_payload),
+        .enable            (blast_enable),
+        .inter_frame_delay (blast_ifg_delay),
+        .pkts_sent         (),
+        .pkt_done_pulse    (),
+        .tx_data           (blast_tx_tdata),
+        .tx_valid          (blast_tx_tvalid),
+        .tx_last           (blast_tx_tlast),
+        .tx_ready          (blast_tx_tready),
+        .tx_start          (blast_tx_start)
     );
 
 endmodule
