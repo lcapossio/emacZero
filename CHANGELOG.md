@@ -7,6 +7,44 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- `fpga/zcu106/`: AMD ZCU106 board port over SFP cage 0 (1000BASE-X). It uses
+  `PHY_INTERFACE="GMII"` behind the AMD 1G/2.5G Ethernet PCS/PMA IP on a GTH,
+  with the MAC and the ARP/ICMP/UDP-echo demo on the 125 MHz transceiver
+  clock. The GTH reference clock defaults to the USER_MGT_SI570 (156.25 MHz,
+  no setup); `-tclargs si5328` instead programs the Si5328 to 125 MHz over I2C
+  with `i2c_init` (simulated by `ZCU106-I2C-INIT`). `-tclargs lb` adds an
+  SFP0 <-> SFP1 fiber loopback test: a second PCS/PMA on SFP1 and
+  `sfp_lb_tester`, which ARPs, pings and UDP-echoes the demo and checks every
+  reply, read over JTAG with the fcapz EIO (`scripts/sfp_lb_test.py`,
+  simulated by `ZCU106-SFP-LB`). The tester also sends frames the demo
+  must ignore and short payloads, and the EIO can switch the lasers off,
+  reset the SFP1 core and turn auto-negotiation off or restart it; the
+  script runs these as a test suite over one hw_server session. Tested on
+  a ZCU106 with both reference clocks and 10GBASE-SR modules: 10-minute
+  soaks of about 32 million requests each, all correct; links recover from
+  resets and AN changes. The bugs these tests found are fixed below.
+- `fcapz` submodule updated to the current fpgacapZero main.
+- **ZCU106 throughput test.** `zcu106_eth_demo` has the Arty demo's iperf2
+  UDP sink (UDP/5001), its stats (UDP/9996) and the line-rate UDP blast
+  (trigger on UDP/9997). The blast is the lowest-priority transmit source,
+  so the Arty's idle service window is off here. New
+  `fpga/zcu106/scripts/sfp_perf_test.py` runs it from a host in Python and
+  reads the NIC's counters; new `ZCU106-PERF` simulates it. Through a
+  1000BASE-T copper SFP to a PC: a 10-minute full-duplex run, 48.8 million
+  1472-byte datagrams each way, FPGA -> host at 957.1 Mb/s (100.00% of line
+  rate) and host -> FPGA at the host's 954.9 Mb/s, with no frame lost and no
+  FCS error (bit error rate < 2.5e-12).
+- **ZCU106 board counters.** `zcu106_eth_demo` brings the MAC's AXI4-Lite
+  CSR port out (it was tied off) and counts the blast frames it generates.
+  `zcu106_top` connects the CSRs to an fcapz JTAG-to-AXI bridge in both
+  builds, and the throughput build adds an fcapz EIO with PCS/PMA event
+  counters (link down, sync loss, RUDI(INVALID), disparity and not-in-table
+  errors, GMII `rx_er`). New `fpga/zcu106/scripts/sfp_counters.py` reads and
+  clears them, to tell a frame lost in the FPGA from one lost on the link.
+  `ZCU106-PERF` checks the MAC's TX frame count against every frame on GMII.
+- `udp_blast_trigger` takes an optional UDP payload size in trigger bytes
+  9..10 (`payload_size` output, `DEFAULT_PAYLOAD` parameter). Shorter
+  triggers behave as before.
 - **Arty GMII fabric-loopback self-test** (`fpga/arty_a7/rtl/gmii_lb_selftest.v`,
   built with `fpga/arty_a7/scripts/build_arty_gmii_lb.tcl`). A second
   `eth_mac_sys` in GMII mode (`MAX_FRAME=9018`, 125 MHz from an MMCM) has its
@@ -53,8 +91,8 @@ This project does not yet maintain long-lived release branches.
     `gtx_clk`: "gtx" collides with the Xilinx GTX serial transceivers, so a
     wildcard constraint such as `[get_ports *gtx*]` aimed at those would
     otherwise pick up this Ethernet pin. It also matches the existing
-    `rgmii_txc`. Reuses the existing `clk_125` /
-    `clk_125_90` inputs; `clk_25` / `clk_2_5` are unused on this branch.
+    `rgmii_txc`. Uses only the existing `clk_125` input; `clk_125_90`,
+    `clk_25` and `clk_2_5` are unused on this branch.
     GTX_CLK is forwarded out of a DDR cell driven by `clk_125` with the
     waveform inverted (`d1=0`/`d2=1`), putting its rising edge at `clk_125`'s
     falling edge - ~4 ns into the 8 ns data window, leaving ~4 ns each of setup
@@ -74,10 +112,10 @@ This project does not yet maintain long-lived release branches.
     received PAUSE quanta ~100x while the datapath keeps running at 1G.
   - Principal use is feeding a vendor 1G PCS/PMA core for SGMII / 1000BASE-X,
     which presents a GMII bus rather than PHY pins.
-  - The `"MII"` and `"RGMII"` branches are untouched, including their
-    hierarchical instance names (`gen_mii.*`, `gen_rgmii.*`), which existing
-    testbenches and debug probes reference by path.
-- `sim/tb/tb_gmii_loopback.v` (`GMII-LOOPBACK`, 20 checks). Closes the loop at
+  - The `"MII"` and `"RGMII"` branches keep their hierarchical instance
+    names (`gen_mii.*`, `gen_rgmii.*`), which existing testbenches and debug
+    probes reference by path.
+- `sim/tb/tb_gmii_loopback.v` (`GMII-LOOPBACK`, 26 checks). Closes the loop at
   the actual GMII pins rather than forcing internal `gmii_cdc` nets - GMII is
   single-data-rate, so no DDR behavioural model sits in the path and
   `gmii_if` itself is covered. Verifies byte-exact payload and FCS-stripped
@@ -192,6 +230,33 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **1G transmit ran at 14-byte inter-frame gaps, not 12.** `eth_mac_tx` held
+  TX_EN low for its 12 `S_IFG` cycles and then two more in `S_IDLE` (one to
+  raise `s_axis_tready`, one for the handshake), so back-to-back frames left
+  every 1G path at most 99.87% of line rate with 1518-byte frames and 97.6%
+  with 64-byte frames. `S_IFG` now counts those two cycles, for exactly 12.
+  At GMII / RGMII, `gmii_cdc` still sets the gap on the wire (exactly 12
+  byte times); the MII paths never took their gap from this count. Found by
+  `ZCU106-PERF`.
+- **`icmp_echo` corrupted or dropped pings over 248 bytes of data.** It
+  buffered 256 bytes of ICMP and counted the length in 9 bits: a ping with
+  249..503 bytes of data was answered with every byte from 248 on wrong and a
+  bad checksum, and one of 504 bytes or more (512+ bytes of ICMP) got no
+  reply. An ICMP message arriving while a reply was going out also overwrote
+  the buffer and the length mid-reply. The buffer is now `MAX_LEN` bytes
+  (parameter, default 1480: a full 1500-byte IPv4 packet). A request that is
+  longer, or that starts arriving before the previous reply has gone out, is
+  dropped whole and leaves the buffer alone. Found pinging the ZCU106 demo
+  from a PC through a 1000BASE-T SFP. New `ICMP-ECHO-SIZES` checks
+  8..1480-byte requests byte for byte, oversize and jumbo requests, and
+  traffic during a stalled reply; `sfp_lb_tester` now pings with 18..1472
+  bytes of data. The buffer is now distributed RAM (240 LUTs on the ZCU106)
+  rather than flip-flops, so the ZCU106 demo uses fewer LUTs and registers
+  than before.
+- `fpga/zcu106/scripts/build_zcu106.tcl` failed when rerun into an existing
+  build directory (`synth_ip` would not overwrite the PCS/PMA checkpoint, and
+  with `-force` it kept the old netlist). It now deletes its PCS/PMA IP
+  folders first.
 - `net_rx` passed ICMP / UDP payload up to the end of the Ethernet frame,
   so the echo blocks sent the padding of a short request back as payload. It
   now stops at the IPv4 total length.
@@ -199,7 +264,8 @@ This project does not yet maintain long-lived release branches.
   total length) and drops a bad one, and checks the ICMP checksum. New
   outputs `icmp_err` / `udp_err`, valid with `icmp_last` / `udp_last`, flag
   a bad ICMP checksum, a frame with `terror` (bad FCS or `rx_er`, which were
-  answered before) and a frame shorter than its IPv4 total length.
+  answered before) and a frame shorter than its IPv4 total length. A frame
+  that ends on its last IPv4 header byte does not affect the next frame.
   `icmp_echo`, `udp_echo`, `udp_iperf_sink`, `udp_blast_trigger` and
   `udp_stats_reply` take the matching `*_rx_err` input and drop the message.
   Integrators instantiating these blocks must connect the new ports.

@@ -369,6 +369,11 @@ module net_rx (
                     state     <= P_ETH_DST;
                     byte_cnt  <= 14'd0;
                     terr_seen <= 1'b0;
+                    // A frame that ends on its last IPv4 header byte has no
+                    // payload to judge. Cancel the header check, or a bad
+                    // checksum would put the parser into P_DROP during the
+                    // next frame.
+                    hdr_chk   <= 1'b0;
                     if (in_payload) begin
                         fin      <= 1'b1;
                         fin_err  <= terr_seen || s_axis_terror ||

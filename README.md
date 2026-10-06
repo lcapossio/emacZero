@@ -18,6 +18,7 @@ responder, and optional IPv4/UDP TX checksum offload.
 - [Register Map](#register-map)
 - [Simulation](#simulation)
 - [Hardware Test (Arty A7-100T)](#hardware-test-arty-a7-100t)
+- [ZCU106 SFP Demo (1000BASE-X)](#zcu106-sfp-demo-1000base-x)
 - [Integration](#integration)
 - [Security and CRA Readiness](#security-and-cra-readiness)
 - [Resource Usage](#resource-usage)
@@ -277,7 +278,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | ETH-MAC-RX-BYTE0 | RX byte-zero/start-of-frame handling | 4 |
 | MDIO-MASTER | MDIO master read/write protocol, 1-bit shift fix | 10 |
 | TX-CSUM-OFF | Inline IPv4/UDP TX checksum offload patcher | 5 |
-| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage: IPv4 header and ICMP checksums, payload cut at the IPv4 total length, `terror` and truncated frames flagged | 34 |
+| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage: IPv4 header and ICMP checksums, payload cut at the IPv4 total length, `terror` and truncated frames flagged, a frame cut at the end of its IPv4 header not affecting the next | 39 |
 | ICMP-ECHO | ICMP echo responder packet generation | 35 |
 | UDP-IPERF-SINK | iperf2 UDP header parsing, counters, gap tracking | 16 |
 | UDP-BLAST-TRIGGER | trigger payload parsing and busy/port filtering | 13 |
@@ -298,6 +299,9 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er` on the last kept byte, whole-frame drop, EOF-only frames, no merged frames, recovery | 31 |
 | GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, back-to-back frames with IFG >= 12 byte times, oversize gate, GTX_CLK integrity | 27 |
 | GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |
+| ZCU106-I2C-INIT | ZCU106 Si5328 I2C write sequence against the register list, NACK retry at the alternate address | 3 |
+| ZCU106-SFP-LB | ZCU106 loopback tester against the emacZero demo back to back: ARP / ICMP / UDP requests all answered exactly, a corrupted reply caught, frames for another MAC / IP / port or with a bad checksum / FCS / `tx_er` ignored, short (padded) payloads echoed exactly | 15 |
+| ZCU106-PERF | ZCU106 demo throughput blocks on GMII at 1G: UDP blast of 1518- and 64-byte frames at exactly 100% of line rate (every gap 12 byte times, FCS and iperf2 sequence checked), iperf2 sink counting line-rate traffic, both at once, stats replies during a blast, a trigger during a burst's last frame ignored, MAC TX frame count read over AXI4-Lite | 17 |
 
 ## Hardware Test (Arty A7-100T)
 
@@ -319,6 +323,22 @@ Current Arty A7-100T hardware throughput, re-validated on 2026-09-23 (after the
 These are UDP payload Mbps, not raw wire Mbps. Around 95 Mbps payload is
 expected on a 100 Mbps Ethernet link once preamble, IFG, headers, and FCS are
 included.
+
+## ZCU106 SFP Demo (1000BASE-X)
+
+The AMD ZCU106 port runs the MAC in `PHY_INTERFACE="GMII"` mode behind the
+AMD 1G/2.5G Ethernet PCS/PMA IP (1000BASE-X on a GTH transceiver) through SFP
+cage 0, with the ARP/ICMP/UDP-echo demo and the iperf2 sink / UDP blast
+throughput test. It passed the SFP0 <-> SFP1 fiber loopback tests on hardware
+with both reference clocks (on an earlier build of this branch; see the board
+README), and through a 1000BASE-T copper SFP to a PC it
+ran a 10-minute full-duplex test with no frame lost: 957 Mb/s of UDP
+payload from the FPGA (100% of line rate) and 955 Mb/s from the PC, as fast
+as it sends. The GTH reference clock is the on-board
+USER_MGT_SI570 (156.25 MHz, no setup) by default, with an optional Si5328
+build, and a loopback build tests SFP0 against SFP1 over a fiber. Setup and
+LED meanings are in
+[fpga/zcu106/README.md](fpga/zcu106/README.md).
 
 ## Integration
 

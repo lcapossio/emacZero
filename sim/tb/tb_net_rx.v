@@ -19,6 +19,8 @@
 //   T11: UDP with 5 payload bytes, padded -> 5 bytes, udp_last, no udp_err
 //   T12: two ICMP frames back to back -> both complete, no error
 //   T13: IP version 6 in an IPv4 ethertype frame -> dropped
+//   T14: frame ending on its last IPv4 header byte with a bad header
+//        checksum, then a valid ICMP frame -> the second one passed on
 // (rx_src_mac is checked in T1 and T2; frames carry valid checksums unless
 // a test corrupts one.)
 // Verilog 2001
@@ -477,6 +479,33 @@ module tb_net_rx;
         fix_csums;
         feed_frame;
         check_int("T13 icmp_byte_cnt = 0 (version 6)", icmp_byte_cnt, 0);
+
+        // =================================================================
+        // T14: frame cut at the end of the IPv4 header with a bad header
+        // checksum must not take the next frame with it
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[25] = frame[25] ^ 8'h01;
+        frame_len = 34;
+        feed_frame;
+        load_icmp(OUR_IP);
+        feed_frame;
+        check_int("T14 icmp_byte_cnt = 8", icmp_byte_cnt, 8);
+        check_int("T14 icmp_last_cnt = 1", icmp_last_cnt, 1);
+        check_int("T14 icmp_err = 0", icmp_err_seen, 0);
+
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[25] = frame[25] ^ 8'h01;
+        frame_len = 34;
+        back_to_back = 1'b1;
+        feed_frame;
+        back_to_back = 1'b0;
+        load_icmp(OUR_IP);
+        feed_frame;
+        check_int("T14 b2b icmp_byte_cnt = 8", icmp_byte_cnt, 8);
+        check_int("T14 b2b icmp_err = 0", icmp_err_seen, 0);
 
         // =================================================================
         // Summary

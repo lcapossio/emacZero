@@ -4,13 +4,22 @@
 // icmp_echo.v - ICMP Echo (Ping) Responder
 // Buffers incoming echo request, swaps addresses, replies with correct
 // IP header checksum and incremental ICMP checksum adjustment.
+//
+// One request is buffered at a time. A request is answered only if it fits
+// the buffer (MAX_LEN bytes of ICMP) and arrives while the responder is idle;
+// anything else is dropped without touching the buffer, so a reply is never
+// sent truncated, padded with stale bytes, or overwritten while it goes out.
 // Verilog 2001
 // =============================================================================
 // ICMP echo request: Type(1)=0x08 | Code(1)=0x00 | Csum(2) | Id(2) | Seq(2) | Data(N)
 // ICMP echo reply:   Type(1)=0x00 | Code(1)=0x00 | Csum(2) | Id(2) | Seq(2) | Data(N)
 // =============================================================================
 
-module icmp_echo (
+module icmp_echo #(
+    // Largest ICMP message answered, header included. 1480 is a full
+    // 1500-byte IPv4 packet; longer (jumbo) requests get no reply.
+    parameter integer MAX_LEN = 1480
+) (
     input  wire        clk,
     input  wire        rst_n,
 
@@ -44,14 +53,32 @@ module icmp_echo (
     reg       src_last;
 
     // =========================================================================
-    // Buffer incoming ICMP packet (max 256 bytes)
+    // Buffer incoming ICMP packet (max MAX_LEN bytes)
     // =========================================================================
-    localparam BUF_SIZE = 256;
-    reg [7:0]  icmp_buf [0:BUF_SIZE-1];
-    reg [8:0]  icmp_len;
-    reg [8:0]  rx_cnt;
-    reg        is_echo_req;
-    reg        pkt_ready;
+    localparam integer LEN_W = $clog2(MAX_LEN + 1);
+    localparam [LEN_W-1:0] LEN_MAX = MAX_LEN;
+    localparam [LEN_W-1:0] LEN_1   = 1;
+    localparam [LEN_W-1:0] LEN_2   = 2;
+    localparam [LEN_W-1:0] LEN_3   = 3;
+    localparam [LEN_W-1:0] LEN_8   = 8;
+    reg [7:0]       icmp_buf [0:MAX_LEN-1];
+    reg [LEN_W-1:0] icmp_len;       // length of the buffered request
+    reg [LEN_W-1:0] rx_cnt;         // bytes stored of the packet arriving
+    reg             rx_ovf;         // it has more than MAX_LEN bytes
+    reg             rx_in_pkt;      // a packet is arriving (first byte seen)
+    reg             rx_drop;        // it arrived busy: ignore it to its end
+    reg             is_echo_req;
+    reg             pkt_ready;
+    reg             reply_active;   // driven by the TX FSM below
+
+    // Busy from the request being handed over until its reply is sent. A
+    // packet whose first byte arrives while busy is dropped whole.
+    wire rx_busy  = pkt_ready || reply_active;
+    wire rx_sop   = icmp_rx_valid && !rx_in_pkt;
+    wire rx_skip  = rx_sop ? rx_busy : rx_drop;
+    wire rx_store = icmp_rx_valid && !rx_skip && (rx_cnt != LEN_MAX);
+    // The byte that would be number MAX_LEN+1 makes the packet too long.
+    wire rx_ovf_now = rx_ovf || (icmp_rx_valid && !rx_skip && (rx_cnt == LEN_MAX));
 
     // Captured source info for reply
     reg [31:0] reply_dst_ip;
@@ -60,10 +87,26 @@ module icmp_echo (
     // =========================================================================
     // RX: buffer incoming ICMP data
     // =========================================================================
+    // The buffer has no reset and one read port (the TX byte), so it maps to
+    // distributed RAM. The checksum bytes are also kept in orig_csum, so
+    // nothing else reads the buffer: two more fixed-index reads would build
+    // it from flip-flops.
+    reg [15:0] orig_csum;
+    always @(posedge clk) begin
+        if (rx_store) begin
+            icmp_buf[rx_cnt] <= icmp_rx_data;
+            if (rx_cnt == LEN_2) orig_csum[15:8] <= icmp_rx_data;
+            if (rx_cnt == LEN_3) orig_csum[7:0]  <= icmp_rx_data;
+        end
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rx_cnt        <= 9'd0;
-            icmp_len      <= 9'd0;
+            rx_cnt        <= {LEN_W{1'b0}};
+            rx_ovf        <= 1'b0;
+            rx_in_pkt     <= 1'b0;
+            rx_drop       <= 1'b0;
+            icmp_len      <= {LEN_W{1'b0}};
             is_echo_req   <= 1'b0;
             pkt_ready     <= 1'b0;
             reply_dst_ip  <= 32'd0;
@@ -72,20 +115,29 @@ module icmp_echo (
             pkt_ready <= 1'b0;
 
             if (icmp_rx_valid) begin
-                if (rx_cnt < BUF_SIZE)
-                    icmp_buf[rx_cnt] <= icmp_rx_data;
-                rx_cnt <= rx_cnt + 9'd1;
+                if (rx_sop)
+                    rx_drop <= rx_busy;
+                rx_in_pkt <= !icmp_rx_last;
 
-                // Check ICMP type (byte 0) and code (byte 1)
-                if (rx_cnt == 9'd0)
-                    is_echo_req <= (icmp_rx_data == 8'h08);
-                if (rx_cnt == 9'd1)
-                    is_echo_req <= is_echo_req && (icmp_rx_data == 8'h00);
+                if (rx_store) begin
+                    rx_cnt <= rx_cnt + LEN_1;
+                    // Check ICMP type (byte 0) and code (byte 1)
+                    if (rx_cnt == {LEN_W{1'b0}})
+                        is_echo_req <= (icmp_rx_data == 8'h08);
+                    if (rx_cnt == LEN_1)
+                        is_echo_req <= is_echo_req && (icmp_rx_data == 8'h00);
+                end
+                if (rx_ovf_now)
+                    rx_ovf <= 1'b1;
 
                 if (icmp_rx_last) begin
-                    icmp_len <= rx_cnt + 9'd1;
-                    rx_cnt   <= 9'd0;
-                    if (is_echo_req && !icmp_rx_err && (rx_cnt + 9'd1) >= 9'd8) begin
+                    rx_cnt <= {LEN_W{1'b0}};
+                    rx_ovf <= 1'b0;
+                    // icmp_len changes only with an accepted request, so it
+                    // holds still while that request's reply goes out.
+                    if (!rx_skip && !rx_ovf_now && is_echo_req && !icmp_rx_err &&
+                        (rx_cnt + LEN_1) >= LEN_8) begin
+                        icmp_len      <= rx_cnt + LEN_1;
                         pkt_ready     <= 1'b1;
                         reply_dst_ip  <= icmp_rx_src_ip;
                         reply_dst_mac <= rx_src_mac;
@@ -111,10 +163,9 @@ module icmp_echo (
         TX_IP_HDR   = 3'd2,
         TX_ICMP     = 3'd3;
 
-    reg [2:0]  tx_state;
-    reg [5:0]  tx_cnt;
-    reg [8:0]  icmp_tx_cnt;
-    reg        reply_active;
+    reg [2:0]       tx_state;
+    reg [5:0]       tx_cnt;
+    reg [LEN_W-1:0] icmp_tx_cnt;
 
     // IP header fields
     wire [15:0] ip_total_len = 16'd20 + icmp_len;
@@ -127,7 +178,6 @@ module icmp_echo (
     wire [15:0] ip_checksum = ~ip_fold2;
 
     // ICMP checksum: incremental update (type 0x08 -> 0x00 = add 0x0800)
-    wire [15:0] orig_csum = {icmp_buf[2], icmp_buf[3]};
     wire [16:0] new_csum_raw = {1'b0, orig_csum} + 17'h0800;
     wire [15:0] new_csum = new_csum_raw[15:0] + {15'd0, new_csum_raw[16]};
 
@@ -144,7 +194,7 @@ module icmp_echo (
         if (!rst_n) begin
             tx_state     <= TX_IDLE;
             tx_cnt       <= 6'd0;
-            icmp_tx_cnt  <= 9'd0;
+            icmp_tx_cnt  <= {LEN_W{1'b0}};
             reply_active <= 1'b0;
             src_valid    <= 1'b0;
             src_last     <= 1'b0;
@@ -201,7 +251,7 @@ module icmp_echo (
                         if (tx_cnt == 6'd19) begin
                             tx_state    <= TX_ICMP;
                             tx_cnt      <= 6'd0;
-                            icmp_tx_cnt <= 9'd0;
+                            icmp_tx_cnt <= {LEN_W{1'b0}};
                         end
                     end
                 end
@@ -209,12 +259,12 @@ module icmp_echo (
                 TX_ICMP: begin
                     src_valid <= 1'b1;
                     if (src_ready && src_valid) begin
-                        icmp_tx_cnt <= icmp_tx_cnt + 9'd1;
+                        icmp_tx_cnt <= icmp_tx_cnt + LEN_1;
                         // Arm src_last one cycle ahead so it lands with the
                         // last data byte (registers update next clock).
-                        if (icmp_tx_cnt == icmp_len - 9'd2)
+                        if (icmp_tx_cnt == icmp_len - LEN_2)
                             src_last <= 1'b1;
-                        if (icmp_tx_cnt == icmp_len - 9'd1) begin
+                        if (icmp_tx_cnt == icmp_len - LEN_1) begin
                             tx_state     <= TX_IDLE;
                             reply_active <= 1'b0;
                             src_valid    <= 1'b0;
@@ -300,13 +350,14 @@ module icmp_echo (
                 endcase
             end
             TX_ICMP: begin
-                case (icmp_tx_cnt)
-                    9'd0: tx_data_mux = 8'h00;           // Type = Echo Reply
-                    9'd1: tx_data_mux = 8'h00;           // Code = 0
-                    9'd2: tx_data_mux = new_csum[15:8];  // Adjusted checksum
-                    9'd3: tx_data_mux = new_csum[7:0];
-                    default: tx_data_mux = icmp_buf[icmp_tx_cnt];
-                endcase
+                if (icmp_tx_cnt == {LEN_W{1'b0}} || icmp_tx_cnt == LEN_1)
+                    tx_data_mux = 8'h00;                 // Type = Echo Reply, Code = 0
+                else if (icmp_tx_cnt == LEN_2)
+                    tx_data_mux = new_csum[15:8];        // Adjusted checksum
+                else if (icmp_tx_cnt == LEN_3)
+                    tx_data_mux = new_csum[7:0];
+                else
+                    tx_data_mux = icmp_buf[icmp_tx_cnt];
             end
             default: tx_data_mux = 8'h00;
         endcase
