@@ -838,8 +838,10 @@ TESTS = [
 
 
 def _sim_result(name, rc, combined):
-    """Report one testbench run; True if it printed ALL TESTS PASSED."""
-    if "ALL TESTS PASSED" in combined:
+    """Report one testbench run: it passes only if vvp exited 0, printed
+    ALL TESTS PASSED and printed no FAIL line."""
+    failed = any(ln.strip().startswith("FAIL") for ln in combined.splitlines())
+    if rc == 0 and "ALL TESTS PASSED" in combined and not failed:
         pass_count = combined.count("PASS:")
         if pass_count == 0:
             for pattern in [r"(\d+)\s+tests passed", r"(\d+)\s+PASS"]:

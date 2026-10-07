@@ -7,7 +7,8 @@
 //   - every TXC high time is that of a speed in flight (4, 20 or 200 ns), so
 //     a change never sends a runt pulse;
 //   - every TXC low time is at least the shortest low time of those speeds;
-//   - a 100M <-> 10M change whose bits resolve a cycle apart (through 11)
+//   - a 100M <-> 10M change that reads as 11 (1G) for 3 cycles, as two
+//     changes on consecutive cycles can with separately synchronized bits,
 //     never runs a period at 1G;
 //   - TXC stays low through reset and starts with a full pulse;
 //   - after each change a burst loops back byte-exact at the new speed, so
@@ -243,12 +244,13 @@ module tb_rgmii_if_speed_switch;
                     for (off = 0; off < 50; off = off + 1) begin
                         if (cur != from) go_speed(from);
                         repeat (off) @(negedge clk_125);
-                        // Between 100M and 10M both bits change; let them
-                        // resolve one cycle apart, through 11 (1G), as a
-                        // 2-bit synchronizer can.
+                        // Between 100M and 10M both bits change. With the
+                        // bits synchronized separately, changes on
+                        // consecutive cycles can read as 11 (1G) for more
+                        // than one cycle; hold 11 for 3.
                         if (from != 0 && to != 0) begin
                             cfg_speed = 2'b11;
-                            @(negedge clk_125);
+                            repeat (3) @(negedge clk_125);
                         end
                         go_speed(to);
                         burst(to);

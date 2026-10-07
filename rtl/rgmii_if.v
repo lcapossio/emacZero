@@ -103,18 +103,33 @@ module rgmii_if #(
     // clk_txc. A new speed is taken into tx_spd only where a TXC period ends
     // (TXC is low there), and the counter restarts with it, so a speed change
     // never cuts a TXC pulse short: every high and low time is that of the
-    // old or the new speed. spd_s3 makes sure both bits have settled, so a
-    // change such as 01 -> 10 cannot pass through 00 or 11 (1G) for a period.
+    // old or the new speed.
+    //
+    // The two bits are synchronized separately, so a sample taken as
+    // cfg_speed changes can mix old and new bits (01 -> 10 read as 00 or 11,
+    // i.e. 1G). Only a sample taken on a change can be mixed, so a speed is
+    // taken only once spd_s2 has read the same value for 5 cycles running.
+    // A mixed value then needs cfg_speed to change on 5 consecutive clk_txc
+    // cycles, which a CSR written by software never does.
     // The clk_125 side takes its own copy of tx_spd, one cycle later, so
     // the data switches on the same boundary. The speed is only changed
     // while the link is down.
     (* ASYNC_REG = "TRUE" *) reg [1:0] spd_s1, spd_s2;
     reg [1:0] spd_s3;
+    reg [1:0] spd_run;   // further cycles spd_s3 == spd_s2, saturating at 3
     always @(posedge clk_txc or negedge rst_n) begin
-        if (!rst_n) {spd_s3, spd_s2, spd_s1} <= 6'd0;
-        else        {spd_s3, spd_s2, spd_s1} <= {spd_s2, spd_s1, cfg_speed};
+        if (!rst_n) begin
+            {spd_s3, spd_s2, spd_s1} <= 6'd0;
+            spd_run <= 2'd0;
+        end else begin
+            {spd_s3, spd_s2, spd_s1} <= {spd_s2, spd_s1, cfg_speed};
+            if (spd_s3 != spd_s2)
+                spd_run <= 2'd0;
+            else if (spd_run != 2'd3)
+                spd_run <= spd_run + 2'd1;
+        end
     end
-    wire spd_ok = (spd_s3 == spd_s2);
+    wire spd_ok = (spd_s3 == spd_s2) && (spd_run == 2'd3);
 
     // TX reset, synchronized to clk_txc. tx_live rises once the first speed
     // has been taken; until then the counter and TXC are held at zero.
