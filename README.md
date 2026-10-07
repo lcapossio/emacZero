@@ -200,9 +200,10 @@ module eth_mac_sys #(
 - `cfg_speed` is synchronized separately into the TX and RX clocks, and the RX
   copy follows only while RXC runs. Change the speed only while the link is
   down. TXC switches only at the end of a period, so it never glitches. The TX
-  side takes a speed only after reading it for 5 TX clock cycles running, so
-  `cfg_speed` must not change on 5 consecutive cycles; the CTRL register,
-  written by software, never does.
+  side takes a speed only after reading it for 5 TX clock cycles running. With
+  synchronizer metastability settling within a cycle (the usual MTBF
+  assumption), a wrong mixed speed would need `cfg_speed` to change on 5
+  consecutive cycles, which the CTRL register, written by software, does not.
 
 `MII_DEBUG` defaults off. When enabled it keeps low-level MII capture counters
 alive inside `mii_if` / `eth_mac` for testbench or bring-up probes; the

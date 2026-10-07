@@ -103,17 +103,18 @@ module rgmii_if #(
     // clk_txc. A new speed is taken into tx_spd only where a TXC period ends
     // (TXC is low there), and the counter restarts with it, so a speed change
     // never cuts a TXC pulse short: every high and low time is that of the
-    // old or the new speed.
+    // old or the new speed. The clk_125 side takes its own copy of tx_spd,
+    // one cycle later, so the data switches on the same boundary. The speed
+    // is only changed while the link is down.
     //
     // The two bits are synchronized separately, so a sample taken as
     // cfg_speed changes can mix old and new bits (01 -> 10 read as 00 or 11,
-    // i.e. 1G). Only a sample taken on a change can be mixed, so a speed is
-    // taken only once spd_s2 has read the same value for 5 cycles running.
-    // A mixed value then needs cfg_speed to change on 5 consecutive clk_txc
-    // cycles, which a CSR written by software never does.
-    // The clk_125 side takes its own copy of tx_spd, one cycle later, so
-    // the data switches on the same boundary. The speed is only changed
-    // while the link is down.
+    // i.e. 1G). A speed is taken only once spd_s2 has read the same value
+    // for 5 cycles running. With metastability settling within a cycle (the
+    // assumption behind any 2-flop synchronizer, met with the MTBF of
+    // ASYNC_REG flops), only a sample taken on a change can be mixed, so a
+    // mixed value would need cfg_speed to change on 5 consecutive clk_txc
+    // cycles; a CSR written by software does not.
     (* ASYNC_REG = "TRUE" *) reg [1:0] spd_s1, spd_s2;
     reg [1:0] spd_s3;
     reg [1:0] spd_run;   // further cycles spd_s3 == spd_s2, saturating at 3
