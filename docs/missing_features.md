@@ -95,6 +95,8 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] Vivado RTL elaboration gate in `build_and_test.py` (skipped where
       Vivado is unavailable) - catches elaboration-only errors that both
       linters accept
+- [x] RGMII testbenches on Vivado's DDR cell models (`PHASE 1b`), and an
+      opt-in `rgmii_if` implementation check (`build_and_test.py --impl`)
 - [x] Arty A7 UDP throughput tests
 - [x] Recent 100 Mbps MII measurements:
       95.68 Mbps FPGA-to-host UDP payload with 0 loss;

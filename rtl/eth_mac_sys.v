@@ -99,9 +99,9 @@ module eth_mac_sys #(
 
     // ---- RGMII PHY pins (active when PHY_INTERFACE="RGMII") ----
     input  wire        clk_125,
-    input  wire        clk_125_90,
-    input  wire        clk_25,        // 25 MHz for 100M RGMII
-    input  wire        clk_2_5,       // 2.5 MHz for 10M RGMII
+    input  wire        clk_125_90,    // 90 deg; TXC clock when 1G is built
+    input  wire        clk_25,        // unused, kept for compatibility
+    input  wire        clk_2_5,       // unused, kept for compatibility
     output wire [3:0]  rgmii_txd,
     output wire        rgmii_tx_ctl,
     output wire        rgmii_txc,
@@ -111,8 +111,8 @@ module eth_mac_sys #(
 
     // ---- GMII PHY pins (active when PHY_INTERFACE="GMII") ----
     // Prefixed phy_gmii_* to stay distinct from the internal GMII bus wires
-    // below. Uses clk_125 from the RGMII clock group above; clk_125_90,
-    // clk_25 and clk_2_5 are RGMII-only and unused on the GMII branch.
+    // below. Uses clk_125 from the RGMII clock group above; clk_125_90 is
+    // RGMII-only and unused on the GMII branch.
     output wire [7:0]  phy_gmii_txd,
     output wire        phy_gmii_tx_en,
     output wire        phy_gmii_tx_er,
@@ -732,8 +732,6 @@ module eth_mac_sys #(
             rgmii_if #(.RGMII_SPEEDS(RGMII_SPEEDS)) u_rgmii_if (
                 .clk_125     (clk_125),
                 .clk_125_90  (clk_125_90),
-                .clk_25      (clk_25),
-                .clk_2_5     (clk_2_5),
                 .rst_n       (rst_n),
                 .cfg_speed   (cfg_speed),
                 .rgmii_txd   (rgmii_txd),

@@ -4,10 +4,12 @@
 // tb_rgmii_10_100_loopback.v - RGMII 10/100 pin-level loopback for eth_mac_sys
 // Instantiates eth_mac_sys with PHY_INTERFACE="RGMII" at 100M (default) or
 // 10M (`define RGMII_10M) and loops the RGMII TX pins back to the RX pins
-// through a stand-in PHY: a transport delay, with RXC driven from the same
-// 25 / 2.5 MHz clock. Exercises: MAC TX -> gmii_cdc pacer -> rgmii_if nibble
-// serializer -> pins -> rgmii_if nibble pairing -> gmii_cdc RX -> MAC RX ->
-// CRC check -> AXIS.
+// through a stand-in PHY: the same delay on TXC and on the data, so RXC is
+// the forwarded TXC and RX samples where a PHY would. Exercises: MAC TX ->
+// gmii_cdc pacer -> rgmii_if nibble serializer -> pins -> rgmii_if nibble
+// pairing -> gmii_cdc RX -> MAC RX -> CRC check -> AXIS. Also checks the TXC
+// period and duty cycle and that each TXC edge is at least 8 ns from any
+// TXD / TX_CTL change.
 //
 // At 10/100 a byte spans two RXC cycles. This test guards three bugs:
 //   - rgmii_if pulsed gmii_rx_dv once per byte, so gmii_cdc closed a frame
@@ -37,12 +39,12 @@ module tb_rgmii_10_100_loopback;
     localparam       BYTE_NS  = 80;
 `endif
 
-    // ---- Clocks: all edges aligned at t=0, as from one MMCM ----
-    reg sys_clk, clk_125, clk_slow, rst_n;
-    initial begin sys_clk = 0; clk_125 = 0; clk_slow = 0; end
+    // ---- Clocks: all edges aligned at t=0, as from one MMCM. TXC is made
+    // from clk_125 (HALF_PER is its expected half period). ----
+    reg sys_clk, clk_125, rst_n;
+    initial begin sys_clk = 0; clk_125 = 0; end
     always #5        sys_clk  = ~sys_clk;    // 100 MHz
     always #4        clk_125  = ~clk_125;    // 125 MHz
-    always #HALF_PER clk_slow = ~clk_slow;   // 25 or 2.5 MHz
 
     // ---- AXI4-Lite ----
     reg  [7:0]  awaddr;  reg awvalid;  wire awready;
@@ -69,10 +71,21 @@ module tb_rgmii_10_100_loopback;
     wire [3:0]  rgmii_rxd;
     wire        rgmii_rx_ctl;
 
-    // Stand-in PHY: the TX pins come back delayed by PIN_DLY, well inside the
-    // RXC period, so RX samples each nibble mid-cycle on both edges.
-    assign #PIN_DLY rgmii_rxd    = rgmii_txd;
-    assign #PIN_DLY rgmii_rx_ctl = rgmii_tx_ctl;
+    wire        rgmii_rxc;
+
+    // The pins as a PHY sees them: the behavioral DDR model can glitch for
+    // zero time at a clock edge, which the 10 ps inertial delay drops.
+    wire [3:0]  txd_s;
+    wire        ctl_s, txc_s;
+    assign #0.01 txd_s = rgmii_txd;
+    assign #0.01 ctl_s = rgmii_tx_ctl;
+    assign #0.01 txc_s = rgmii_txc;
+
+    // Stand-in PHY: TXC and the data come back with the same PIN_DLY, so RX
+    // samples on the forwarded TXC edges, mid-way through each nibble.
+    assign #PIN_DLY rgmii_rxd    = txd_s;
+    assign #PIN_DLY rgmii_rx_ctl = ctl_s;
+    assign #PIN_DLY rgmii_rxc    = txc_s;
 
     wire irq;
 
@@ -122,16 +135,16 @@ module tb_rgmii_10_100_loopback;
         .mii_crs        (1'b0),
         // Clock group
         .clk_125        (clk_125),
-        .clk_125_90     (clk_125),  // unused at 10/100
-        .clk_25         (clk_slow),
-        .clk_2_5        (clk_slow),
+        .clk_125_90     (1'b0),     // unused for RGMII_SPEEDS="10_100"
+        .clk_25         (1'b0),     // unused
+        .clk_2_5        (1'b0),     // unused
         // RGMII
         .rgmii_txd      (rgmii_txd),
         .rgmii_tx_ctl   (rgmii_tx_ctl),
         .rgmii_txc      (rgmii_txc),
         .rgmii_rxd      (rgmii_rxd),
         .rgmii_rx_ctl   (rgmii_rx_ctl),
-        .rgmii_rxc      (clk_slow),
+        .rgmii_rxc      (rgmii_rxc),
         // GMII unused
         .phy_gmii_txd     (),
         .phy_gmii_tx_en   (),
@@ -156,9 +169,9 @@ module tb_rgmii_10_100_loopback;
     integer gap_cycles, min_gap, tx_bursts;
     reg     ctl_d;
     initial begin gap_cycles = 0; min_gap = 1000000; tx_bursts = 0; ctl_d = 0; end
-    always @(posedge clk_slow) begin
+    always @(posedge txc_s) begin
         if (rst_n) begin
-            if (rgmii_tx_ctl) begin
+            if (ctl_s) begin
                 if (!ctl_d) begin
                     if (tx_bursts > 0 && gap_cycles < min_gap)
                         min_gap = gap_cycles;
@@ -168,8 +181,52 @@ module tb_rgmii_10_100_loopback;
             end else begin
                 gap_cycles = gap_cycles + 1;
             end
-            ctl_d = rgmii_tx_ctl;
+            ctl_d = ctl_s;
         end
+    end
+
+    // =========================================================================
+    // TXC timing: period, high time, and the distance from each TXC edge to
+    // the nearest TXD / TX_CTL change (setup and hold at the PHY)
+    // =========================================================================
+    // Armed once cfg_speed has reached the media domain (mon_on), so the
+    // switch from the reset speed is not counted.
+    reg      mon_on;
+    realtime t_rise, t_edge, t_data, min_margin;
+    integer  txc_rises, bad_period, bad_high;
+    initial begin
+        mon_on = 0;
+        t_rise = 0; t_edge = 0; t_data = 0; min_margin = 1.0e9;
+        txc_rises = 0; bad_period = 0; bad_high = 0;
+    end
+    function off_by;   // |a - b| above 1 ps
+        input real a, b;
+        off_by = (a - b > 0.001) || (b - a > 0.001);
+    endfunction
+    always @(txd_s or ctl_s) begin
+        if (mon_on && ($realtime - t_edge) < min_margin)
+            min_margin = $realtime - t_edge;
+        t_data = $realtime;
+    end
+    always @(posedge txc_s) begin
+        if (mon_on) begin
+            if (($realtime - t_data) < min_margin)
+                min_margin = $realtime - t_data;
+            if (txc_rises > 0 && off_by($realtime - t_rise, 2.0 * HALF_PER))
+                bad_period = bad_period + 1;
+            txc_rises = txc_rises + 1;
+        end
+        t_rise = $realtime;
+        t_edge = $realtime;
+    end
+    always @(negedge txc_s) begin
+        if (mon_on && txc_rises > 0) begin
+            if (($realtime - t_data) < min_margin)
+                min_margin = $realtime - t_data;
+            if (off_by($realtime - t_rise, HALF_PER))
+                bad_high = bad_high + 1;
+        end
+        t_edge = $realtime;
     end
 
     // ---- AXI4-Lite BFM ----
@@ -340,6 +397,7 @@ module tb_rgmii_10_100_loopback;
         axi_write(8'h0C, 32'hFF_FF_FF_FF);
         axi_write(8'h10, 32'h0000_FF_FF);
         #(20 * BYTE_NS);   // cfg_speed crosses into the media domain
+        mon_on = 1'b1;
 
         // T1: one minimum-size frame
         send_frame(46, 8'h10);
@@ -370,6 +428,17 @@ module tb_rgmii_10_100_loopback;
         check_int("bad length or content", rx_bad_frames, 0);
         check_int("rx error beats", rx_err_cnt, 0);
         check_int("frames seen on the TX pins", tx_bursts, tx_frames);
+        check_int("TXC periods not 2*HALF_PER", bad_period, 0);
+        check_int("TXC high times not HALF_PER", bad_high, 0);
+        $display("INFO: %0d TXC rises, min TXC-to-data distance %0.1f ns",
+                 txc_rises, min_margin);
+        if (min_margin > 7.999) begin
+            $display("PASS: TXC edges >= 8 ns from TXD/TX_CTL changes");
+            pass_cnt = pass_cnt + 1;
+        end else begin
+            $display("FAIL: a TXC edge is %0.1f ns from a TXD/TX_CTL change", min_margin);
+            fail_cnt = fail_cnt + 1;
+        end
 
         // IFG: at least 12 byte times = 24 TXC cycles of TX_CTL low
         if (min_gap >= 24 && min_gap < 1000000) begin

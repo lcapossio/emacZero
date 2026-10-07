@@ -46,8 +46,6 @@ module tb_rgmii_if;
     rgmii_if u_tx (
         .clk_125     (clk_125),
         .clk_125_90  (clk_125_90),
-        .clk_25      (1'b0),
-        .clk_2_5     (1'b0),
         .rst_n       (rst_n),
         .cfg_speed   (2'b00),  // 1G mode
         .rgmii_txd   (rgmii_txd),
@@ -68,8 +66,6 @@ module tb_rgmii_if;
     rgmii_if u_rx (
         .clk_125     (clk_125),
         .clk_125_90  (clk_125_90),
-        .clk_25      (1'b0),
-        .clk_2_5     (1'b0),
         .rst_n       (rst_n),
         .cfg_speed   (2'b00),
         .rgmii_txd   (),

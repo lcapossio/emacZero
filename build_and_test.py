@@ -25,6 +25,7 @@ VVP_BIN = "vvp"
 VERILATOR_BIN = "verilator"
 VIVADO_BIN = "vivado"
 ELAB_TCL = "fpga/arty_a7/scripts/elab_check.tcl"
+RGMII_IMPL_TCL = "fpga/scripts/rgmii_impl_check.tcl"
 
 # rtl/ holds version.vh (single source of truth, included by axilite_regs.v).
 IVERILOG_INCDIRS = ["rtl"]
@@ -702,6 +703,13 @@ TESTS = [
         "out": "sim/tb_rgmii_if_100m.vvp",
     },
     {
+        "name": "RGMII-IF-SPEED-SWITCH",
+        "srcs": ["rtl/ddr_input.v", "rtl/ddr_output.v", "rtl/rgmii_if.v",
+                 "sim/tb/tb_rgmii_if_speed_switch.v"],
+        "out": "sim/tb_rgmii_if_speed_switch.vvp",
+        "sim_timeout": 60,
+    },
+    {
         "name": "RGMII-IF-VARIANTS",
         "srcs": ["rtl/ddr_input.v", "rtl/ddr_output.v", "rtl/rgmii_if.v",
                  "sim/tb/tb_rgmii_if_variants.v"],
@@ -829,6 +837,29 @@ TESTS = [
 ]
 
 
+def _sim_result(name, rc, combined):
+    """Report one testbench run: it passes only if vvp exited 0, printed
+    ALL TESTS PASSED and printed no FAIL line."""
+    failed = any(ln.strip().startswith("FAIL") for ln in combined.splitlines())
+    if rc == 0 and "ALL TESTS PASSED" in combined and not failed:
+        pass_count = combined.count("PASS:")
+        if pass_count == 0:
+            for pattern in [r"(\d+)\s+tests passed", r"(\d+)\s+PASS"]:
+                m = re.search(pattern, combined, re.IGNORECASE)
+                if m:
+                    pass_count = int(m.group(1))
+                    break
+        ok(f"{name}: {pass_count} tests passed")
+        return True
+    fail(f"{name}: simulation failed (rc={rc})")
+    for line in combined.splitlines():
+        if "FAIL" in line or "PASS" in line or "Error" in line:
+            print(f"    {line.strip()}")
+    if rc == -1:
+        print(f"    (timeout or command not found)")
+    return False
+
+
 def run_simulation():
     header("PHASE 1: Simulation (Icarus Verilog)")
     all_pass = True
@@ -857,29 +888,133 @@ def run_simulation():
             cwd=run_dir, timeout=sim_timeout
         )
 
-        combined = stdout + stderr
-        if "ALL TESTS PASSED" in combined:
-            pass_count = combined.count("PASS:")
-            if pass_count == 0:
-                for pattern in [r"(\d+)\s+tests passed", r"(\d+)\s+PASS"]:
-                    m = re.search(pattern, combined, re.IGNORECASE)
-                    if m:
-                        pass_count = int(m.group(1))
-                        break
-            ok(f"{t['name']}: {pass_count} tests passed")
-        else:
-            fail(f"{t['name']}: simulation failed (rc={rc})")
-            for line in combined.splitlines():
-                if "FAIL" in line or "PASS" in line or "Error" in line:
-                    print(f"    {line.strip()}")
-            if rc == -1:
-                print(f"    (timeout or command not found)")
+        if not _sim_result(t["name"], rc, stdout + stderr):
             all_pass = False
 
     if all_pass:
         print(f"\n  {C.GREEN}{C.BOLD}All simulations passed.{C.END}")
     else:
         print(f"\n  {C.RED}{C.BOLD}Simulation failures detected.{C.END}")
+    return all_pass
+
+
+# RGMII testbenches rerun on the Xilinx simulation models of the DDR cells
+# (Vivado's unisims) instead of the behavioral SIM model in ddr_input.v /
+# ddr_output.v. That model was once wrong (it sampled d2 on the falling edge)
+# and every RGMII test passed against it.
+RGMII_VENDOR_TBS = [
+    ("RGMII-IF", 300),
+    ("RGMII-IF-100M", 300),
+    ("RGMII-IF-SPEED-SWITCH", 300),
+    ("RGMII-IF-VARIANTS", 300),
+]
+# (label, wrapper define, unisim model files)
+XILINX_DDR_FAMILIES = [
+    ("7-series", "XILINX_7SERIES", ["ODDR.v", "IDDR.v"]),
+    ("UltraScale+", "XILINX_ULTRASCALE_PLUS", ["ODDRE1.v", "IDDRE1.v"]),
+]
+
+
+def _ddr_wrappers_support(define):
+    """True if both DDR wrappers have a branch for this vendor define."""
+    return all(define in _read(os.path.join(PROJECT_DIR, "rtl", f))
+               for f in ("ddr_input.v", "ddr_output.v"))
+
+
+def run_vendor_ddr_sims():
+    """Run the RGMII testbenches on Vivado's DDR cell models.
+
+    Skipped (not failed) where Vivado is unavailable, like PHASE 0c.
+    """
+    header("PHASE 1b: RGMII on the Xilinx DDR cell models")
+    vivado = _find_vivado()
+    if not vivado:
+        print(f"  {C.YELLOW}SKIP{C.END} Vivado not found on PATH - RGMII is "
+              "only checked against the behavioral DDR model")
+        return True
+    src = os.path.join(os.path.dirname(os.path.dirname(vivado)),
+                       "data", "verilog", "src")
+    if not os.path.isfile(os.path.join(src, "glbl.v")):
+        fail(f"Vivado simulation models not found under {src}")
+        return False
+
+    by_name = {t["name"]: t for t in TESTS}
+    run_dir = os.path.join(PROJECT_DIR, "sim", f".run_{os.getpid()}")
+    os.makedirs(run_dir, exist_ok=True)
+    all_pass = True
+    for label, define, models in XILINX_DDR_FAMILIES:
+        if not _ddr_wrappers_support(define):
+            print(f"  {C.YELLOW}SKIP{C.END} {label}: rtl/ddr_input.v / "
+                  f"ddr_output.v have no {define} branch")
+            continue
+        libs = [os.path.join(src, "glbl.v")] + \
+               [os.path.join(src, "unisims", m) for m in models]
+        for name, sim_timeout in RGMII_VENDOR_TBS:
+            t = by_name[name]
+            top = os.path.splitext(os.path.basename(t["srcs"][-1]))[0]
+            srcs = " ".join(f'"{s}"' for s in libs) + " " + \
+                   " ".join(os.path.join(PROJECT_DIR, s) for s in t["srcs"])
+            out = os.path.join(run_dir, f"{top}_{define}.vvp")
+            rc, stdout, stderr = run_cmd(
+                f'{IVERILOG_BIN} -g2005 -D{define} {_incdir_args()} '
+                f'-s {top} -s glbl -o "{out}" {srcs}',
+                cwd=PROJECT_DIR, timeout=60
+            )
+            if rc != 0:
+                fail(f"{name} ({label} models): compile error")
+                print(f"    {stderr.strip()[:200]}")
+                all_pass = False
+                continue
+            rc, stdout, stderr = run_cmd(f'{VVP_BIN} "{out}"', cwd=run_dir,
+                                         timeout=sim_timeout)
+            if not _sim_result(f"{name} ({label} models)", rc, stdout + stderr):
+                all_pass = False
+    return all_pass
+
+
+# rgmii_if alone through synthesis, place and route for every RGMII_SPEEDS on
+# one part per family. No board build uses RGMII, so without this nothing
+# would notice RGMII becoming unimplementable (as it once was, on every part).
+RGMII_IMPL_PARTS = [
+    ("7-series", "XILINX_7SERIES", "xc7a100tcsg324-1"),
+    ("UltraScale+", "XILINX_ULTRASCALE_PLUS", "xczu7ev-ffvc1156-2-e"),
+]
+
+
+def run_rgmii_impl():
+    """Opt-in (--impl): implement rgmii_if on each family. About 10 minutes."""
+    header("PHASE 3: RGMII implementation check (Vivado)")
+    vivado = _find_vivado()
+    if not vivado:
+        fail("Vivado not found on PATH (--impl needs it)")
+        return False
+    all_pass = True
+    for label, define, part in RGMII_IMPL_PARTS:
+        if not _ddr_wrappers_support(define):
+            print(f"  {C.YELLOW}SKIP{C.END} {label}: rtl/ddr_input.v / "
+                  f"ddr_output.v have no {define} branch")
+            continue
+        for speeds in ("ALL", "1G_ONLY", "10_100"):
+            cmd = (f'"{vivado}" -mode batch -source "{RGMII_IMPL_TCL}" '
+                   f'-nojournal -nolog -tclargs "{PROJECT_DIR}" {speeds} '
+                   f'{part} {define}')
+            rc, stdout, stderr = run_cmd(cmd, cwd=PROJECT_DIR, timeout=1800)
+            output = stdout + stderr
+            m = re.search(r"^RGMII_IMPL (OK|FAIL) \S+ \S+ (.*)$", output,
+                          re.MULTILINE)
+            if rc == 0 and m and m.group(1) == "OK":
+                ok(f"RGMII {label} {speeds} ({part}): {m.group(2)}")
+                continue
+            fail(f"RGMII {label} {speeds} ({part}) rc={rc}")
+            if m:
+                print(f"    {m.group(2)[:300]}")
+            # The step that failed often only says "failed due to earlier
+            # errors"; the DRC or placer errors themselves come before it.
+            errors = [ln for ln in output.splitlines()
+                      if ln.startswith("ERROR") and "17-39" not in ln]
+            for line in (errors or output.splitlines()[-10:])[:6]:
+                print(f"    {line[:300]}")
+            all_pass = False
     return all_pass
 
 
@@ -919,6 +1054,9 @@ def run_cocotb():
 def main():
     parser = argparse.ArgumentParser(description="emacZero — Build & Test")
     parser.add_argument("--sim-only", action="store_true", help="Run simulation only")
+    parser.add_argument("--impl", action="store_true",
+                        help="Also implement rgmii_if on 7-series and "
+                             "UltraScale+ parts (Vivado, about 10 minutes)")
     args = parser.parse_args()
 
     print(f"{C.BOLD}")
@@ -932,10 +1070,12 @@ def main():
     verilator_ok = run_verilator_lint()
     elab_ok = run_vivado_elab()
     sim_ok = run_simulation()
+    vendor_ok = run_vendor_ddr_sims()
     cocotb_ok = run_cocotb()
+    impl_ok = run_rgmii_impl() if args.impl else True
 
     if (version_ok and lint_ok and verilator_ok and elab_ok
-            and sim_ok and cocotb_ok):
+            and sim_ok and vendor_ok and cocotb_ok and impl_ok):
         print(f"\n{C.GREEN}{C.BOLD}All tests passed.{C.END}")
         sys.exit(0)
     else:
