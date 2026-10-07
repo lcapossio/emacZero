@@ -70,8 +70,8 @@ module rgmii_if #(
     localparam SUPPORT_100 = (RGMII_SPEEDS == "ALL") || (RGMII_SPEEDS == "10_100");
     localparam SUPPORT_10  = (RGMII_SPEEDS == "ALL") || (RGMII_SPEEDS == "10_100");
 
-    // RX selects 1G or 10/100 straight from cfg_speed; TX uses synchronized
-    // copies (below).
+    // RX selects 1G or 10/100 straight from cfg_speed; TX uses a synchronized
+    // copy, taken at TXC period boundaries (below).
     wire is_1g  = SUPPORT_1G  && ((cfg_speed == 2'b00) || (cfg_speed == 2'b11));
 
     // =========================================================================
@@ -100,55 +100,81 @@ module rgmii_if #(
 
     wire clk_txc = SUPPORT_1G ? clk_125_90 : clk_125;
 
-    // cfg_speed comes from the system clock domain. Each TX clock domain
-    // takes its own synchronized copy, so no timed path runs from the CSR into
-    // the cells' inputs. The speed is only changed while the link is down.
-    (* ASYNC_REG = "TRUE" *) reg [1:0] spd_t_s1, spd_t_s2;   // clk_125
-    (* ASYNC_REG = "TRUE" *) reg [1:0] spd_c_s1, spd_c_s2;   // clk_txc
-    always @(posedge clk_125 or negedge rst_n) begin
-        if (!rst_n) {spd_t_s2, spd_t_s1} <= 4'd0;
-        else        {spd_t_s2, spd_t_s1} <= {spd_t_s1, cfg_speed};
-    end
+    // cfg_speed comes from the system clock domain and is synchronized into
+    // clk_txc. A new speed is taken into tx_spd only where a TXC period ends
+    // (TXC is low there), and the counter restarts with it, so a speed change
+    // never cuts a TXC pulse short: every high and low time is that of the
+    // old or the new speed. spd_s3 makes sure both bits have settled, so a
+    // change such as 01 -> 10 cannot pass through 00 or 11 (1G) for a period.
+    // The clk_125 side takes its own copy of tx_spd, one cycle later, so
+    // the data switches on the same boundary. The speed is only changed
+    // while the link is down.
+    (* ASYNC_REG = "TRUE" *) reg [1:0] spd_s1, spd_s2;
+    reg [1:0] spd_s3;
     always @(posedge clk_txc or negedge rst_n) begin
-        if (!rst_n) {spd_c_s2, spd_c_s1} <= 4'd0;
-        else        {spd_c_s2, spd_c_s1} <= {spd_c_s1, cfg_speed};
+        if (!rst_n) {spd_s3, spd_s2, spd_s1} <= 6'd0;
+        else        {spd_s3, spd_s2, spd_s1} <= {spd_s2, spd_s1, cfg_speed};
     end
-    wire t_is_1g  = SUPPORT_1G  && ((spd_t_s2 == 2'b00) || (spd_t_s2 == 2'b11));
-    wire t_is_100 = SUPPORT_100 && (spd_t_s2 == 2'b01);
-    wire c_is_1g  = SUPPORT_1G  && ((spd_c_s2 == 2'b00) || (spd_c_s2 == 2'b11));
-    wire c_is_100 = SUPPORT_100 && (spd_c_s2 == 2'b01);
+    wire spd_ok = (spd_s3 == spd_s2);
 
-    // Phase counter, clk_txc domain: tx_ph = 0..N-1 picks slots 2*tx_ph and
-    // 2*tx_ph+1. The clk_125 logic below reads it too; with the 90-degree
-    // clock that path has 6 ns.
+    // TX reset, synchronized to clk_txc. tx_live rises once the first speed
+    // has been taken; until then the counter and TXC are held at zero.
     (* ASYNC_REG = "TRUE" *) reg tx_rst_n_s1, tx_rst_n_s2;
     always @(posedge clk_txc or negedge rst_n) begin
         if (!rst_n) {tx_rst_n_s2, tx_rst_n_s1} <= 2'b00;
         else        {tx_rst_n_s2, tx_rst_n_s1} <= {tx_rst_n_s1, 1'b1};
     end
 
-    wire [5:0] c_last_ph = c_is_100 ? 6'd4 : 6'd49;   // N - 1
-    wire [6:0] txc_rise  = c_is_100 ? 7'd2 : 7'd25;   // first high slot
-    wire [6:0] txc_fall  = c_is_100 ? 7'd7 : 7'd75;   // first low slot after it
-    wire [5:0] t_last_ph = t_is_100 ? 6'd4 : 6'd49;   // N - 1, clk_125 copy
-    wire [6:0] tx_n      = t_is_100 ? 7'd5 : 7'd50;   // N
+    reg  [1:0] tx_spd;
+    reg        tx_live;
+    wire is_1g_tx  = SUPPORT_1G  && ((tx_spd == 2'b00) || (tx_spd == 2'b11));
+    wire is_100_tx = SUPPORT_100 && (tx_spd == 2'b01);
+
+    // Phase counter, clk_txc domain: tx_ph = 0..N-1 picks slots 2*tx_ph and
+    // 2*tx_ph+1. The clk_125 logic below reads it; with the 90-degree clock
+    // that path has 6 ns. At 1G the counter runs with N = 50, which only
+    // paces the speed changes.
+    wire [5:0] last_ph  = is_100_tx ? 6'd4 : 6'd49;   // N - 1
+    wire [6:0] txc_rise = is_100_tx ? 7'd2 : 7'd25;   // first high slot
+    wire [6:0] txc_fall = is_100_tx ? 7'd7 : 7'd75;   // first low slot after it
 
     reg  [5:0] tx_ph;
     wire [6:0] tx_s1 = {tx_ph, 1'b0};                 // slot sent by d1
     wire [6:0] tx_s2 = {tx_ph, 1'b1};                 // slot sent by d2
+    // Last slot pair of a period. Without 10/100 any cycle is a boundary.
+    wire       tx_wrap = !SUPPORT_SLOW || (tx_ph >= last_ph);
 
     always @(posedge clk_txc or negedge tx_rst_n_s2) begin
-        if (!tx_rst_n_s2)
+        if (!tx_rst_n_s2) begin
+            tx_spd  <= 2'b00;
+            tx_live <= 1'b0;
+            tx_ph   <= 6'd0;
+        end else if (!tx_live) begin
+            if (spd_ok) begin
+                tx_spd  <= spd_s2;
+                tx_live <= 1'b1;
+            end
             tx_ph <= 6'd0;
-        else
-            tx_ph <= (tx_ph >= c_last_ph) ? 6'd0 : tx_ph + 6'd1;
+        end else if (tx_wrap) begin
+            if (spd_ok)
+                tx_spd <= spd_s2;
+            tx_ph <= 6'd0;
+        end else begin
+            tx_ph <= tx_ph + 6'd1;
+        end
     end
 
     // TXC pattern, registered on clk_txc so the TXC cell is fed by a flop on
     // its own clock.
     reg txc_d1, txc_d2;
-    always @(posedge clk_txc) begin
-        if (c_is_1g) begin
+    always @(posedge clk_txc or negedge tx_rst_n_s2) begin
+        if (!tx_rst_n_s2) begin
+            txc_d1 <= 1'b0;
+            txc_d2 <= 1'b0;
+        end else if (!tx_live) begin
+            txc_d1 <= 1'b0;
+            txc_d2 <= 1'b0;
+        end else if (is_1g_tx) begin
             txc_d1 <= 1'b1;
             txc_d2 <= 1'b0;
         end else if (SUPPORT_SLOW) begin
@@ -159,6 +185,19 @@ module rgmii_if #(
             txc_d2 <= 1'b0;
         end
     end
+
+    // clk_125 copy of tx_spd, so the selects in front of the TXD / TX_CTL
+    // cells are timed within clk_125, not from clk_125_90. It lags tx_spd by
+    // one cycle, in which tx_ph is 0 after a change. Between 100M and 10M
+    // that changes nothing: both send TX_EN in slots 0/1 and neither loads
+    // at tx_ph 0. Between 1G and 10/100 the TXD / TX_CTL cells take one more
+    // cycle from the old source, while the line is idle.
+    reg  [1:0] spd_d;
+    always @(posedge clk_125) spd_d <= tx_spd;
+    wire is_1g_d  = SUPPORT_1G  && ((spd_d == 2'b00) || (spd_d == 2'b11));
+    wire is_100_d = SUPPORT_100 && (spd_d == 2'b01);
+    wire [5:0] last_ph_d = is_100_d ? 6'd4 : 6'd49;   // N - 1
+    wire [6:0] tx_n      = is_100_d ? 7'd5 : 7'd50;   // N
 
     // 10/100 data, clk_125 domain. A new nibble, TX_EN and TX_ER are taken
     // once per TXC period, on the cycle that registers its last slot pair, so
@@ -174,7 +213,7 @@ module rgmii_if #(
         txd_slow    <= tx_nib;
         txctl_slow1 <= (tx_s1 < tx_n) ? tx_en_q : (tx_en_q ^ tx_er_q);
         txctl_slow2 <= (tx_s2 < tx_n) ? tx_en_q : (tx_en_q ^ tx_er_q);
-        if (tx_ph == t_last_ph) begin
+        if (tx_ph == last_ph_d) begin
             tx_hi   <= gmii_tx_en && !tx_hi;
             tx_nib  <= tx_hi ? gmii_txd[7:4] : gmii_txd[3:0];
             tx_en_q <= gmii_tx_en;
@@ -184,13 +223,13 @@ module rgmii_if #(
 
     // Speed select in front of the cells. At 1G the cells take gmii_txd,
     // gmii_tx_en and gmii_tx_er directly.
-    wire [3:0] txd_d1   = t_is_1g      ? gmii_txd[3:0]
+    wire [3:0] txd_d1   = is_1g_d      ? gmii_txd[3:0]
                         : SUPPORT_SLOW ? txd_slow : 4'd0;
-    wire [3:0] txd_d2   = t_is_1g      ? gmii_txd[7:4]
+    wire [3:0] txd_d2   = is_1g_d      ? gmii_txd[7:4]
                         : SUPPORT_SLOW ? txd_slow : 4'd0;
-    wire       txctl_d1 = t_is_1g      ? gmii_tx_en
+    wire       txctl_d1 = is_1g_d      ? gmii_tx_en
                         : SUPPORT_SLOW ? txctl_slow1 : 1'b0;
-    wire       txctl_d2 = t_is_1g      ? (gmii_tx_en ^ gmii_tx_er)
+    wire       txctl_d2 = is_1g_d      ? (gmii_tx_en ^ gmii_tx_er)
                         : SUPPORT_SLOW ? txctl_slow2 : 1'b0;
 
     genvar i_tx;

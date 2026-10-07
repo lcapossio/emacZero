@@ -272,6 +272,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | ETH-MAC-SYS | Full integration: AXI-Lite config, MII loopback, stats, MDIO | 10 |
 | RGMII-IF | RGMII DDR pin packing/unpacking at 1G | 14 |
 | RGMII-IF-100M | 100M then 10M RGMII pin loopback, RX clocked by the forwarded TXC: low-nibble-first TX, byte-exact RX pairing, one unbroken `gmii_rx_dv` envelope per burst, TXC period and duty cycle, TXC edges >= 8 ns from data changes | 13 |
+| RGMII-IF-SPEED-SWITCH | `cfg_speed` changed between every pair of 1G / 100M / 10M at all 50 TX counter phases (100M <-> 10M also through `11` for a cycle): every TXC high time is a full pulse of a speed in flight, no short low time, TXC low through reset, a byte-exact burst after each change | 6 |
 | MCAST-FILTER | Multicast hash filter accept/drop behavior | 6 |
 | ETH-MAC-RX-BACKPRESSURE | RX path holds frames when downstream stalls | 3 |
 | ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate | 3 |

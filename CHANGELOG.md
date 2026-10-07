@@ -245,10 +245,12 @@ This project does not yet maintain long-lived release branches.
   10/100 a `clk_125` phase counter drives the nibbles and a TXC pattern
   through the cells, with each TXC edge at least 8 ns from a data change
   (10 ns at 100M with the 90-degree clock); the old 10/100 TXC rose at the
-  instant the data changed. The TX side synchronizes `cfg_speed` into its own
-  clocks. `rgmii_if` now places and routes on xc7a100t, and on xczu7ev with
-  the `XILINX_ULTRASCALE_PLUS` DDR wrappers, for all three `RGMII_SPEEDS`.
-  RGMII is still untested on hardware.
+  instant the data changed. The TX side synchronizes `cfg_speed` and takes a
+  new speed only at the end of a TXC period, so a speed change no longer
+  sends a runt TXC pulse (as short as 4 ns), and TXC stays low through reset
+  instead of running at 125 MHz. `rgmii_if` now places and routes on
+  xc7a100t, and on xczu7ev with the `XILINX_ULTRASCALE_PLUS` DDR wrappers, for
+  all three `RGMII_SPEEDS`. RGMII is still untested on hardware.
 - **The simulation `ddr_output` model sampled `d2` on the falling edge.** The
   7-series `ODDR` (`SAME_EDGE`) and the UltraScale+ `ODDRE1` sample both
   inputs on the rising edge, and the model now does too. The 10/100 RGMII

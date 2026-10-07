@@ -702,6 +702,13 @@ TESTS = [
         "out": "sim/tb_rgmii_if_100m.vvp",
     },
     {
+        "name": "RGMII-IF-SPEED-SWITCH",
+        "srcs": ["rtl/ddr_input.v", "rtl/ddr_output.v", "rtl/rgmii_if.v",
+                 "sim/tb/tb_rgmii_if_speed_switch.v"],
+        "out": "sim/tb_rgmii_if_speed_switch.vvp",
+        "sim_timeout": 60,
+    },
+    {
         "name": "RGMII-IF-VARIANTS",
         "srcs": ["rtl/ddr_input.v", "rtl/ddr_output.v", "rtl/rgmii_if.v",
                  "sim/tb/tb_rgmii_if_variants.v"],
