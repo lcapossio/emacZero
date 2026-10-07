@@ -3,7 +3,8 @@
 // =============================================================================
 // ddr_input.v - Vendor-agnostic DDR input primitive wrapper
 // Captures data on both edges: q1 from rising, q2 from falling.
-// Vendor selection via `define: XILINX_7SERIES, INTEL_CYCLONE
+// Vendor selection via `define: XILINX_7SERIES, XILINX_ULTRASCALE_PLUS,
+// INTEL_CYCLONE
 // Default: behavioral model (simulation-compatible)
 // Verilog 2001
 // =============================================================================
@@ -29,6 +30,21 @@ module ddr_input (
         .D  (d),
         .R  (1'b0),
         .S  (1'b0)
+    );
+`elsif XILINX_ULTRASCALE_PLUS
+    // IDDRE1 SAME_EDGE_PIPELINED matches the 7-series IDDR mode above. CB
+    // takes the same clock, inverted inside the cell.
+    IDDRE1 #(
+        .DDR_CLK_EDGE  ("SAME_EDGE_PIPELINED"),
+        .IS_CB_INVERTED(1'b1),
+        .IS_C_INVERTED (1'b0)
+    ) u_iddr (
+        .Q1 (q1),
+        .Q2 (q2),
+        .C  (clk),
+        .CB (clk),
+        .D  (d),
+        .R  (1'b0)
     );
 `elsif INTEL_CYCLONE
     // -------------------------------------------------------------------------
@@ -60,10 +76,10 @@ module ddr_input (
     assign q1 = q1_r;
     assign q2 = q2_r;
 `else
-    // No DDR primitive selected. Define XILINX_7SERIES (or INTEL_CYCLONE) for
-    // synthesis, or SIM for simulation. q1/q2 are intentionally left undriven so
-    // an accidental synthesis of this file fails loudly instead of silently
-    // inferring a soft model.
+    // No DDR primitive selected. Define XILINX_7SERIES, XILINX_ULTRASCALE_PLUS
+    // (or INTEL_CYCLONE) for synthesis, or SIM for simulation. q1/q2 are
+    // intentionally left undriven so an accidental synthesis of this file
+    // fails loudly instead of silently inferring a soft model.
 `endif
 
 endmodule

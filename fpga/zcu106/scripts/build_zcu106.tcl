@@ -133,7 +133,7 @@ if {$lb} {
 # so it has to be read first.
 read_xdc fpga/zcu106/constraints/refclk_$refclk.xdc
 read_xdc fpga/zcu106/constraints/zcu106.xdc
-set defines {SYNTHESIS=1}
+set defines {SYNTHESIS=1 XILINX_ULTRASCALE_PLUS=1}
 if {$lb} {
     read_xdc fpga/zcu106/constraints/sfp1_lb.xdc
     lappend defines ZCU106_SFP1_LB=1
