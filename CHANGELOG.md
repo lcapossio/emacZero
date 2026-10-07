@@ -7,6 +7,14 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- `ddr_input` / `ddr_output`: an `XILINX_ULTRASCALE_PLUS` branch using
+  `IDDRE1` / `ODDRE1`. Without a vendor define both modules are empty, and
+  a Vivado block-design build keeps the GMII `gmii_txc` forwarder as a
+  black box that fails opt_design DRC even when the pin is unused. The
+  ZCU106 build now defines it; there the unused forwarder is removed by
+  opt_design and the routed result is unchanged. `IDDRE1`, used only by RGMII,
+  has been checked only by placing the bare wrapper on a ZCU106 part; RGMII on
+  UltraScale+ is untested.
 - `fpga/zcu106/`: AMD ZCU106 board port over SFP cage 0 (1000BASE-X). It uses
   `PHY_INTERFACE="GMII"` behind the AMD 1G/2.5G Ethernet PCS/PMA IP on a GTH,
   with the MAC and the ARP/ICMP/UDP-echo demo on the 125 MHz transceiver

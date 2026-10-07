@@ -245,7 +245,8 @@ python build_and_test.py
 
 `build_and_test.py` compiles with `-DSIM` so the behavioral DDR I/O models in
 `ddr_input.v` / `ddr_output.v` are selected. For **synthesis** you must define a
-target instead (`XILINX_7SERIES` for 7-series `IDDR`/`ODDR`, or supply a real
+target instead (`XILINX_7SERIES` for 7-series `IDDR`/`ODDR`,
+`XILINX_ULTRASCALE_PLUS` for UltraScale+ `IDDRE1`/`ODDRE1`, or supply a real
 vendor DDR atom); the `SIM` models are not synthesizable and the `INTEL_CYCLONE`
 branch is a flagged stub, not a real Altera DDIO instance.
 
