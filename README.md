@@ -154,11 +154,11 @@ module eth_mac_sys #(
 
     // RGMII PHY pins (PHY_INTERFACE="RGMII")
     input  wire        clk_125, clk_125_90,
-    input  wire        clk_25,           // 100M reference (cfg_speed=01)
-    input  wire        clk_2_5,          // 10M reference (cfg_speed=10)
-                                         // clk_25 / clk_2_5 must share a source with
-                                         // clk_125 (e.g. one MMCM): they sample the
-                                         // clk_125-domain TX byte directly
+                                         // clk_125_90: 90 deg, same source; TXC
+                                         // clock when 1G is built, unused for
+                                         // RGMII_SPEEDS="10_100"
+    input  wire        clk_25, clk_2_5,  // unused (10/100 TXC is made from
+                                         // clk_125); kept for compatibility
     output wire [3:0]  rgmii_txd,
     output wire        rgmii_tx_ctl, rgmii_txc,
     input  wire [3:0]  rgmii_rxd,
@@ -271,7 +271,7 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | GMII-CDC | GMII CDC bridge: loopback, data integrity, back-to-back | 7 |
 | ETH-MAC-SYS | Full integration: AXI-Lite config, MII loopback, stats, MDIO | 10 |
 | RGMII-IF | RGMII DDR pin packing/unpacking at 1G | 14 |
-| RGMII-IF-100M | 100M RGMII pin loopback: low-nibble-first TX, byte-exact RX pairing, one unbroken `gmii_rx_dv` envelope per burst | 5 |
+| RGMII-IF-100M | 100M then 10M RGMII pin loopback, RX clocked by the forwarded TXC: low-nibble-first TX, byte-exact RX pairing, one unbroken `gmii_rx_dv` envelope per burst, TXC period and duty cycle, TXC edges >= 8 ns from data changes | 13 |
 | MCAST-FILTER | Multicast hash filter accept/drop behavior | 6 |
 | ETH-MAC-RX-BACKPRESSURE | RX path holds frames when downstream stalls | 3 |
 | ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate | 3 |
@@ -292,10 +292,10 @@ branch is a flagged stub, not a real Altera DDIO instance.
 | ETH-MAC-SYS-JUMBO | Integrated jumbo-frame system path | 3 |
 | GMII-CDC-100M | 100M rate adaptation pacing in gmii_cdc | 4 |
 | GMII-CDC-10M | 10M rate adaptation pacing in gmii_cdc | 4 |
-| RGMII-IF-VARIANTS | RGMII speed/DDR variant handling | 6 |
+| RGMII-IF-VARIANTS | `RGMII_SPEEDS` variants: TX_CTL activity per variant, 8 ns TXC for `"1G_ONLY"`, 40 ns TXC from `clk_125` for `"10_100"` | 6 |
 | RGMII-LOOPBACK | Full system + RGMII PHY loopback at 1G | 5 |
-| RGMII-100M-LOOPBACK | Full system + RGMII pin-level loopback at 100M: min/MTU/back-to-back/9018-byte jumbo byte-exact, IFG >= 12 byte times | 12 |
-| RGMII-10M-LOOPBACK | As RGMII-100M-LOOPBACK at 10M (no jumbo) | 11 |
+| RGMII-100M-LOOPBACK | Full system + RGMII pin-level loopback at 100M, RXC = forwarded TXC: min/MTU/back-to-back/9018-byte jumbo byte-exact, IFG >= 12 byte times, TXC period / duty / TXC-to-data distance | 15 |
+| RGMII-10M-LOOPBACK | As RGMII-100M-LOOPBACK at 10M (no jumbo) | 14 |
 | GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er` on the last kept byte, whole-frame drop, EOF-only frames, no merged frames, recovery | 31 |
 | GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, back-to-back frames with IFG >= 12 byte times, oversize gate, GTX_CLK integrity | 27 |
 | GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |

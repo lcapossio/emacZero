@@ -153,6 +153,10 @@ This project does not yet maintain long-lived release branches.
 
 ### Changed
 
+- `eth_mac_sys` no longer uses `clk_25` / `clk_2_5`: the 10/100 RGMII TXC is
+  now made from `clk_125`. The ports stay, so existing instantiations still
+  elaborate; they can be tied off. `rgmii_if` drops them. `clk_125_90` is
+  unused for `RGMII_SPEEDS="10_100"`.
 - **Breaking: gigabit builds need `clk` >= 125 MHz.** `eth_mac_sys` gains
   `CLK_FREQ_HZ` (default 100 MHz) and exposes `RGMII_SPEEDS` (default `"ALL"`).
   A build that can run at 1G - `PHY_INTERFACE="GMII"`, or `"RGMII"` with
@@ -230,6 +234,27 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **RGMII could not be implemented on Xilinx parts.** `rgmii_if` had one set
+  of DDR output cells per speed and picked a set with a mux after the cells,
+  so a LUT sat between each `ODDR` and its pad. Vivado rejects that
+  (`REQP-1884 ODDR_has_invalid_load` on 7-series, `Place 30-1902` on
+  UltraScale+) for every `RGMII_SPEEDS` value, as `"1G_ONLY"` still gated the
+  outputs with `cfg_speed`. RGMII had only run in simulation. Each TX pin now
+  has one DDR cell with the speed select in front of its inputs: TXD and
+  TX_CTL on `clk_125`, TXC on `clk_125_90` (`clk_125` for `"10_100"`). At
+  10/100 a `clk_125` phase counter drives the nibbles and a TXC pattern
+  through the cells, with each TXC edge at least 8 ns from a data change
+  (10 ns at 100M with the 90-degree clock); the old 10/100 TXC rose at the
+  instant the data changed. The TX side synchronizes `cfg_speed` into its own
+  clocks. `rgmii_if` now places and routes on xc7a100t, and on xczu7ev with
+  the `XILINX_ULTRASCALE_PLUS` DDR wrappers, for all three `RGMII_SPEEDS`.
+  RGMII is still untested on hardware.
+- **The simulation `ddr_output` model sampled `d2` on the falling edge.** The
+  7-series `ODDR` (`SAME_EDGE`) and the UltraScale+ `ODDRE1` sample both
+  inputs on the rising edge, and the model now does too. The 10/100 RGMII
+  testbenches clocked RX from the 25 / 2.5 MHz source instead of the
+  forwarded TXC, which hid the edge-aligned 10/100 TXC. They now loop TXC
+  back as RXC and check the TXC period, duty cycle and TXC-to-data distance.
 - **1G transmit ran at 14-byte inter-frame gaps, not 12.** `eth_mac_tx` held
   TX_EN low for its 12 `S_IFG` cycles and then two more in `S_IDLE` (one to
   raise `s_axis_tready`, one for the handshake), so back-to-back frames left

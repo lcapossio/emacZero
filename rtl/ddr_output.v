@@ -41,11 +41,16 @@ module ddr_output (
     always @(negedge clk) q2_r <= d2;
     assign q = clk ? q1_r : q2_r;
 `elsif SIM
-    // Simulation-only behavioral DDR model (not for synthesis). Two single-edge
+    // Simulation-only behavioral DDR model (not for synthesis), SAME_EDGE like
+    // the vendor cells above: d1 and d2 are both sampled on the rising edge,
+    // d1 is driven in the high half and d2 in the low half. Single-edge
     // registers muxed by clk - never drives one register from two clock edges.
-    reg q1_r, q2_r;
-    always @(posedge clk) q1_r <= d1;
-    always @(negedge clk) q2_r <= d2;
+    reg q1_r, q2_r, q2_s;
+    always @(posedge clk) begin
+        q1_r <= d1;
+        q2_s <= d2;
+    end
+    always @(negedge clk) q2_r <= q2_s;
     assign q = clk ? q1_r : q2_r;
 `else
     // No DDR primitive selected. Define XILINX_7SERIES (or INTEL_CYCLONE) for

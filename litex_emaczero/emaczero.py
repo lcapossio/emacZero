@@ -37,10 +37,10 @@ Typical use (MII, Arty A7-style, 100 MHz `sys` clock domain)::
     self.add_interrupt("emaczero")
 
 For a gigabit RGMII target, instantiate with ``phy_interface="RGMII"`` and
-also drive ``clk_125`` / ``clk_125_90`` / ``clk_25`` / ``clk_2_5`` from the
-platform's clock generator. 1G needs the ``sys`` clock at 125 MHz or more; pass
-its frequency as ``clk_freq`` (or ``rgmii_speeds="10_100"`` for a 10/100-only
-build on a slower ``sys`` clock).
+also drive ``clk_125`` / ``clk_125_90`` from the platform's clock generator
+(``clk_25`` / ``clk_2_5`` are no longer used and can stay undriven). 1G needs
+the ``sys`` clock at 125 MHz or more; pass its frequency as ``clk_freq`` (or
+``rgmii_speeds="10_100"`` for a 10/100-only build on a slower ``sys`` clock).
 """
 
 from pathlib import Path
@@ -182,8 +182,8 @@ class EmacZero(LiteXModule):
         # Default to 0 so MII users don't have to wire anything.
         self.clk_125    = Signal()
         self.clk_125_90 = Signal()
-        self.clk_25     = Signal()
-        self.clk_2_5    = Signal()
+        self.clk_25     = Signal()      # unused by the RTL, kept for compatibility
+        self.clk_2_5    = Signal()      # unused by the RTL, kept for compatibility
 
         # ---- Verilog instance ----
         params = dict(

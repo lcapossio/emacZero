@@ -4,8 +4,9 @@
 // tb_rgmii_if_variants.v - Verify the RGMII_SPEEDS parameter
 // Instantiates rgmii_if with each RGMII_SPEEDS value and confirms:
 //   - "ALL"     accepts and operates at all three speeds
-//   - "1G_ONLY" operates at 1G; 100M / 10M paths are tied off
-//   - "10_100"  operates at 10/100; 1G path is tied off
+//   - "1G_ONLY" operates at 1G with a 125 MHz TXC
+//   - "10_100"  operates at 10/100 with a 25 MHz TXC from clk_125 (no
+//     clk_125_90)
 // Verilog 2001
 // =============================================================================
 
@@ -14,30 +15,27 @@
 module tb_rgmii_if_variants;
     reg clk_125 = 0;
     reg clk_125_90 = 0;
-    reg clk_25 = 0;
     reg rst_n = 0;
 
     always #4   clk_125    = ~clk_125;     // 125 MHz
     always #4   clk_125_90 = ~clk_125_90;  // 125 MHz (no real shift in sim)
-    always #20  clk_25     = ~clk_25;      // 25 MHz
 
     reg  [7:0] tx_d  = 0;
     reg        tx_en = 0;
     reg        tx_er = 0;
 
-    // ---- "1G_ONLY" instance: clk_25/clk_2_5 unused ----
+    // ---- "1G_ONLY" instance ----
     wire [3:0] txd_1g_only;
     wire       txctl_1g_only;
+    wire       txc_1g_only;
     rgmii_if #(.RGMII_SPEEDS("1G_ONLY")) u_1g_only (
         .clk_125     (clk_125),
         .clk_125_90  (clk_125_90),
-        .clk_25      (1'b0),
-        .clk_2_5     (1'b0),
         .rst_n       (rst_n),
         .cfg_speed   (2'b00),  // 1G
         .rgmii_txd   (txd_1g_only),
         .rgmii_tx_ctl(txctl_1g_only),
-        .rgmii_txc   (),
+        .rgmii_txc   (txc_1g_only),
         .rgmii_rxd   (4'd0),
         .rgmii_rx_ctl(1'b0),
         .rgmii_rxc   (1'b0),
@@ -53,16 +51,15 @@ module tb_rgmii_if_variants;
     // ---- "10_100" instance, running at 100M ----
     wire [3:0] txd_10_100;
     wire       txctl_10_100;
+    wire       txc_10_100;
     rgmii_if #(.RGMII_SPEEDS("10_100")) u_10_100 (
-        .clk_125     (1'b0),
-        .clk_125_90  (1'b0),
-        .clk_25      (clk_25),
-        .clk_2_5     (1'b0),
+        .clk_125     (clk_125),
+        .clk_125_90  (1'b0),       // unused for 10_100
         .rst_n       (rst_n),
         .cfg_speed   (2'b01),  // 100M
         .rgmii_txd   (txd_10_100),
         .rgmii_tx_ctl(txctl_10_100),
-        .rgmii_txc   (),
+        .rgmii_txc   (txc_10_100),
         .rgmii_rxd   (4'd0),
         .rgmii_rx_ctl(1'b0),
         .rgmii_rxc   (1'b0),
@@ -81,8 +78,6 @@ module tb_rgmii_if_variants;
     rgmii_if #(.RGMII_SPEEDS("ALL")) u_all (
         .clk_125     (clk_125),
         .clk_125_90  (clk_125_90),
-        .clk_25      (clk_25),
-        .clk_2_5     (1'b0),
         .rst_n       (rst_n),
         .cfg_speed   (2'b00),  // 1G
         .rgmii_txd   (txd_all),
@@ -117,10 +112,27 @@ module tb_rgmii_if_variants;
             if (txctl_all === 1'b1)     saw_all_active     <= 1'b1;
         end
     end
-    always @(posedge clk_25) begin
+    always @(posedge clk_125) begin
         if (rst_n) begin
             if (txctl_10_100 === 1'b1) saw_10_100_active <= 1'b1;
         end
+    end
+
+    // TXC period of each variant: 8 ns at 1G, 40 ns at 100M. Measured after
+    // a 10 ps inertial delay, which drops the zero-time glitches of the
+    // behavioral DDR model.
+    wire txc_1g_s, txc_100_s;
+    assign #0.01 txc_1g_s  = txc_1g_only;
+    assign #0.01 txc_100_s = txc_10_100;
+    realtime t_1g, t_100, per_1g, per_100;
+    initial begin t_1g = 0; t_100 = 0; per_1g = 0; per_100 = 0; end
+    always @(posedge txc_1g_s) begin
+        if (rst_n && t_1g > 0) per_1g = $realtime - t_1g;
+        t_1g = $realtime;
+    end
+    always @(posedge txc_100_s) begin
+        if (rst_n && t_100 > 0) per_100 = $realtime - t_100;
+        t_100 = $realtime;
     end
 
     initial begin
@@ -133,12 +145,11 @@ module tb_rgmii_if_variants;
         #50;
 
         // Drive an active byte for several cycles. Hold long enough for
-        // the slow 100M sampling clock to see it.
+        // the 100M path, which takes a nibble every 5 clk_125 cycles.
         @(negedge clk_125);
         tx_d  = 8'hA5;
         tx_en = 1'b1;
-        // Hold across multiple clk_25 cycles
-        repeat (12) @(negedge clk_25);
+        repeat (60) @(negedge clk_125);
         tx_en = 1'b0;
         tx_d  = 8'h00;
 
@@ -168,12 +179,20 @@ module tb_rgmii_if_variants;
             fail_cnt = fail_cnt + 1;
         end
 
-        // Compile-time confirmation the parameter is honored: SUPPORT_*
-        // localparams gate the per-speed generate blocks.
-        $display("PASS: 1G_ONLY synthesis prunes 100M/10M DDR cells");
-        pass_cnt = pass_cnt + 1;
-        $display("PASS: 10_100 synthesis prunes 1G DDR cells");
-        pass_cnt = pass_cnt + 1;
+        if (per_1g > 7.999 && per_1g < 8.001) begin
+            $display("PASS: 1G_ONLY TXC period 8 ns");
+            pass_cnt = pass_cnt + 1;
+        end else begin
+            $display("FAIL: 1G_ONLY TXC period %0.1f ns, expected 8", per_1g);
+            fail_cnt = fail_cnt + 1;
+        end
+        if (per_100 > 39.999 && per_100 < 40.001) begin
+            $display("PASS: 10_100 TXC period 40 ns from clk_125");
+            pass_cnt = pass_cnt + 1;
+        end else begin
+            $display("FAIL: 10_100 TXC period %0.1f ns, expected 40", per_100);
+            fail_cnt = fail_cnt + 1;
+        end
 
         if (fail_cnt == 0) begin
             $display("PASS: %0d tests passed", pass_cnt);
