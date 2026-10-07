@@ -182,6 +182,25 @@ module eth_mac_sys #(
 );
 ```
 
+### RGMII clocks and delays
+
+- `clk_125` and `clk_125_90` must come from the same MMCM or PLL, with
+  `clk_125_90` 90 degrees (2 ns) behind. `rgmii_if` reads its TX phase counter
+  and speed from `clk_125_90` into `clk_125` over a timed 6 ns path, so
+  constrain the two as related clocks: never put them in asynchronous clock
+  groups or set a false path between them.
+- At 1G, TXC leaves 90 degrees after TXD / TX_CTL, which suits a PHY with no TX
+  internal delay. If the PHY's TX delay is on (RGMII-ID or RGMII-TXID, often
+  the strap default), turn it off over MDIO or with the straps, or drive
+  `clk_125_90` from `clk_125` so TXC leaves edge-aligned. At 10/100 every TXC
+  edge stays at least 8 ns from a data change either way.
+- RX samples RXD / RX_CTL on RXC directly, with no IDELAY, so RXC must arrive
+  centred on the data: turn on the PHY's RX internal delay, or delay RXC on
+  the board.
+- `cfg_speed` is synchronized separately into the TX and RX clocks, and the RX
+  copy follows only while RXC runs. Change the speed only while the link is
+  down. TXC switches only at the end of a period, so it never glitches.
+
 `MII_DEBUG` defaults off. When enabled it keeps low-level MII capture counters
 alive inside `mii_if` / `eth_mac` for testbench or bring-up probes; the
 system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
@@ -248,6 +267,15 @@ python build_and_test.py
 target instead (`XILINX_7SERIES` for 7-series `IDDR`/`ODDR`, or supply a real
 vendor DDR atom); the `SIM` models are not synthesizable and the `INTEL_CYCLONE`
 branch is a flagged stub, not a real Altera DDIO instance.
+
+Where Vivado is on `PATH`, `PHASE 1b` also reruns the RGMII testbenches on
+Vivado's own models of the DDR cells, for each family the wrappers support, so
+the behavioral models cannot drift from the real cells unnoticed.
+`python build_and_test.py --impl` also implements `rgmii_if` alone on an
+xc7a100t and an xczu7ev for each `RGMII_SPEEDS` (about 10 minutes): every DDR
+output cell must drive only its output buffer, place and route must complete,
+and the internal paths must meet timing. No board build uses RGMII, so run it
+after changing `rgmii_if.v` or the DDR wrappers.
 
 ### Test Suite
 

@@ -70,9 +70,8 @@ module rgmii_if #(
     localparam SUPPORT_100 = (RGMII_SPEEDS == "ALL") || (RGMII_SPEEDS == "10_100");
     localparam SUPPORT_10  = (RGMII_SPEEDS == "ALL") || (RGMII_SPEEDS == "10_100");
 
-    // RX selects 1G or 10/100 straight from cfg_speed; TX uses a synchronized
-    // copy, taken at TXC period boundaries (below).
-    wire is_1g  = SUPPORT_1G  && ((cfg_speed == 2'b00) || (cfg_speed == 2'b11));
+    // TX and RX each take a synchronized copy of cfg_speed in their own clock
+    // domains (below).
 
     // =========================================================================
     // TX path
@@ -277,7 +276,7 @@ module rgmii_if #(
     );
 
     // =========================================================================
-    // 10/100 nibble pairing (only used when !is_1g)
+    // 10/100 nibble pairing (only used when !rx_is_1g)
     // =========================================================================
     // Synchronize the system reset into the RGMII RX clock domain. rst_n is
     // asynchronous to rgmii_rxc (a PHY-sourced clock); using it directly risks
@@ -288,6 +287,18 @@ module rgmii_if #(
         if (!rst_n) {rx_rst_n_s2, rx_rst_n_s1} <= 2'b00;
         else        {rx_rst_n_s2, rx_rst_n_s1} <= {rx_rst_n_s1, 1'b1};
     end
+
+    // cfg_speed synchronized into rgmii_rxc, which drives the pairing below
+    // and the output select, and is the clock gmii_cdc takes the outputs on.
+    // RX follows a speed change only while RXC runs; the speed is only
+    // changed while the link is down, and a frame cannot arrive before RXC
+    // has run for many cycles.
+    (* ASYNC_REG = "TRUE" *) reg [1:0] spd_rx_s1, spd_rx_s2;
+    always @(posedge rgmii_rxc or negedge rst_n) begin
+        if (!rst_n) {spd_rx_s2, spd_rx_s1} <= 4'd0;
+        else        {spd_rx_s2, spd_rx_s1} <= {spd_rx_s1, cfg_speed};
+    end
+    wire rx_is_1g = SUPPORT_1G && ((spd_rx_s2 == 2'b00) || (spd_rx_s2 == 2'b11));
 
     // rx_dv_lo_pair strobes once per assembled byte; rx_frame_lo is RX_DV
     // delayed one cycle, so it rises before the first strobe and falls after
@@ -307,7 +318,7 @@ module rgmii_if #(
             rx_dv_lo_pair <= 1'b0;
             rx_er_lo_pair <= 1'b0;
             rx_frame_lo   <= 1'b0;
-        end else if (!is_1g) begin
+        end else if (!rx_is_1g) begin
             rx_dv_lo_pair <= 1'b0;
             rx_frame_lo   <= rx_ctl_rising;
             if (rx_ctl_rising) begin
@@ -330,9 +341,9 @@ module rgmii_if #(
     // Output: at 1G use direct DDR pair; at 10/100 use the paired latch.
     // The 1G path matches the original byte-for-byte.
     // =========================================================================
-    assign gmii_rxd   = is_1g ? {rxd_falling, rxd_rising}         : rxd_lo_pair;
-    assign gmii_rx_dv = is_1g ? rx_ctl_rising                     : rx_frame_lo;
-    assign gmii_rx_er = is_1g ? (rx_ctl_rising ^ rx_ctl_falling)  : rx_er_lo_pair;
-    assign gmii_rx_ce = is_1g ? 1'b1                              : rx_dv_lo_pair;
+    assign gmii_rxd   = rx_is_1g ? {rxd_falling, rxd_rising}        : rxd_lo_pair;
+    assign gmii_rx_dv = rx_is_1g ? rx_ctl_rising                    : rx_frame_lo;
+    assign gmii_rx_er = rx_is_1g ? (rx_ctl_rising ^ rx_ctl_falling) : rx_er_lo_pair;
+    assign gmii_rx_ce = rx_is_1g ? 1'b1                             : rx_dv_lo_pair;
 
 endmodule

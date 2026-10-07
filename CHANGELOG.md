@@ -150,6 +150,15 @@ This project does not yet maintain long-lived release branches.
   for on-hardware TX diagnosis. Reads `0` on the RGMII build.
 - `axil_arb2`: a 2:1 AXI4-Lite arbiter, used to share the CSR bus between the
   test sequencer and an EJTAG-AXI debug bridge on the Arty A7 debug build.
+- `build_and_test.py`: `PHASE 1b` reruns the RGMII testbenches on Vivado's
+  models of the DDR cells (`IDDR` / `ODDR`, and `IDDRE1` / `ODDRE1` where the
+  wrappers have the UltraScale+ branch); skipped without Vivado. `--impl`
+  implements `rgmii_if` alone on xc7a100t and xczu7ev for every
+  `RGMII_SPEEDS` (`fpga/scripts/rgmii_impl_check.tcl`) and checks the DDR
+  output cells, place and route, and internal timing.
+- README: RGMII clock and delay requirements (`clk_125_90` related to
+  `clk_125`, 1G TXC skew against PHY TX delay, RX delay expected from the PHY
+  or board).
 
 ### Changed
 
@@ -251,6 +260,9 @@ This project does not yet maintain long-lived release branches.
   instead of running at 125 MHz. `rgmii_if` now places and routes on
   xc7a100t, and on xczu7ev with the `XILINX_ULTRASCALE_PLUS` DDR wrappers, for
   all three `RGMII_SPEEDS`. RGMII is still untested on hardware.
+- `rgmii_if` RX read `cfg_speed` directly in the `rgmii_rxc` domain, with no
+  synchronizer, for the nibble pairing and the output select. It now takes a
+  synchronized copy on `rgmii_rxc`.
 - **The simulation `ddr_output` model sampled `d2` on the falling edge.** The
   7-series `ODDR` (`SAME_EDGE`) and the UltraScale+ `ODDRE1` sample both
   inputs on the rising edge, and the model now does too. The 10/100 RGMII
