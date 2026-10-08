@@ -50,12 +50,12 @@ module tb_eth_mac_rx_byte0;
     eth_mac_rx u_rx (
         .clk(clk), .rst_n(rst_n),
         .gmii_rxd(lb_rxd), .gmii_rx_dv(lb_rx_dv), .gmii_rx_er(lb_rx_er),
-        .our_mac(48'hFE_FF_FF_FF_FF_FF), .promisc(1'b0), .passthrough(1'b0), .jumbo_en(1'b1),
+        .our_mac(48'hFE_FF_FF_FF_FF_FF), .promisc(1'b0), .passthrough(1'b0), .jumbo_en(1'b1), .rx_csum_en(1'b0),
         .mcast_hash_table(64'd0),
         .m_axis_tdata(rx_tdata), .m_axis_tvalid(rx_tvalid), .m_axis_tready(1'b1),
         .m_axis_tlast(rx_tlast), .m_axis_terror(rx_terror), .m_axis_tsof(rx_tsof),
         .stat_done(), .stat_len(), .stat_err_fcs(), .stat_err_align(),
-        .stat_err_overflow(), .stat_err_oversize(),
+        .stat_err_overflow(), .stat_err_oversize(), .stat_err_csum(),
         .stat_is_bcast(), .stat_is_mcast()
     );
 

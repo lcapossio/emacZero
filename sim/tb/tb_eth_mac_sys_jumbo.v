@@ -81,6 +81,7 @@ module tb_eth_mac_sys_jumbo;
         .promisc          (1'b1),                  // accept anything
         .passthrough      (1'b0),
         .jumbo_en         (jumbo_en),
+        .rx_csum_en         (1'b0),
         .mcast_hash_table (64'd0),
         .m_axis_tdata     (rx_tdata),
         .m_axis_tvalid    (rx_tvalid),
@@ -89,7 +90,7 @@ module tb_eth_mac_sys_jumbo;
         .m_axis_terror    (rx_terror),
         .m_axis_tsof      (rx_tsof),
         .stat_done(), .stat_len(), .stat_err_fcs(), .stat_err_align(),
-        .stat_err_overflow(), .stat_err_oversize(),
+        .stat_err_overflow(), .stat_err_oversize(), .stat_err_csum(),
         .stat_is_bcast(), .stat_is_mcast()
     );
 
