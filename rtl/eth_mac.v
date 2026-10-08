@@ -217,6 +217,7 @@ module eth_mac #(
         .promisc          (promisc),
         .passthrough      (1'b0),
         .jumbo_en         (1'b1),       // standalone wrapper: always allow jumbo
+        .rx_csum_en       (1'b0),
         .mcast_hash_table (64'h0),
         .m_axis_tdata     (m_axis_tdata),
         .m_axis_tvalid    (m_axis_tvalid),
@@ -230,6 +231,7 @@ module eth_mac #(
         .stat_err_align    (),
         .stat_err_overflow (),
         .stat_err_oversize (),
+        .stat_err_csum     (),
         .stat_is_bcast     (),
         .stat_is_mcast     ()
     );

@@ -7,7 +7,8 @@ MII (10/100 only), GMII (1000 Mbps only), or RGMII (10/100/1G with runtime
 speed selection).
 Provides AXI4-Stream interfaces, AXI4-Lite register control, MDIO management,
 hardware statistics counters, jumbo-frame support, optional ICMP echo
-responder, and optional IPv4/UDP TX checksum offload.
+responder, and optional TX/RX checksum offload (IPv4 header, TCP, UDP, ICMP,
+ICMPv6 over IPv4 and IPv6).
 
 ## Index
 
@@ -28,7 +29,7 @@ responder, and optional IPv4/UDP TX checksum offload.
 ## Features
 
 - **AXI4-Stream TX/RX** - standard streaming interface for packet data with buffered RX backpressure
-- **AXI4-Lite CSR** - control/status block with runtime MAC address, TX/RX enable, promiscuous mode, **runtime speed select (10/100/1G)**, full-duplex, jumbo-enable, TX-csum-offload
+- **AXI4-Lite CSR** - control/status block with runtime MAC address, TX/RX enable, promiscuous mode, **runtime speed select (10/100/1G)**, full-duplex, jumbo-enable, TX / RX checksum offload
 - **MII PHY interface** - 10/100 Mbps with store-and-forward async FIFOs
   (standard MTU only; jumbo TX requires the GMII or RGMII path)
 - **GMII PHY interface** - 1000 Mbps, registered SDR I/O with forwarded GTX_CLK
@@ -52,7 +53,18 @@ responder, and optional IPv4/UDP TX checksum offload.
   The MII 10/100 path is standard-MTU only: its 4096-byte TX FIFO and RX replay
   buffer cannot buffer a jumbo frame while the slow MII side drains it, so set
   `MAX_FRAME=1518` for MII builds.
-- **TX checksum offload** - optional IPv4 header + UDP checksum patcher (`TX_CSUM_OFFLOAD=1`, `rtl/net/tx_csum_off.v`)
+- **Checksum offload** - optional, per direction. TX (`TX_CSUM_OFFLOAD=1`,
+  `rtl/net/tx_csum_off.v`, CTRL[7]) computes and inserts the IPv4 header
+  checksum and the TCP / UDP / ICMP (IPv4) or TCP / UDP / ICMPv6 (IPv6)
+  checksum, pseudo-header included; RX (`RX_CSUM_OFFLOAD=1`, CTRL[9]) verifies
+  the same checksums and drops a frame that fails, counting it in
+  `RX_ERR_CSUM`. Both handle one 802.1Q / 802.1ad tag and any IPv4 header
+  length. Not covered (left to software): IPv4 fragments (header checksum
+  only), IPv6 packets with extension headers, and tunnels. A UDP-over-IPv4
+  checksum of 0 means "none" on RX; a UDP checksum that computes to 0 is sent
+  as 0xFFFF. The TX side stores each frame whole before sending it (one
+  `MAX_FRAME` of block RAM, a few cycles per frame), since the checksum fields
+  precede the bytes they cover. The checksum logic is `rtl/net/csum_calc.v`.
 - **CRC-32** - IEEE 802.3 FCS generation (TX) and validation (RX)
 - **MDIO master** - PHY register read/write, accessible through AXI4-Lite CSR
 - **Statistics counters** - TX/RX frame count, byte count, CRC error count (32-bit saturating)
@@ -92,7 +104,8 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 | `async_fifo.v` | Gray-pointer async FIFO, first-word-fall-through; `RAM_STYLE="BLOCK"` (block RAM, registered read) or `"DISTRIBUTED"` (LUTRAM) |
 | `mdio_master.v` | MDIO serial interface for PHY register access |
 | `eth_mac.v` | Bare MAC wrapper (TX + RX + MII, no CSR) for simple designs |
-| `tx_csum_off.v` | IPv4/UDP TX checksum insertion helper |
+| `csum_calc.v` | IPv4 header / TCP / UDP / ICMP / ICMPv6 checksum engine shared by TX insert and RX verify |
+| `tx_csum_off.v` | TX checksum offload: stores each frame and inserts its checksums |
 | `net_rx.v` | Ethernet/IPv4/ICMP/UDP parser used by the Arty demo |
 | `icmp_echo.v` | ICMP echo responder |
 | `udp_echo.v` | UDP echo responder |
@@ -113,7 +126,8 @@ module eth_mac_sys #(
     // frame (2048-byte floor) so a jumbo frame survives downstream
     // backpressure; lower to save BRAM on standard-MTU builds.
     parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
-    parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize checksum patcher
+    parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize TX checksum inserter
+    parameter RX_CSUM_OFFLOAD   = 0,      // 1 = synthesize RX checksum checker
     parameter CDC_RAM_STYLE     = "BLOCK",// GMII/RGMII CDC FIFOs: "BLOCK" | "DISTRIBUTED"
     // clk frequency: sets the pause-quanta and MDC dividers. A build that can
     // run at 1G (GMII, or RGMII with RGMII_SPEEDS != "10_100") needs >= 125 MHz
@@ -214,7 +228,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | Offset | Name | R/W | Description |
 |--------|------|-----|-------------|
 | 0x00 | VERSION | RO | 0x0001454D: [31:24] major [23:16] minor [15:0] ID `"EM"` |
-| 0x04 | CTRL | RW | [0] tx_en [1] rx_en [2] promisc [4:3] speed (00=1G,01=100M,10=10M) [5] full_duplex (informational; FD-only MAC) [6] jumbo_en [7] tx_csum_off [8] passthrough |
+| 0x04 | CTRL | RW | [0] tx_en [1] rx_en [2] promisc [4:3] speed (00=1G,01=100M,10=10M) [5] full_duplex (informational; FD-only MAC) [6] jumbo_en [7] tx_csum_off [8] passthrough [9] rx_csum_off |
 | 0x08 | STATUS | RO | [0] tx_active [1] tx_fifo_busy [2] mdio_busy [3] mdio_cmd_dropped (sticky: a GO was written while busy and ignored; cleared by the next successful GO) |
 | 0x0C | MAC_LO | RW | MAC address [31:0] |
 | 0x10 | MAC_HI | RW | MAC address [47:32] |
@@ -227,7 +241,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0x2C | TX_BYTE_CNT | RO/WC | TX byte counter |
 | 0x30 | RX_FRAME_CNT | RO/WC | RX frame counter |
 | 0x34 | RX_BYTE_CNT | RO/WC | RX byte counter |
-| 0x38 | RX_ERR_CNT | RO/WC | RX CRC error counter |
+| 0x38 | RX_ERR_CNT | RO/WC | RX frames delivered with `terror` (FCS, size, `rx_er`, overflow, or checksum with CTRL[9]) |
 | 0x3C | SCRATCH | RW | Read-back test register |
 | 0x40 | IP_ADDR | RW | Demo L3 stack IPv4, `cfg_ip_addr[31:0]` (default 0xC0A889C8 = 192.168.137.200); sets the ARP/ICMP/UDP match address in the example L3 design. Unused by the bare MAC. |
 | 0x44 | MCAST_LO | RW | mcast_hash_table[31:0] (only if MCAST_HASH_FILTER=1) |
@@ -244,6 +258,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0x70 | RX_SIZE_512_1023 | RO/WC | RX frames 512-1023 bytes |
 | 0x74 | RX_SIZE_1024_1518 | RO/WC | RX frames 1024-1518 bytes |
 | 0x78 | RX_SIZE_JUMBO | RO/WC | RX frames > 1518 bytes |
+| 0x80 | RX_ERR_CSUM | RO/WC | RX frames failed for a wrong IPv4 header / TCP / UDP / ICMP / ICMPv6 checksum (CTRL[9], `RX_CSUM_OFFLOAD=1`); counts only frames with no other error |
 | 0x84 | PAUSE_CTRL | RW | [0] tx_send [1] rx_en |
 | 0x88 | PAUSE_QUANTA | RW | [15:0] quanta for next emitted PAUSE frame |
 | 0x8C | PAUSE_RX_CNT | RO/WC | Received PAUSE frames |
@@ -251,7 +266,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0x94 | SAF_DBG | RO | `mii_tx_saf` framer/FIFO debug snapshot (MII path; 0 on RGMII). See [docs/registers.md](docs/registers.md). |
 
 Default CTRL: tx_en=1, rx_en=1, promisc=0, speed=00 (1G), full_duplex=1,
-jumbo_en=0, tx_csum_off=0, passthrough=0  ->  0x23.
+jumbo_en=0, tx_csum_off=0, passthrough=0, rx_csum_off=0  ->  0x23.
 Default MAC: 02:00:00:00:00:01 (locally administered).
 
 ## Simulation
@@ -311,7 +326,7 @@ after changing `rgmii_if.v` or the DDR wrappers.
 | ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate | 3 |
 | ETH-MAC-RX-BYTE0 | RX byte-zero/start-of-frame handling | 4 |
 | MDIO-MASTER | MDIO master read/write protocol, 1-bit shift fix | 10 |
-| TX-CSUM-OFF | Inline IPv4/UDP TX checksum offload patcher | 5 |
+| TX-CSUM-OFF | TX checksum inserter: exact IPv4 header and UDP checksums on a known frame | 5 |
 | NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage: IPv4 header and ICMP checksums, payload cut at the IPv4 total length, `terror` and truncated frames flagged, a frame cut at the end of its IPv4 header not affecting the next | 39 |
 | ICMP-ECHO | ICMP echo responder packet generation | 35 |
 | UDP-IPERF-SINK | iperf2 UDP header parsing, counters, gap tracking | 16 |
@@ -321,8 +336,9 @@ after changing `rgmii_if.v` or the DDR wrappers.
 | AXIL-ARB2 | 2:1 AXI4-Lite arbiter: independent RW channels, concurrency, hammer | 24 |
 | UDP-BLAST-PATH | UDP trigger frame through `net_rx` into `udp_blast` TX | 9 |
 | UDP-STATS-REPLY | binary stats query/clear responder packet generation | 19 |
-| ETH-MAC-SYS-CSUM | Integrated TX checksum-offload path with `TX_CSUM_OFFLOAD=1` | 7 |
+| ETH-MAC-SYS-CSUM | Integrated TX checksum-offload path with `TX_CSUM_OFFLOAD=1`: exact IPv4 and UDP checksums on the wire | 7 |
 | ETH-MAC-SYS-CSUM-BYPASS | Default `TX_CSUM_OFFLOAD=0` path ignores `CTRL[7]` and preserves checksums | 6 |
+| ETH-MAC-SYS-CSUM-LOOP | TX and RX offload through MII loopback: inserted checksums accepted, wrong ones flagged with `terror` and counted in `RX_ERR_CSUM` / `RX_ERR` only with CTRL[9], counter clear | 17 |
 | ETH-MAC-SYS-JUMBO | Integrated jumbo-frame system path | 3 |
 | GMII-CDC-100M | 100M rate adaptation pacing in gmii_cdc | 4 |
 | GMII-CDC-10M | 10M rate adaptation pacing in gmii_cdc | 4 |
@@ -419,7 +435,7 @@ self.add_interrupt("emaczero")
 ```
 
 Supports MII and RGMII, configurable `MAX_FRAME` and multicast hash, MDIO
-exposed as a `TSTriple`, and optional `TX_CSUM_OFFLOAD`. See module docstring in
+exposed as a `TSTriple`, and optional `TX_CSUM_OFFLOAD` / `RX_CSUM_OFFLOAD`. See module docstring in
 [litex_emaczero/emaczero.py](litex_emaczero/emaczero.py) for the full pad contract.
 
 ### Bare-metal driver

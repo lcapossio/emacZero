@@ -14,7 +14,12 @@ module eth_mac_rx #(
     // wrapper's error-drop stage provides the full-frame correctness boundary.
     parameter AXIS_FIFO_ADDR_WIDTH = 11,   // 2048 bytes (BRAM-backed sync FIFO)
     parameter MAX_FRAME_STD       = 1518,  // 802.3 standard
-    parameter MAX_FRAME_JUMBO     = 9018   // typical jumbo MTU + headers
+    parameter MAX_FRAME_JUMBO     = 9018,  // typical jumbo MTU + headers
+    // 1 = build the RX checksum checker (csum_calc.v): with rx_csum_en set, a
+    // frame whose IPv4 header, TCP, UDP, ICMP or ICMPv6 checksum is wrong is
+    // delivered with terror (and dropped by the wrapper's error-drop stage)
+    // and pulses stat_err_csum. 0 = no checker, rx_csum_en ignored.
+    parameter RX_CSUM_OFFLOAD     = 0
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -34,6 +39,9 @@ module eth_mac_rx #(
     // Frame-size policy
     input  wire        jumbo_en,         // 1 = accept up to MAX_FRAME_JUMBO
 
+    // Checksum verification (RX_CSUM_OFFLOAD=1 only), sampled at each SFD
+    input  wire        rx_csum_en,
+
     // Multicast hash table (64 bits). Ignored when MCAST_HASH_FILTER == 0.
     input  wire [63:0] mcast_hash_table,
 
@@ -52,6 +60,7 @@ module eth_mac_rx #(
     output reg         stat_err_align,   // rx_er asserted during frame
     output reg         stat_err_overflow,// FIFO overflow during frame
     output reg         stat_err_oversize,// length > MAX_FRAME (std/jumbo gated)
+    output reg         stat_err_csum,    // IP/L4 checksum wrong, no other error
     output reg         stat_is_bcast,    // dst-MAC = FF:FF:FF:FF:FF:FF
     output reg         stat_is_mcast     // dst-MAC[byte0][LSB]=1 and !bcast
 );
@@ -90,6 +99,7 @@ module eth_mac_rx #(
     reg        rx_overflow_seen;
     reg        is_bcast_r;
     reg        is_mcast_r;
+    reg        csum_en_r;        // rx_csum_en latched at this frame's SFD
 
     wire [47:0] mac_chk = {dst_mac_captured[39:0], gmii_rxd};
     wire [5:0]  mcast_hash_idx = mac_chk[5:0]   ^ mac_chk[11:6]  ^
@@ -184,6 +194,56 @@ module eth_mac_rx #(
     // frame with a garbage FCS, so the wrapper's error-drop stage discards it.
     wire err_undersize_now = (byte_cnt < 14'd64);
 
+    // IP / L4 checksum verdict, from the GMII bytes of the frame (so it does
+    // not depend on what fit in the FIFO). csum_calc's results are final 3
+    // cycles after the datagram's last byte; the datagram must end at least 4
+    // bytes (the FCS) before the frame does, so they are final here at
+    // S_CRC_CHECK. A datagram longer than the frame gets no verdict.
+    wire csum_bad_now;
+    generate
+        if (RX_CSUM_OFFLOAD) begin : g_csum
+            wire        c_done, c_ip4, c_l4_ok, c_l4_udp;
+            wire [13:0] c_l3_end, c_ip_pos, c_l4_pos;
+            wire [15:0] c_ip_sum, c_l4_sum, c_l4_field;
+
+            csum_calc u_csum (
+                .clk         (clk),
+                .rst_n       (rst_n),
+                .in_valid    (state == S_DATA && gmii_rx_dv),
+                .in_idx      (byte_cnt),
+                .in_data     (gmii_rxd),
+                .zero_fields (1'b0),
+                .done        (c_done),
+                .l3_end      (c_l3_end),
+                .ip4         (c_ip4),
+                .ip_sum      (c_ip_sum),
+                .ip_csum_pos (c_ip_pos),
+                .l4_ok       (c_l4_ok),
+                .l4_udp      (c_l4_udp),
+                .l4_sum      (c_l4_sum),
+                .l4_csum_pos (c_l4_pos),
+                .l4_field    (c_l4_field)
+            );
+
+            // Summed with the received checksum in place, a correct datagram
+            // sums to 0xFFFF. A UDP-over-IPv4 checksum of 0 means "none".
+            wire ip_bad = c_ip4 && (c_ip_sum != 16'hFFFF);
+            wire l4_bad = c_l4_ok && !(c_l4_udp && c_ip4 && c_l4_field == 16'h0000) &&
+                          (c_l4_sum != 16'hFFFF);
+            wire whole  = ({1'b0, c_l3_end} + 15'd4 <= {1'b0, byte_cnt});
+            assign csum_bad_now = csum_en_r && c_done && whole && (ip_bad || l4_bad);
+        end else begin : g_no_csum
+            assign csum_bad_now = 1'b0;
+        end
+    endgenerate
+
+    // Counted as a checksum error only when the frame is otherwise sound, so
+    // a frame with a bad FCS (whose checksums are usually wrong too) is not
+    // counted twice.
+    wire err_csum_now = csum_bad_now && !err_fcs_now && !err_align_now &&
+                        !err_overflow_now && !err_oversize_now &&
+                        !err_undersize_now;
+
     // Combinational push request from the receive FSM. This is registered
     // before sync_fifo so MAC filtering does not directly drive the FIFO CE
     // fanout in the same 100 MHz cycle.
@@ -227,7 +287,7 @@ module eth_mac_rx #(
                     push_last = 1'b1;
                     push_err  = err_fcs_now || err_align_now ||
                                 err_overflow_now || err_oversize_now ||
-                                err_undersize_now;
+                                err_undersize_now || csum_bad_now;
                 end
             end
             default: ;
@@ -255,12 +315,14 @@ module eth_mac_rx #(
             rx_overflow_seen <= 1'b0;
             is_bcast_r       <= 1'b0;
             is_mcast_r       <= 1'b0;
+            csum_en_r        <= 1'b0;
             stat_done         <= 1'b0;
             stat_len          <= 14'd0;
             stat_err_fcs      <= 1'b0;
             stat_err_align    <= 1'b0;
             stat_err_overflow <= 1'b0;
             stat_err_oversize <= 1'b0;
+            stat_err_csum     <= 1'b0;
             stat_is_bcast     <= 1'b0;
             stat_is_mcast     <= 1'b0;
             push_en_r         <= 1'b0;
@@ -317,6 +379,7 @@ module eth_mac_rx #(
                         state      <= S_DATA;
                         first_byte <= 1'b1;
                         crc_init   <= 1'b1;
+                        csum_en_r  <= rx_csum_en;
                     end else if (gmii_rxd != 8'h55) begin
                         state <= S_DROP;
                     end
@@ -386,6 +449,7 @@ module eth_mac_rx #(
                         stat_err_align    <= err_align_now;
                         stat_err_overflow <= err_overflow_now;
                         stat_err_oversize <= err_oversize_now;
+                        stat_err_csum     <= err_csum_now;
                         stat_is_bcast     <= is_bcast_r;
                         stat_is_mcast     <= is_mcast_r;
                     end

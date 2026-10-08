@@ -55,6 +55,27 @@ SUITES = {
         "test_module": "test_eth_mac_rx_mcast",
         "env": {"RX_MAX_FRAME_STD": "1518"},
     },
+    "eth_mac_rx_csum": {
+        "toplevel": "eth_mac_rx",
+        "sources": ["crc32.v", "sync_fifo.v", "net/csum_calc.v", "eth_mac_rx.v"],
+        "params": {"MAX_FRAME_STD": 1518, "RX_CSUM_OFFLOAD": 1},
+        "test_module": "test_eth_mac_rx_csum",
+        "env": {},
+    },
+    "csum_calc": {
+        "toplevel": "csum_calc",
+        "sources": ["net/csum_calc.v"],
+        "params": {},
+        "test_module": "test_csum_calc",
+        "env": {},
+    },
+    "tx_csum_off": {
+        "toplevel": "tx_csum_off",
+        "sources": ["sync_fifo.v", "net/csum_calc.v", "net/tx_csum_off.v"],
+        "params": {"MAX_FRAME": 600},
+        "test_module": "test_tx_csum_off",
+        "env": {},
+    },
     "gmii_cdc": {
         "toplevel": "gmii_cdc",
         "sources": ["async_fifo.v", "gmii_cdc.v"],

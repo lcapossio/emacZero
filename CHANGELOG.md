@@ -7,6 +7,26 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- **RX checksum offload** (`RX_CSUM_OFFLOAD=1`, CTRL[9] `rx_csum_off`).
+  `eth_mac_rx` verifies the IPv4 header checksum and the TCP / UDP / ICMP
+  (IPv4) or TCP / UDP / ICMPv6 (IPv6) checksum of each frame, pseudo-header
+  included, with one optional 802.1Q / 802.1ad tag and any IPv4 header length.
+  A frame that fails ends with `terror`, so the error-drop stage discards it,
+  and counts in `RX_ERR` and in the new `RX_ERR_CSUM` CSR at `0x80` (RO,
+  write-any-to-clear with the RX group; frames with another error, such as a
+  bad FCS, are not counted there). The check runs on the GMII bytes as they
+  arrive, so it adds no latency. Not checked: IPv4 fragments (the header
+  checksum still is), IPv6 packets with extension headers, tunnels; a UDP
+  checksum of 0 over IPv4 means "none". `0x80` reads 0 on older cores.
+  `sw/emaczero/emaczero.h`: `EMZ_REG_RX_ERR_CSUM`, `EMZ_CTRL_RX_CSUM_OFF`.
+  LiteX: `rx_csum_offload`.
+- `rtl/net/csum_calc.v`: the checksum engine shared by the TX inserter and
+  the RX checker. New cocotb suites `csum_calc`, `tx_csum_off` and
+  `eth_mac_rx_csum` check it, the inserter and the RX path against a Python
+  reference (`sim/cocotb/lib/csum.py`) on random IPv4 / IPv6 / VLAN /
+  fragmented / padded frames with right and wrong checksums, source bubbles
+  and sink backpressure; `ETH-MAC-SYS-CSUM-LOOP` checks both directions and
+  the CSRs through MII loopback.
 - `ddr_input` / `ddr_output`: an `XILINX_ULTRASCALE_PLUS` branch using
   `IDDRE1` / `ODDRE1`. Without a vendor define both modules are empty, and
   a Vivado block-design build keeps the GMII `gmii_txc` forwarder as a
@@ -170,6 +190,28 @@ This project does not yet maintain long-lived release branches.
 
 ### Changed
 
+- **TX checksum offload is now full** (`TX_CSUM_OFFLOAD=1`, CTRL[7]).
+  `tx_csum_off` used to write only the IPv4 header checksum of a 20-byte
+  header and zero the UDP checksum. It now computes and inserts the IPv4
+  header checksum for any header length and the TCP / UDP / ICMP / ICMPv6
+  checksum over IPv4 or IPv6, with one optional VLAN tag; a UDP checksum that
+  computes to 0 is sent as 0xFFFF. Software that relied on the UDP checksum
+  being zeroed now gets a real one.
+  - The stage now stores frames in a circular buffer with a separate queue of
+    per-frame checksums, so the next frame comes in while the previous one
+    goes out: about 1 byte per clock, against half that before.
+  - With `TX_CSUM_OFFLOAD=1`, `eth_mac_sys` sends every frame through the
+    stage and CTRL[7] is sampled at each frame's first byte. Before, CTRL[7]
+    switched the datapath between two paths, which could split a frame if it
+    changed mid-frame.
+  - A frame longer than `MAX_FRAME` is cut at `MAX_FRAME` and sent without
+    checksums, and the rest is discarded up to its TLAST. Before, its bytes
+    were dropped silently.
+- `eth_mac_sys` / `eth_mac_rx` / `eth_stats` / `axilite_regs`: new
+  `RX_CSUM_OFFLOAD` parameter, `rx_csum_en` input, `stat_err_csum` output,
+  `rx_err_csum_cnt` counter and `cfg_rx_csum_off` (CTRL is 10 bits; its reset
+  value is unchanged). Instantiations of `eth_mac_rx` must add `rx_csum_en`
+  and `stat_err_csum`, and source lists need `rtl/net/csum_calc.v`.
 - `eth_mac_sys` no longer uses `clk_25` / `clk_2_5`: the 10/100 RGMII TXC is
   now made from `clk_125`. The ports stay, so existing instantiations still
   elaborate; they can be tied off. `rgmii_if` drops them. `clk_125_90` is

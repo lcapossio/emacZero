@@ -19,11 +19,14 @@
 //                              reflect the auto-negotiated mode here for
 //                              status, but the bit has no functional effect.
 //                         [6] jumbo_en  (allow >1518-byte frames)
-//                         [7] tx_csum_off (runtime select when
+//                         [7] tx_csum_off (insert IPv4 header / TCP / UDP /
+//                              ICMP / ICMPv6 checksums on TX; needs
 //                              TX_CSUM_OFFLOAD=1)
 //                         [8] passthrough (sniffer mode: bypass MAC filter and
 //                              deliver frames with FCS / size errors anyway,
 //                              still tagged via m_axis_terror)
+//                         [9] rx_csum_off (verify those checksums on RX and
+//                              drop frames that fail; needs RX_CSUM_OFFLOAD=1)
 //   0x08 STATUS     RO    [0] tx_active  [1] tx_fifo_busy  [2] mdio_busy
 //                         [3] mdio_cmd_dropped (sticky: an MDIO GO was written
 //                              while the master was busy and was ignored;
@@ -73,6 +76,8 @@
 //   0x70 RX_SIZE_512_1023  RO/WC
 //   0x74 RX_SIZE_1024_1518 RO/WC
 //   0x78 RX_SIZE_JUMBO     RO/WC  > 1518 bytes
+//   0x80 RX_ERR_CSUM       RO/WC  frames dropped for a wrong IP / L4 checksum
+//                                 (CTRL[9]); otherwise sound frames only
 // =============================================================================
 
 `include "version.vh"
@@ -120,6 +125,7 @@ module axilite_regs #(
     output wire        cfg_jumbo_en,
     output wire        cfg_tx_csum_off,
     output wire        cfg_passthrough,
+    output wire        cfg_rx_csum_off,
     output wire [47:0] cfg_mac_addr,
     output wire [31:0] cfg_ip_addr,          // demo L3 stack IPv4 (0x40 IP_ADDR)
     input  wire [15:0] dbg_saf,               // mii_tx_saf read-side debug (0x94, RO)
@@ -163,6 +169,7 @@ module axilite_regs #(
     input  wire [31:0] stat_rx_size_512_1023_cnt,
     input  wire [31:0] stat_rx_size_1024_1518_cnt,
     input  wire [31:0] stat_rx_size_jumbo_cnt,
+    input  wire [31:0] stat_rx_err_csum_cnt,
     output reg         stat_clr_tx,
     output reg         stat_clr_rx,
 
@@ -219,6 +226,7 @@ module axilite_regs #(
     localparam [5:0] A_RX_SIZE_512_1023 = 6'h1C;  // 0x70
     localparam [5:0] A_RX_SIZE_1024_1518= 6'h1D;  // 0x74
     localparam [5:0] A_RX_SIZE_JUMBO    = 6'h1E;  // 0x78
+    localparam [5:0] A_RX_ERR_CSUM      = 6'h20;  // 0x80
     // PAUSE registers (require ADDR_WIDTH >= 8)
     localparam [5:0] A_PAUSE_CTRL    = 6'h21;  // 0x84
     localparam [5:0] A_PAUSE_QUANTA  = 6'h22;  // 0x88
@@ -237,7 +245,7 @@ module axilite_regs #(
     // =========================================================================
     // [0] tx_en, [1] rx_en, [2] promisc, [4:3] speed, [5] full_duplex,
     // [6] jumbo_en, [7] tx_csum_off, [8] passthrough
-    reg  [8:0]  reg_ctrl;
+    reg  [9:0]  reg_ctrl;
     reg  [31:0] reg_mac_lo;
     reg  [15:0] reg_mac_hi;
     reg  [31:0] reg_ip_addr;
@@ -267,6 +275,7 @@ module axilite_regs #(
     assign cfg_jumbo_en    = reg_ctrl[6];
     assign cfg_tx_csum_off = reg_ctrl[7];
     assign cfg_passthrough = reg_ctrl[8];
+    assign cfg_rx_csum_off = reg_ctrl[9];
     assign cfg_mac_addr    = {reg_mac_hi, reg_mac_lo};
     assign cfg_ip_addr     = reg_ip_addr;
     assign cfg_mcast_hash_table = MCAST_HASH_FILTER ?
@@ -333,7 +342,7 @@ module axilite_regs #(
 
             // tx_en=1, rx_en=1, promisc=0, speed=00 (1G), full_duplex=1,
             // jumbo_en=0, tx_csum_off=0, passthrough=0
-            reg_ctrl       <= 9'b0_0010_0011;
+            reg_ctrl       <= 10'b00_0010_0011;
             reg_mac_lo     <= 32'h00_00_00_01;
             reg_mac_hi     <= 16'h02_00;  // locally administered
             reg_ip_addr    <= 32'hC0_A8_89_C8;  // 192.168.137.200
@@ -387,7 +396,7 @@ module axilite_regs #(
                 w_latched    <= 1'b0;
 
                 case (wr_idx)
-                    A_CTRL:       reg_ctrl       <= strb_merge({23'd0, reg_ctrl}, w_data, w_strb);
+                    A_CTRL:       reg_ctrl       <= strb_merge({22'd0, reg_ctrl}, w_data, w_strb);
                     A_MAC_LO:     reg_mac_lo     <= strb_merge(reg_mac_lo, w_data, w_strb);
                     A_MAC_HI:     reg_mac_hi     <= strb_merge({16'd0, reg_mac_hi}, w_data, w_strb);
                     A_IP_ADDR:    reg_ip_addr    <= strb_merge(reg_ip_addr, w_data, w_strb);
@@ -433,7 +442,8 @@ module axilite_regs #(
                     A_RX_SIZE_256_511,
                     A_RX_SIZE_512_1023,
                     A_RX_SIZE_1024_1518,
-                    A_RX_SIZE_JUMBO: stat_clr_rx <= 1'b1;
+                    A_RX_SIZE_JUMBO,
+                    A_RX_ERR_CSUM: stat_clr_rx <= 1'b1;
                     A_PAUSE_CTRL: begin
                         if (w_strb[0]) begin
                             // [0] tx_send (W1S, self-clearing pulse to eth_pause)
@@ -475,7 +485,7 @@ module axilite_regs #(
                 s_axi_rvalid  <= 1'b1;
 
                 case (s_axi_araddr[ADDR_WIDTH-1:2])  // ADDR_WIDTH-2 bit index
-                    A_CTRL:       s_axi_rdata <= {23'd0, reg_ctrl};
+                    A_CTRL:       s_axi_rdata <= {22'd0, reg_ctrl};
                     A_STATUS:     s_axi_rdata <= {28'd0, mdio_cmd_dropped, mdio_busy,
                                                   sts_tx_fifo_busy, sts_tx_active};
                     A_MAC_LO:     s_axi_rdata <= reg_mac_lo;
@@ -508,6 +518,7 @@ module axilite_regs #(
                     A_RX_SIZE_512_1023:  s_axi_rdata <= stat_rx_size_512_1023_cnt;
                     A_RX_SIZE_1024_1518: s_axi_rdata <= stat_rx_size_1024_1518_cnt;
                     A_RX_SIZE_JUMBO:     s_axi_rdata <= stat_rx_size_jumbo_cnt;
+                    A_RX_ERR_CSUM:       s_axi_rdata <= stat_rx_err_csum_cnt;
                     A_PAUSE_CTRL:        s_axi_rdata <= {30'd0, reg_pause_rx_en, 1'b0};
                     A_PAUSE_QUANTA:      s_axi_rdata <= {16'd0, reg_pause_quanta};
                     A_PAUSE_RX_CNT:      s_axi_rdata <= stat_pause_rx_cnt;

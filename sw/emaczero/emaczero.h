@@ -48,6 +48,7 @@ extern "C" {
 #define EMZ_REG_RX_SIZE_512_1023 0x70u
 #define EMZ_REG_RX_SIZE_1024_1518 0x74u
 #define EMZ_REG_RX_SIZE_JUMBO    0x78u
+#define EMZ_REG_RX_ERR_CSUM      0x80u  /* RO/WC; RX_CSUM_OFFLOAD=1 builds */
 #define EMZ_REG_PAUSE_CTRL       0x84u
 #define EMZ_REG_PAUSE_QUANTA     0x88u
 #define EMZ_REG_PAUSE_RX_CNT     0x8Cu
@@ -74,6 +75,7 @@ extern "C" {
 #define EMZ_CTRL_JUMBO_EN     (1u << 6)
 #define EMZ_CTRL_TX_CSUM_OFF  (1u << 7)
 #define EMZ_CTRL_PASSTHROUGH  (1u << 8)
+#define EMZ_CTRL_RX_CSUM_OFF  (1u << 9)
 
 #define EMZ_SPEED_1G          0x0u
 #define EMZ_SPEED_100M        0x1u
