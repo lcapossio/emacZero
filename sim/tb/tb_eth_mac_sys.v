@@ -2,7 +2,9 @@
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
 // tb_eth_mac_sys.v - Integration testbench for eth_mac_sys.v (MII mode)
-// Tests: AXI-Lite config, frame TX/RX through MII loopback, stats, MDIO, IRQ
+// Tests: AXI-Lite config, frame TX/RX through MII loopback, stats, MDIO, IRQ,
+//        RX_FRAME under a stalled sink, RX_DROP / RX_ERR_OVERFLOW with the RX
+//        FIFO full
 // =============================================================================
 `timescale 1ns / 1ps
 `include "version.vh"
@@ -39,6 +41,7 @@ module tb_eth_mac_sys;
     wire        rx_tlast;
     wire        rx_terror;
     wire        rx_tsof;
+    reg         rx_tready;
 
     // ---- MII (loopback: TX -> RX) ----
     wire [3:0]  mii_txd;
@@ -57,7 +60,9 @@ module tb_eth_mac_sys;
         mii_rx_dv_r <= mii_tx_en;
     end
 
-    eth_mac_sys #(.PHY_INTERFACE("MII")) uut (
+    // 2 KiB RX FIFO (the MAX_FRAME=1518 size) so Test 10 can fill it with a
+    // few frames; the jumbo default would size it at 16 KiB.
+    eth_mac_sys #(.PHY_INTERFACE("MII"), .RX_AXIS_ADDR_WIDTH(11)) uut (
         .clk            (clk),
         .rst_n          (rst_n),
         // AXI4-Lite
@@ -85,7 +90,7 @@ module tb_eth_mac_sys;
         .s_axis_tlast   (tx_tlast),
         .m_axis_tdata   (rx_tdata),
         .m_axis_tvalid  (rx_tvalid),
-        .m_axis_tready  (1'b1),
+        .m_axis_tready  (rx_tready),
         .m_axis_tlast   (rx_tlast),
         .m_axis_terror  (rx_terror),
         .m_axis_tsof    (rx_tsof),
@@ -202,19 +207,58 @@ module tb_eth_mac_sys;
         end
     end
 
+    // RX handshake accounting, independent of the CSR counters: one count per
+    // TLAST accepted (tvalid && tready), split by terror.
+    integer rx_tlast_hs;
+    integer rx_tlast_err_hs;
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            rx_tlast_hs     <= 0;
+            rx_tlast_err_hs <= 0;
+        end else if (rx_tvalid && rx_tready && rx_tlast) begin
+            rx_tlast_hs <= rx_tlast_hs + 1;
+            if (rx_terror)
+                rx_tlast_err_hs <= rx_tlast_err_hs + 1;
+        end
+    end
+
+    // Sink that stalls TLAST_STALL cycles whenever a TLAST word is at the head
+    // (sink_stall_tlast=1), or never accepts (sink_hold=1); otherwise always
+    // ready. Driven on negedge to stay clear of the posedge sampling.
+    localparam TLAST_STALL = 20;
+    reg     sink_stall_tlast;
+    reg     sink_hold;
+    integer tlast_stall_cnt;
+
+    always @(negedge clk) begin
+        if (sink_hold) begin
+            rx_tready <= 1'b0;
+        end else if (sink_stall_tlast && rx_tvalid && rx_tlast &&
+                     tlast_stall_cnt < TLAST_STALL) begin
+            rx_tready       <= 1'b0;
+            tlast_stall_cnt <= tlast_stall_cnt + 1;
+        end else begin
+            rx_tready <= 1'b1;
+            if (rx_tvalid && rx_tlast)
+                tlast_stall_cnt <= 0;
+        end
+    end
+
     // ---- TX frame injection ----
-    // Send a broadcast Ethernet frame: dst=FF:FF:FF:FF:FF:FF, src=02:00:00:00:00:01
-    // payload = incrementing bytes, total 64 bytes (header + payload)
+    // Send an Ethernet frame: dst=dst_mac, src=02:00:00:00:00:01,
+    // payload = incrementing bytes
     task send_frame;
+        input [47:0]  dst_mac;
         input integer payload_len;
         integer k;
         integer total;
         begin
             total = 14 + payload_len; // 6 dst + 6 src + 2 ethertype + payload
             @(negedge clk);
-            // Destination MAC: FF:FF:FF:FF:FF:FF (broadcast)
+            // Destination MAC
             for (k = 0; k < 6; k = k + 1) begin
-                tx_tdata  = 8'hFF;
+                tx_tdata  = dst_mac[47 - 8*k -: 8];
                 tx_tvalid = 1;
                 tx_tlast  = (k == total - 1) ? 1 : 0;
                 @(negedge clk);
@@ -260,6 +304,7 @@ module tb_eth_mac_sys;
         awaddr = 0; awvalid = 0; wdata = 0; wstrb = 0; wvalid = 0; bready = 0;
         araddr = 0; arvalid = 0; rready = 0;
         tx_tdata = 0; tx_tvalid = 0; tx_tlast = 0;
+        rx_tready = 1; sink_stall_tlast = 0; sink_hold = 0; tlast_stall_cnt = 0;
         #100;
         rst_n = 1;
         #100;
@@ -292,7 +337,7 @@ module tb_eth_mac_sys;
         rx_byte_cnt  = 0;
         rx_frame_cnt = 0;
 
-        send_frame(50);  // 14-byte header + 50-byte payload = 64 bytes
+        send_frame(48'hFF_FF_FF_FF_FF_FF, 50);  // 14-byte header + 50-byte payload = 64 bytes
 
         // Wait for frame to traverse MII loopback (takes many cycles at 25 MHz)
         // MII is 4x slower than sys_clk, plus store-and-forward latency
@@ -341,6 +386,63 @@ module tb_eth_mac_sys;
         axi_read(8'h08, rd_result);
         // mdio_busy should be 0 after completion
         check32("STATUS mdio_busy cleared", rd_result & 32'h4, 32'h0);
+
+        // =================================================================
+        // Test 9: RX_FRAME counts each frame once under a stalled sink.
+        // The sink holds tready low for TLAST_STALL cycles with each TLAST
+        // word at the head; RX_FRAME must still rise by one per frame.
+        // =================================================================
+        axi_write(8'h04, 32'h0000_0003);  // tx_en, rx_en, promisc off
+        axi_write(8'h30, 32'd0);          // clear RX stats
+        sink_stall_tlast = 1;
+        rx_tlast_hs = 0;
+        send_frame(48'hFF_FF_FF_FF_FF_FF, 50);
+        send_frame(48'hFF_FF_FF_FF_FF_FF, 50);
+        send_frame(48'hFF_FF_FF_FF_FF_FF, 50);
+        #100000;
+        sink_stall_tlast = 0;
+        check32("TLAST handshakes (stalled sink)", rx_tlast_hs, 32'd3);
+        axi_read(8'h30, rd_result);
+        check32("RX_FRAME (stalled sink)", rd_result, 32'd3);
+        axi_read(8'h38, rd_result);
+        check32("RX_ERR (stalled sink)", rd_result, 32'd0);
+
+        // =================================================================
+        // Test 10: frames dropped whole are counted in RX_DROP.
+        // With the sink holding tready low, eight 414-byte frames for us
+        // arrive at a 2 KiB RX FIFO: four fit, the fifth starts with room
+        // and runs out mid-frame (delivered with terror, RX_ERR_OVERFLOW),
+        // and the last three find no room at their start (RX_DROP). A ninth
+        // frame for another MAC must not be counted anywhere.
+        // =================================================================
+        axi_write(8'h30, 32'd0);          // clear RX stats
+        rx_tlast_hs = 0; rx_tlast_err_hs = 0;
+        sink_hold = 1;
+        begin : fill_fifo
+            integer f;
+            for (f = 0; f < 8; f = f + 1)
+                send_frame(48'hFF_FF_FF_FF_FF_FF, 400);
+        end
+        send_frame(48'h02_00_00_00_00_99, 400);  // not for us
+        // send_frame returns once mii_tx_saf has buffered the frame; wait for
+        // all nine to leave the wire (~35 us each at 100 Mbit/s) before
+        // releasing the sink, then let the FIFO drain.
+        #400000;
+        sink_hold = 0;
+        #100000;
+        check32("TLAST handshakes (FIFO full)", rx_tlast_hs, 32'd5);
+        check32("terror handshakes (FIFO full)", rx_tlast_err_hs, 32'd1);
+        axi_read(8'h30, rd_result);
+        check32("RX_FRAME (FIFO full)", rd_result, 32'd5);
+        axi_read(8'h38, rd_result);
+        check32("RX_ERR (FIFO full)", rd_result, 32'd1);
+        axi_read(8'h50, rd_result);
+        check32("RX_ERR_OVERFLOW (FIFO full)", rd_result, 32'd1);
+        axi_read(8'h7C, rd_result);
+        check32("RX_DROP (FIFO full)", rd_result, 32'd3);
+        axi_write(8'h7C, 32'd0);          // any write clears the RX group
+        axi_read(8'h7C, rd_result);
+        check32("RX_DROP after clear", rd_result, 32'd0);
 
         // =================================================================
         // Summary

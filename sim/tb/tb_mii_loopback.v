@@ -83,7 +83,7 @@ module tb_mii_loopback;
         .m_axis_tlast(mac_rx_last), .m_axis_terror(mac_rx_error), .m_axis_tsof(mac_rx_sof),
         .stat_done(), .stat_len(), .stat_err_fcs(), .stat_err_align(),
         .stat_err_overflow(), .stat_err_oversize(),
-        .stat_is_bcast(), .stat_is_mcast()
+        .stat_is_bcast(), .stat_is_mcast(), .stat_drop()
     );
 
     // Frame to send: ICMP-length (74 bytes, like a real ping)
