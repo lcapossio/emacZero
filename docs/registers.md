@@ -131,7 +131,7 @@ Both are 16-bit values in bits `[15:0]`; upper bits read as 0.
 `IRQ_EN` is a RW mask. `IRQ_STATUS` is W1C. Top-level `irq` is
 `|(IRQ_STATUS & IRQ_EN)`.
 
-## 0x28 / 0x2C / 0x30 / 0x34 / 0x38 - Statistics
+## 0x28 / 0x2C / 0x30 / 0x34 / 0x38 / 0x50 / 0x7C - Statistics
 
 | Offset | Name | Counts |
 |-------:|------|--------|
