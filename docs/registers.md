@@ -76,7 +76,7 @@ across all three on every run.
 | `[2]` | `promisc` | `0` | Accept frames regardless of dst-MAC. |
 | `[4:3]` | `speed` | `00` | `00` = 1G, `01` = 100M, `10` = 10M. |
 | `[5]` | `full_duplex` | `1` | Informational only; MAC is full-duplex by construction. |
-| `[6]` | `jumbo_en` | `0` | Accept frames up to `MAX_FRAME` instead of 1518. |
+| `[6]` | `jumbo_en` | `0` | Accept frames up to `MAX_FRAME` wire bytes instead of 1518 (1522 with an 802.1Q / 802.1ad tag). Both limits count the FCS; jumbo never lowers the limit below the standard one. |
 | `[7]` | `tx_csum_off` | `0` | Runtime select for TX checksum offload when `TX_CSUM_OFFLOAD=1`; no datapath effect when that parameter is 0. |
 | `[8]` | `passthrough` | `0` | Sniffer mode: bypass MAC filter and deliver errored frames tagged via `m_axis_terror`. |
 | `[31:9]` | reserved | `0` | Reads as 0; writes ignored. |

@@ -29,10 +29,11 @@ def _mac(v):
     return v.to_bytes(6, "big")
 
 
-def _frame(dst_int, size=64, corrupt_fcs=False, align_err=False, tag=0xC0):
+def _frame(dst_int, size=64, corrupt_fcs=False, align_err=False, tag=0xC0,
+           etype=0x0800):
     """Build a payload dst+src+type+data of `size` bytes (>=14)."""
     src = _mac(0x0A0B0C0D0E0F)
-    etype = b"\x08\x00"
+    etype = etype.to_bytes(2, "big")
     data = bytes([(tag + i) & 0xFF for i in range(max(0, size - 14))])
     return RxFrame(_mac(dst_int) + src + etype + data,
                    corrupt_fcs=corrupt_fcs, align_err=align_err)
@@ -143,3 +144,22 @@ async def random_mix(dut):
     promisc = rng.random() < 0.3
     await _run(dut, frames, promisc=int(promisc),
                p_stall=rng.choice([0.0, 0.2, 0.5]), rng=rng)
+
+
+@cocotb.test(timeout_time=60, timeout_unit="ms")
+async def random_vlan_limits(dut):
+    """Frame sizes around the standard limit, with and without an 802.1Q /
+    802.1ad tag (or a TPID-like type the MAC must not treat as one), with
+    jumbo_en on and off. A tagged frame may be 4 bytes longer."""
+    seed = random.getrandbits(32)
+    dut._log.info(f"random seed = {seed}")
+    rng = random.Random(seed)
+    frames = []
+    for _ in range(16):
+        wire = rng.choice([MAX_STD - 1, MAX_STD, MAX_STD + 1, MAX_STD + 3,
+                           MAX_STD + 4, MAX_STD + 5, MAX_STD + 40])
+        etype = rng.choice([0x0800, 0x8100, 0x88A8, 0x9100, 0x8101])
+        frames.append(_frame(OUR_MAC, wire - 4, etype=etype,
+                             tag=rng.randrange(256)))
+    await _run(dut, frames, jumbo=int(rng.random() < 0.3),
+               p_stall=rng.choice([0.0, 0.2]), rng=rng)

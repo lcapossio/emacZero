@@ -52,6 +52,8 @@ responder, and optional IPv4/UDP TX checksum offload.
   The MII 10/100 path is standard-MTU only: its 4096-byte TX FIFO and RX replay
   buffer cannot buffer a jumbo frame while the slow MII side drains it, so set
   `MAX_FRAME=1518` for MII builds.
+  `MAX_FRAME` counts the FCS, like the 1518 standard limit. With `jumbo_en=0`
+  RX accepts 1518 bytes, or 1522 with an 802.1Q / 802.1ad tag.
 - **TX checksum offload** - optional IPv4 header + UDP checksum patcher (`TX_CSUM_OFFLOAD=1`, `rtl/net/tx_csum_off.v`)
 - **CRC-32** - IEEE 802.3 FCS generation (TX) and validation (RX)
 - **MDIO master** - PHY register read/write, accessible through AXI4-Lite CSR
@@ -308,7 +310,7 @@ after changing `rgmii_if.v` or the DDR wrappers.
 | RGMII-IF-SPEED-SWITCH | `cfg_speed` changed between every pair of 1G / 100M / 10M at all 50 TX counter phases (100M <-> 10M also through `11` for a cycle): every TXC high time is a full pulse of a speed in flight, no short low time, TXC low through reset, a byte-exact burst after each change | 6 |
 | MCAST-FILTER | Multicast hash filter accept/drop behavior | 6 |
 | ETH-MAC-RX-BACKPRESSURE | RX path holds frames when downstream stalls | 3 |
-| ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate | 3 |
+| ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate; 1518 untagged / 1522 VLAN-tagged standard limit | 9 |
 | ETH-MAC-RX-BYTE0 | RX byte-zero/start-of-frame handling | 4 |
 | MDIO-MASTER | MDIO master read/write protocol, 1-bit shift fix | 10 |
 | TX-CSUM-OFF | Inline IPv4/UDP TX checksum offload patcher | 5 |
@@ -332,6 +334,7 @@ after changing `rgmii_if.v` or the DDR wrappers.
 | RGMII-10M-LOOPBACK | As RGMII-100M-LOOPBACK at 10M (no jumbo) | 14 |
 | GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er` on the last kept byte, whole-frame drop, EOF-only frames, no merged frames, recovery | 31 |
 | GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, back-to-back frames with IFG >= 12 byte times, oversize gate, GTX_CLK integrity | 27 |
+| ETH-MAC-SYS-MAX-FRAME | `eth_mac_sys` with `MAX_FRAME=2000`: RX jumbo limit follows `MAX_FRAME`, VLAN-tagged 1522-byte frame accepted with jumbo off, `RX_ERR_OVERSIZE` | 8 |
 | GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |
 | ZCU106-I2C-INIT | ZCU106 Si5328 I2C write sequence against the register list, NACK retry at the alternate address | 3 |
 | ZCU106-SFP-LB | ZCU106 loopback tester against the emacZero demo back to back: ARP / ICMP / UDP requests all answered exactly, a corrupted reply caught, frames for another MAC / IP / port or with a bad checksum / FCS / `tx_er` ignored, short (padded) payloads echoed exactly | 15 |

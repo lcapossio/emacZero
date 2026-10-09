@@ -13,6 +13,10 @@ module eth_mac_rx #(
     // downstream DMA stalls before declaring an overflow error; the system
     // wrapper's error-drop stage provides the full-frame correctness boundary.
     parameter AXIS_FIFO_ADDR_WIDTH = 11,   // 2048 bytes (BRAM-backed sync FIFO)
+    // Frame-size limits in wire bytes after the SFD, FCS included. A frame
+    // with an 802.1Q / 802.1ad tag may be 4 bytes over MAX_FRAME_STD (1522),
+    // as 802.3 allows. jumbo_en raises the limit to MAX_FRAME_JUMBO, tagged
+    // or not, and never lowers it below the standard one.
     parameter MAX_FRAME_STD       = 1518,  // 802.3 standard
     parameter MAX_FRAME_JUMBO     = 9018   // typical jumbo MTU + headers
 )(
@@ -51,7 +55,8 @@ module eth_mac_rx #(
     output reg         stat_err_fcs,
     output reg         stat_err_align,   // rx_er asserted during frame
     output reg         stat_err_overflow,// FIFO overflow during frame
-    output reg         stat_err_oversize,// length > MAX_FRAME (std/jumbo gated)
+    output reg         stat_err_oversize,// length > MAX_FRAME (std/jumbo gated,
+                                         // std +4 for a VLAN-tagged frame)
     output reg         stat_is_bcast,    // dst-MAC = FF:FF:FF:FF:FF:FF
     output reg         stat_is_mcast     // dst-MAC[byte0][LSB]=1 and !bcast
 );
@@ -90,6 +95,7 @@ module eth_mac_rx #(
     reg        rx_overflow_seen;
     reg        is_bcast_r;
     reg        is_mcast_r;
+    reg        vlan_tag;         // bytes 12-13 are TPID 0x8100 or 0x88A8
 
     wire [47:0] mac_chk = {dst_mac_captured[39:0], gmii_rxd};
     wire [5:0]  mcast_hash_idx = mac_chk[5:0]   ^ mac_chk[11:6]  ^
@@ -176,8 +182,10 @@ module eth_mac_rx #(
     wire err_fcs_now      = (crc_out != 32'hDEBB20E3);
     wire err_align_now    = rx_er_seen;
     wire err_overflow_now = rx_overflow_seen;
-    wire err_oversize_now = (!jumbo_en && (byte_cnt > MAX_FRAME_STD)) ||
-                            (jumbo_en  && (byte_cnt > MAX_FRAME_JUMBO));
+    wire over_std_now     = vlan_tag ? (byte_cnt > MAX_FRAME_STD + 4)
+                                     : (byte_cnt > MAX_FRAME_STD);
+    wire err_oversize_now = over_std_now &&
+                            (!jumbo_en || (byte_cnt > MAX_FRAME_JUMBO));
     // Runt: a valid 802.3 frame is >= 64 wire bytes (60 data/pad + 4 FCS).
     // byte_cnt counts bytes after the SFD, so < 64 is undersized - a collision
     // fragment or truncated frame. Deliver it with terror instead of as a clean
@@ -255,6 +263,7 @@ module eth_mac_rx #(
             rx_overflow_seen <= 1'b0;
             is_bcast_r       <= 1'b0;
             is_mcast_r       <= 1'b0;
+            vlan_tag         <= 1'b0;
             stat_done         <= 1'b0;
             stat_len          <= 14'd0;
             stat_err_fcs      <= 1'b0;
@@ -301,6 +310,7 @@ module eth_mac_rx #(
                     rx_overflow_seen <= 1'b0;
                     is_bcast_r       <= 1'b0;
                     is_mcast_r       <= 1'b0;
+                    vlan_tag         <= 1'b0;
                     if (gmii_rx_dv && gmii_rxd == 8'h55)
                         state <= S_PREAMBLE;
                 end
@@ -353,6 +363,11 @@ module eth_mac_rx #(
                             is_mcast_r <= mac_chk[40] &&
                                           (mac_chk != 48'hFFFFFFFFFFFF);
                         end
+
+                        // delay_pipe5 still holds byte 12 here.
+                        if (byte_cnt == 14'd13)
+                            vlan_tag <= ({delay_pipe5, gmii_rxd} == 16'h8100) ||
+                                        ({delay_pipe5, gmii_rxd} == 16'h88A8);
 
                         delay_pipe5 <= gmii_rxd;
                         delay_pipe4 <= delay_pipe5;

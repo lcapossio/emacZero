@@ -251,6 +251,17 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- RX accepts a full-size VLAN-tagged frame. A frame with an 802.1Q (0x8100)
+  or 802.1ad (0x88A8) tag may be 1522 bytes on the wire with `jumbo_en=0`;
+  RX used to flag it oversize (`terror`, `RX_ERR_OVERSIZE`), so a VLAN trunk
+  lost every max-MTU frame. Untagged frames keep the 1518 limit.
+- RX's jumbo limit now follows `MAX_FRAME`. `eth_mac_sys` and `eth_mac` pass
+  it to `eth_mac_rx`, which used to keep its own 9018-byte limit, so a build
+  with a smaller `MAX_FRAME` and `jumbo_en=1` accepted frames longer than its
+  buffers were sized for. Both limits count the FCS. `jumbo_en` now only
+  raises the limit: with `MAX_FRAME=1518` and `jumbo_en=1` a tagged 1522-byte
+  frame is still accepted. Default builds (`MAX_FRAME=9018`) behave as
+  before.
 - **RGMII could not be implemented on Xilinx parts.** `rgmii_if` had one set
   of DDR output cells per speed and picked a set with a mux after the cells,
   so a LUT sat between each `ODDR` and its pad. Vivado rejects that
