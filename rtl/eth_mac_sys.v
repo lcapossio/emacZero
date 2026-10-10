@@ -38,7 +38,12 @@ module eth_mac_sys #(
     // standard frames. Override smaller to save BRAM when the downstream sink
     // never stalls for a full frame.
     parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
-    parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize IPv4/UDP TX checksum patcher
+    // Checksum offload (IPv4 header, TCP, UDP, ICMP, ICMPv6; IPv4 and IPv6;
+    // one optional VLAN tag). 1 = synthesize the TX inserter (tx_csum_off,
+    // CTRL[7] turns insertion on) / the RX checker (in eth_mac_rx, CTRL[9]
+    // turns dropping on).
+    parameter TX_CSUM_OFFLOAD   = 0,
+    parameter RX_CSUM_OFFLOAD   = 0,
     // GMII/RGMII CDC FIFO storage: "BLOCK" (block RAM) or "DISTRIBUTED"
     // (LUTRAM). Jumbo depths need "BLOCK" to fit and close timing.
     parameter CDC_RAM_STYLE     = "BLOCK",
@@ -146,6 +151,7 @@ module eth_mac_sys #(
     wire        cfg_jumbo_en;
     wire        cfg_tx_csum_off;
     wire        cfg_passthrough;
+    wire        cfg_rx_csum_off;
     wire [47:0] cfg_mac_addr;
     wire [63:0] cfg_mcast_hash_table;
 
@@ -191,6 +197,7 @@ module eth_mac_sys #(
     wire [31:0] stat_rx_size_512_1023_cnt;
     wire [31:0] stat_rx_size_1024_1518_cnt;
     wire [31:0] stat_rx_size_jumbo_cnt;
+    wire [31:0] stat_rx_err_csum_cnt;
 
     // RX classification bus (from eth_mac_rx)
     wire        rx_stat_done;
@@ -199,6 +206,7 @@ module eth_mac_sys #(
     wire        rx_stat_err_align;
     wire        rx_stat_err_overflow;
     wire        rx_stat_err_oversize;
+    wire        rx_stat_err_csum;
     wire        rx_stat_is_bcast;
     wire        rx_stat_is_mcast;
 
@@ -240,9 +248,12 @@ module eth_mac_sys #(
 
     // =========================================================================
     // Optional TX checksum offload.
-    // TX_CSUM_OFFLOAD=0 removes the frame-buffering checksum patcher from
+    // TX_CSUM_OFFLOAD=0 removes the frame-buffering checksum inserter from
     // synthesis; CTRL[7] then reads/writes normally but has no datapath effect.
-    // TX_CSUM_OFFLOAD=1 lets CTRL[7] select the patcher at runtime.
+    // TX_CSUM_OFFLOAD=1 sends every frame through the inserter, which stores
+    // each frame whole (one MAX_FRAME of buffer) and fills in its checksums
+    // when CTRL[7] was set at the frame's first byte. The path never switches
+    // while a frame is in flight, so CTRL[7] may change at any time.
     // =========================================================================
     wire [7:0] user_tx_tdata;
     wire       user_tx_tvalid;
@@ -251,30 +262,23 @@ module eth_mac_sys #(
 
     generate
         if (TX_CSUM_OFFLOAD != 0) begin : gen_tx_csum
-            wire [7:0] csum_m_tdata;
-            wire       csum_m_tvalid;
-            wire       csum_m_tlast;
-            wire       csum_s_tready;
+            wire csum_s_tready;
 
             tx_csum_off #(.MAX_FRAME(MAX_FRAME)) u_tx_csum (
                 .clk           (clk),
                 .rst_n         (rst_n),
                 .enable        (cfg_tx_csum_off),
                 .s_axis_tdata  (s_axis_tdata),
-                .s_axis_tvalid (s_axis_tvalid_gated & cfg_tx_csum_off),
+                .s_axis_tvalid (s_axis_tvalid_gated),
                 .s_axis_tready (csum_s_tready),
                 .s_axis_tlast  (s_axis_tlast),
-                .m_axis_tdata  (csum_m_tdata),
-                .m_axis_tvalid (csum_m_tvalid),
-                .m_axis_tready (s_axis_tready_mac & cfg_tx_csum_off),
-                .m_axis_tlast  (csum_m_tlast)
+                .m_axis_tdata  (user_tx_tdata),
+                .m_axis_tvalid (user_tx_tvalid),
+                .m_axis_tready (user_tx_tready),
+                .m_axis_tlast  (user_tx_tlast)
             );
 
-            assign user_tx_tdata  = cfg_tx_csum_off ? csum_m_tdata  : s_axis_tdata;
-            assign user_tx_tvalid = cfg_tx_csum_off ? csum_m_tvalid : s_axis_tvalid_gated;
-            assign user_tx_tlast  = cfg_tx_csum_off ? csum_m_tlast  : s_axis_tlast;
-            assign s_axis_tready  = cfg_tx_csum_off ? (csum_s_tready & cfg_tx_en)
-                                                    : (user_tx_tready & cfg_tx_en);
+            assign s_axis_tready = csum_s_tready & cfg_tx_en;
         end else begin : gen_no_tx_csum
             assign user_tx_tdata  = s_axis_tdata;
             assign user_tx_tvalid = s_axis_tvalid_gated;
@@ -320,7 +324,8 @@ module eth_mac_sys #(
     // =========================================================================
     eth_mac_rx #(
         .MCAST_HASH_FILTER   (MCAST_HASH_FILTER),
-        .AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH)
+        .AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH),
+        .RX_CSUM_OFFLOAD     (RX_CSUM_OFFLOAD)
     ) u_mac_rx (
         .clk              (clk),
         .rst_n            (rst_n),
@@ -331,6 +336,7 @@ module eth_mac_sys #(
         .promisc          (cfg_promisc),
         .passthrough      (cfg_passthrough),
         .jumbo_en         (cfg_jumbo_en),
+        .rx_csum_en       (cfg_rx_csum_off),
         .mcast_hash_table (cfg_mcast_hash_table),
         .m_axis_tdata     (m_axis_tdata_mac),
         .m_axis_tvalid    (m_axis_tvalid_mac),
@@ -344,6 +350,7 @@ module eth_mac_sys #(
         .stat_err_align    (rx_stat_err_align),
         .stat_err_overflow (rx_stat_err_overflow),
         .stat_err_oversize (rx_stat_err_oversize),
+        .stat_err_csum     (rx_stat_err_csum),
         .stat_is_bcast     (rx_stat_is_bcast),
         .stat_is_mcast     (rx_stat_is_mcast)
     );
@@ -786,6 +793,7 @@ module eth_mac_sys #(
         .rx_stat_err_align    (rx_stat_err_align),
         .rx_stat_err_overflow (rx_stat_err_overflow),
         .rx_stat_err_oversize (rx_stat_err_oversize),
+        .rx_stat_err_csum     (rx_stat_err_csum),
         .rx_stat_is_bcast     (rx_stat_is_bcast),
         .rx_stat_is_mcast     (rx_stat_is_mcast),
         .tx_frame_cnt   (stat_tx_frame_cnt),
@@ -796,6 +804,7 @@ module eth_mac_sys #(
         .rx_err_align_cnt      (stat_rx_err_align_cnt),
         .rx_err_overflow_cnt   (stat_rx_err_overflow_cnt),
         .rx_err_oversize_cnt   (stat_rx_err_oversize_cnt),
+        .rx_err_csum_cnt       (stat_rx_err_csum_cnt),
         .rx_bcast_cnt          (stat_rx_bcast_cnt),
         .rx_mcast_cnt          (stat_rx_mcast_cnt),
         .rx_size_64_cnt        (stat_rx_size_64_cnt),
@@ -851,6 +860,7 @@ module eth_mac_sys #(
         .cfg_jumbo_en          (cfg_jumbo_en),
         .cfg_tx_csum_off       (cfg_tx_csum_off),
         .cfg_passthrough       (cfg_passthrough),
+        .cfg_rx_csum_off       (cfg_rx_csum_off),
         .cfg_mac_addr          (cfg_mac_addr),
         .cfg_ip_addr           (cfg_ip_addr),
         .dbg_saf               (dbg_mii_tx_saf),
@@ -881,6 +891,7 @@ module eth_mac_sys #(
         .stat_rx_size_256_511_cnt   (stat_rx_size_256_511_cnt),
         .stat_rx_size_512_1023_cnt  (stat_rx_size_512_1023_cnt),
         .stat_rx_size_1024_1518_cnt (stat_rx_size_1024_1518_cnt),
+        .stat_rx_err_csum_cnt     (stat_rx_err_csum_cnt),
         .stat_rx_size_jumbo_cnt     (stat_rx_size_jumbo_cnt),
         .cfg_pause_rx_en      (cfg_pause_rx_en),
         .cfg_pause_tx_send    (cfg_pause_tx_send),

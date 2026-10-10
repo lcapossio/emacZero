@@ -65,7 +65,7 @@ handling, and release traceability.
 | CDC and FIFO behavior | `ASYNC-FIFO`, `GMII-CDC`, `GMII-CDC-RX-OVERFLOW`, `GMII-RX-LINE-RATE`, `MII-RX-REPLAY-STRESS` |
 | RGMII speed handling | `RGMII-IF`, `RGMII-IF-100M`, `RGMII-IF-SPEED-SWITCH`, `RGMII-IF-VARIANTS`, `RGMII-LOOPBACK`, `RGMII-100M-LOOPBACK`, `RGMII-10M-LOOPBACK` |
 | Optional L3 helper behavior | `NET-RX`, `ICMP-ECHO`, `UDP-IPERF-SINK`, `UDP-BLAST-*`, `UDP-STATS-REPLY` |
-| TX checksum offload | `TX-CSUM-OFF`, `ETH-MAC-SYS-CSUM`, `ETH-MAC-SYS-CSUM-BYPASS` |
+| TX / RX checksum offload | `TX-CSUM-OFF`, `ETH-MAC-SYS-CSUM`, `ETH-MAC-SYS-CSUM-BYPASS`, `ETH-MAC-SYS-CSUM-LOOP`; cocotb `csum_calc`, `tx_csum_off`, `eth_mac_rx_csum` |
 
 ## Release Checklist
 

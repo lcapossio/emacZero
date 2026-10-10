@@ -35,6 +35,7 @@ module eth_stats #(
     input  wire        rx_stat_err_align,
     input  wire        rx_stat_err_overflow,
     input  wire        rx_stat_err_oversize,
+    input  wire        rx_stat_err_csum,
     input  wire        rx_stat_is_bcast,
     input  wire        rx_stat_is_mcast,
 
@@ -49,6 +50,7 @@ module eth_stats #(
     output reg  [STAT_CNT_W-1:0] rx_err_align_cnt,
     output reg  [STAT_CNT_W-1:0] rx_err_overflow_cnt,
     output reg  [STAT_CNT_W-1:0] rx_err_oversize_cnt,
+    output reg  [STAT_CNT_W-1:0] rx_err_csum_cnt,       // wrong IP / L4 checksum
 
     // RX bcast/mcast
     output reg  [STAT_CNT_W-1:0] rx_bcast_cnt,
@@ -133,6 +135,7 @@ module eth_stats #(
             rx_err_align_cnt      <= {STAT_CNT_W{1'b0}};
             rx_err_overflow_cnt   <= {STAT_CNT_W{1'b0}};
             rx_err_oversize_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_err_csum_cnt       <= {STAT_CNT_W{1'b0}};
             rx_bcast_cnt          <= {STAT_CNT_W{1'b0}};
             rx_mcast_cnt          <= {STAT_CNT_W{1'b0}};
             rx_size_64_cnt        <= {STAT_CNT_W{1'b0}};
@@ -146,6 +149,7 @@ module eth_stats #(
             rx_err_align_cnt      <= {STAT_CNT_W{1'b0}};
             rx_err_overflow_cnt   <= {STAT_CNT_W{1'b0}};
             rx_err_oversize_cnt   <= {STAT_CNT_W{1'b0}};
+            rx_err_csum_cnt       <= {STAT_CNT_W{1'b0}};
             rx_bcast_cnt          <= {STAT_CNT_W{1'b0}};
             rx_mcast_cnt          <= {STAT_CNT_W{1'b0}};
             rx_size_64_cnt        <= {STAT_CNT_W{1'b0}};
@@ -159,6 +163,7 @@ module eth_stats #(
             if (rx_stat_err_align)    rx_err_align_cnt    <= `SAT_INC(rx_err_align_cnt);
             if (rx_stat_err_overflow) rx_err_overflow_cnt <= `SAT_INC(rx_err_overflow_cnt);
             if (rx_stat_err_oversize) rx_err_oversize_cnt <= `SAT_INC(rx_err_oversize_cnt);
+            if (rx_stat_err_csum)     rx_err_csum_cnt     <= `SAT_INC(rx_err_csum_cnt);
             if (rx_stat_is_bcast)     rx_bcast_cnt        <= `SAT_INC(rx_bcast_cnt);
             if (rx_stat_is_mcast)     rx_mcast_cnt        <= `SAT_INC(rx_mcast_cnt);
 

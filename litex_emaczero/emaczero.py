@@ -63,6 +63,7 @@ CORE_SOURCES = [
     "rtl/async_fifo.v",
     "rtl/sync_fifo.v",
     "rtl/mii_if.v",
+    "rtl/net/csum_calc.v",
     "rtl/eth_mac_rx.v",
     "rtl/eth_mac_tx.v",
     "rtl/eth_mac.v",
@@ -132,8 +133,11 @@ class EmacZero(LiteXModule):
         Pass-through to ``MAX_FRAME``. Default 9018 covers jumbo.
     tx_csum_offload : int
         Pass-through to ``TX_CSUM_OFFLOAD``. Default 0 removes the frame-
-        buffering IPv4/UDP checksum patcher; set 1 if firmware will use
-        CTRL[7].
+        buffering TX checksum inserter (IPv4 header, TCP, UDP, ICMP, ICMPv6);
+        set 1 if firmware will use CTRL[7].
+    rx_csum_offload : int
+        Pass-through to ``RX_CSUM_OFFLOAD``. Default 0 removes the RX
+        checksum checker; set 1 if firmware will use CTRL[9].
     clk_freq : int or float
         Frequency of the ``sys`` clock domain in Hz, passed as
         ``CLK_FREQ_HZ``. Sets the PAUSE-quantum and MDC dividers, and must be
@@ -149,6 +153,7 @@ class EmacZero(LiteXModule):
                  mcast_hash_filter=0,
                  max_frame=9018,
                  tx_csum_offload=0,
+                 rx_csum_offload=0,
                  clk_freq=100e6,
                  rgmii_speeds="ALL"):
         if phy_interface not in ("MII", "RGMII"):
@@ -191,6 +196,7 @@ class EmacZero(LiteXModule):
             p_MCAST_HASH_FILTER = mcast_hash_filter,
             p_MAX_FRAME         = max_frame,
             p_TX_CSUM_OFFLOAD   = tx_csum_offload,
+            p_RX_CSUM_OFFLOAD   = rx_csum_offload,
             p_CLK_FREQ_HZ       = int(clk_freq),
             p_RGMII_SPEEDS      = rgmii_speeds,
 
