@@ -11,9 +11,10 @@ This project does not yet maintain long-lived release branches.
   dropped whole because the RX FIFO had no room at their start, which
   happens while the AXIS sink holds `m_axis_tready` low (e.g. a DMA with no
   free buffer). These frames produced no AXIS words and no stat pulse, so
-  until now they were in no counter at all. `eth_mac_rx` gains a `stat_drop`
+  until now they were in no frame counter (only RX_BYTE saw their bytes). `eth_mac_rx` gains a `stat_drop`
   output and `eth_stats` an `rx_drop_cnt` counter in the RX clear group.
-  `RX_FRAME + RX_DROP` now accounts for every frame for this station. The
+  Once the RX FIFO has drained, `RX_FRAME + RX_DROP` accounts for every frame
+  for this station. The
   VERSION value is unchanged; `0x7C` reads 0 on older cores, so software can
   add it to its totals unconditionally (`EMZ_REG_RX_DROP` in `emaczero.h`).
 

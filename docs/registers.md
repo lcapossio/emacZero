@@ -137,16 +137,19 @@ Both are 16-bit values in bits `[15:0]`; upper bits read as 0.
 |-------:|------|--------|
 | `0x28` | TX_FRAME | Frames accepted by TX. |
 | `0x2C` | TX_BYTE | Payload + header bytes transmitted. |
-| `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. |
+| `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. While RX is disabled (CTRL[1]=0) the MAC drains its own FIFO with `m_axis_tvalid` held low, and frames drained that way are counted here too. |
 | `0x34` | RX_BYTE | Bytes with `rx_dv` on the MAC's GMII input, whether or not the frame is delivered. |
-| `0x38` | RX_ERR | Frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, oversize, runt). |
+| `0x38` | RX_ERR | Frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, oversize, runt), counted on the same handshake as RX_FRAME, including frames drained while RX is disabled. |
 | `0x50` | RX_ERR_OVERFLOW | Frames that started with RX FIFO room and ran out mid-frame: truncated and delivered with terror, so also in RX_FRAME and RX_ERR. |
-| `0x7C` | RX_DROP | Frames that passed the MAC filter but found no RX FIFO room at their start, because the sink held `m_axis_tready` low. Dropped whole: no AXIS words, so they are in no other RX counter. Counted whatever their FCS or length. |
+| `0x7C` | RX_DROP | Frames that passed the MAC filter but found no RX FIFO room at their start, because the sink held `m_axis_tready` low. Dropped whole: no AXIS words, so they are in no other RX frame or classification counter (RX_BYTE does include their bytes). Counted whatever their FCS or length. |
 
 Every frame that passes the MAC filter ends up in exactly one of RX_FRAME or
-RX_DROP, so `RX_FRAME + RX_DROP` is the number of frames for this station, and
-`RX_DROP + RX_ERR` is the number not delivered clean. Frames for other
-addresses and fragments shorter than 6 bytes are in neither.
+RX_DROP, so once the RX FIFO has drained, `RX_FRAME + RX_DROP` is the number
+of frames for this station and `RX_DROP + RX_ERR` the number not delivered
+clean. A frame still waiting in the FIFO is in neither until the sink takes
+its TLAST, and the totals only hold between clears and below saturation.
+Frames for other addresses and fragments shorter than 6 bytes are in
+neither.
 
 RX_DROP was added after the original map. On a core without it, `0x7C` reads
 0 (unmapped offsets read 0), so software can add it to its totals

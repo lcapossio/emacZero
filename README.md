@@ -244,7 +244,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0x70 | RX_SIZE_512_1023 | RO/WC | RX frames 512-1023 bytes |
 | 0x74 | RX_SIZE_1024_1518 | RO/WC | RX frames 1024-1518 bytes |
 | 0x78 | RX_SIZE_JUMBO | RO/WC | RX frames > 1518 bytes |
-| 0x7C | RX_DROP | RO/WC | RX frames for us dropped whole: no RX FIFO room at their start (sink stalled). In no other RX counter |
+| 0x7C | RX_DROP | RO/WC | RX frames for us dropped whole: no RX FIFO room at their start (sink stalled). In no other RX frame counter (RX_BYTE includes their bytes) |
 | 0x84 | PAUSE_CTRL | RW | [0] tx_send [1] rx_en |
 | 0x88 | PAUSE_QUANTA | RW | [15:0] quanta for next emitted PAUSE frame |
 | 0x8C | PAUSE_RX_CNT | RO/WC | Received PAUSE frames |
@@ -303,7 +303,7 @@ after changing `rgmii_if.v` or the DDR wrappers.
 | ETH-STATS | Statistics counters: increment, saturation, clear | 19 |
 | AXILITE-REGS | AXI4-Lite CSR: all register behaviors | 35 |
 | GMII-CDC | GMII CDC bridge: loopback, data integrity, back-to-back | 7 |
-| ETH-MAC-SYS | Full integration: AXI-Lite config, MII loopback, stats, MDIO | 10 |
+| ETH-MAC-SYS | Full integration: AXI-Lite config, MII loopback, stats, MDIO | 27 |
 | RGMII-IF | RGMII DDR pin packing/unpacking at 1G | 14 |
 | RGMII-IF-100M | 100M then 10M RGMII pin loopback, RX clocked by the forwarded TXC: low-nibble-first TX, byte-exact RX pairing, one unbroken `gmii_rx_dv` envelope per burst, TXC period and duty cycle, TXC edges >= 8 ns from data changes | 13 |
 | RGMII-IF-SPEED-SWITCH | `cfg_speed` changed between every pair of 1G / 100M / 10M at all 50 TX counter phases (100M <-> 10M also through `11` for a cycle): every TXC high time is a full pulse of a speed in flight, no short low time, TXC low through reset, a byte-exact burst after each change | 6 |

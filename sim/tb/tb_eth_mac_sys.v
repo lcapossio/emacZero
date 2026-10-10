@@ -228,11 +228,12 @@ module tb_eth_mac_sys;
     // ready. Driven on negedge to stay clear of the posedge sampling.
     localparam TLAST_STALL = 20;
     reg     sink_stall_tlast;
+    reg     sink_park_tlast;    // hold tready low on a TLAST word until cleared
     reg     sink_hold;
     integer tlast_stall_cnt;
 
     always @(negedge clk) begin
-        if (sink_hold) begin
+        if (sink_hold || (sink_park_tlast && rx_tvalid && rx_tlast)) begin
             rx_tready <= 1'b0;
         end else if (sink_stall_tlast && rx_tvalid && rx_tlast &&
                      tlast_stall_cnt < TLAST_STALL) begin
@@ -304,7 +305,8 @@ module tb_eth_mac_sys;
         awaddr = 0; awvalid = 0; wdata = 0; wstrb = 0; wvalid = 0; bready = 0;
         araddr = 0; arvalid = 0; rready = 0;
         tx_tdata = 0; tx_tvalid = 0; tx_tlast = 0;
-        rx_tready = 1; sink_stall_tlast = 0; sink_hold = 0; tlast_stall_cnt = 0;
+        rx_tready = 1; sink_stall_tlast = 0; sink_park_tlast = 0; sink_hold = 0;
+        tlast_stall_cnt = 0;
         #100;
         rst_n = 1;
         #100;
@@ -443,6 +445,32 @@ module tb_eth_mac_sys;
         axi_write(8'h7C, 32'd0);          // any write clears the RX group
         axi_read(8'h7C, rd_result);
         check32("RX_DROP after clear", rd_result, 32'd0);
+
+        // =================================================================
+        // Test 11: an errored frame is counted once, when the sink takes its
+        // TLAST. A 1518-byte AXIS frame is 1522 bytes on the wire, oversize
+        // with jumbo_en=0. The sink parks on its TLAST word: RX_FRAME and
+        // RX_ERR must stay 0 while it waits there, then read 1.
+        // =================================================================
+        axi_write(8'h30, 32'd0);          // clear RX stats
+        rx_tlast_hs = 0; rx_tlast_err_hs = 0;
+        sink_park_tlast = 1;
+        send_frame(48'hFF_FF_FF_FF_FF_FF, 1504);
+        #200000;                          // ~125 us on the wire, then parked
+        check32("TLAST handshakes (TLAST parked)", rx_tlast_hs, 32'd0);
+        axi_read(8'h30, rd_result);
+        check32("RX_FRAME (TLAST parked)", rd_result, 32'd0);
+        axi_read(8'h38, rd_result);
+        check32("RX_ERR (TLAST parked)", rd_result, 32'd0);
+        sink_park_tlast = 0;
+        #1000;
+        check32("terror handshakes (released)", rx_tlast_err_hs, 32'd1);
+        axi_read(8'h30, rd_result);
+        check32("RX_FRAME (released)", rd_result, 32'd1);
+        axi_read(8'h38, rd_result);
+        check32("RX_ERR (released)", rd_result, 32'd1);
+        axi_read(8'h54, rd_result);
+        check32("RX_ERR_OVERSIZE (released)", rd_result, 32'd1);
 
         // =================================================================
         // Summary
