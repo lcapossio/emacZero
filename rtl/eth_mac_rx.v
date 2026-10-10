@@ -186,6 +186,17 @@ module eth_mac_rx #(
                                      : (byte_cnt > MAX_FRAME_STD);
     wire err_oversize_now = over_std_now &&
                             (!jumbo_en || (byte_cnt > MAX_FRAME_JUMBO));
+
+    // byte_cnt saturates at 16383, so a limit of 16383 or more could never be
+    // exceeded and oversize frames would pass clean. Verilog-2001 has no
+    // elaboration-time $error, so an unsupported limit instantiates a module
+    // that does not exist; its name is the error message.
+    generate
+        if ((MAX_FRAME_JUMBO > 16382) || (MAX_FRAME_STD + 4 > 16382)) begin : gen_limit_check
+            EMACZERO_CONFIG_ERROR_eth_mac_rx_frame_limit_must_be_at_most_16382
+                u_frame_limit_too_large ();
+        end
+    endgenerate
     // Runt: a valid 802.3 frame is >= 64 wire bytes (60 data/pad + 4 FCS).
     // byte_cnt counts bytes after the SFD, so < 64 is undersized - a collision
     // fragment or truncated frame. Deliver it with terror instead of as a clean

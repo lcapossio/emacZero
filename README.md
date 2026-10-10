@@ -52,8 +52,12 @@ responder, and optional IPv4/UDP TX checksum offload.
   The MII 10/100 path is standard-MTU only: its 4096-byte TX FIFO and RX replay
   buffer cannot buffer a jumbo frame while the slow MII side drains it, so set
   `MAX_FRAME=1518` for MII builds.
-  `MAX_FRAME` counts the FCS, like the 1518 standard limit. With `jumbo_en=0`
-  RX accepts 1518 bytes, or 1522 with an 802.1Q / 802.1ad tag.
+  On RX, `MAX_FRAME` is the wire size with the FCS, like the 1518 standard
+  limit: with `jumbo_en=1` RX accepts up to `MAX_FRAME` bytes, with
+  `jumbo_en=0` 1518, or 1522 with an 802.1Q / 802.1ad tag. TX counts the same
+  parameter in AXIS bytes, before the FCS it appends, so it can send a frame
+  4 bytes longer than an identically built RX accepts. `MAX_FRAME` must be at
+  most 16382; a larger value is an elaboration error.
 - **TX checksum offload** - optional IPv4 header + UDP checksum patcher (`TX_CSUM_OFFLOAD=1`, `rtl/net/tx_csum_off.v`)
 - **CRC-32** - IEEE 802.3 FCS generation (TX) and validation (RX)
 - **MDIO master** - PHY register read/write, accessible through AXI4-Lite CSR
@@ -310,7 +314,7 @@ after changing `rgmii_if.v` or the DDR wrappers.
 | RGMII-IF-SPEED-SWITCH | `cfg_speed` changed between every pair of 1G / 100M / 10M at all 50 TX counter phases (100M <-> 10M also through `11` for a cycle): every TXC high time is a full pulse of a speed in flight, no short low time, TXC low through reset, a byte-exact burst after each change | 6 |
 | MCAST-FILTER | Multicast hash filter accept/drop behavior | 6 |
 | ETH-MAC-RX-BACKPRESSURE | RX path holds frames when downstream stalls | 3 |
-| ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate; 1518 untagged / 1522 VLAN-tagged standard limit | 9 |
+| ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate; 1518 untagged / 1522 VLAN-tagged standard limit; jumbo with a 1518 limit keeps the VLAN allowance; oversize stat pulses | 15 |
 | ETH-MAC-RX-BYTE0 | RX byte-zero/start-of-frame handling | 4 |
 | MDIO-MASTER | MDIO master read/write protocol, 1-bit shift fix | 10 |
 | TX-CSUM-OFF | Inline IPv4/UDP TX checksum offload patcher | 5 |

@@ -261,7 +261,12 @@ This project does not yet maintain long-lived release branches.
   buffers were sized for. Both limits count the FCS. `jumbo_en` now only
   raises the limit: with `MAX_FRAME=1518` and `jumbo_en=1` a tagged 1522-byte
   frame is still accepted. Default builds (`MAX_FRAME=9018`) behave as
-  before.
+  before. TX still counts `MAX_FRAME` in AXIS bytes, before the FCS, so it
+  can send 4 bytes more than RX accepts; README states both.
+- `eth_mac_rx` rejects a frame limit above 16382 at elaboration (an
+  `EMACZERO_CONFIG_ERROR_...` module), so `MAX_FRAME` must be at most 16382.
+  Its byte counter stops at 16383, so a larger limit could never be exceeded
+  and oversize frames would have passed clean.
 - **RGMII could not be implemented on Xilinx parts.** `rgmii_if` had one set
   of DDR output cells per speed and picked a set with a mux after the cells,
   so a LUT sat between each `ODDR` and its pad. Vivado rejects that
