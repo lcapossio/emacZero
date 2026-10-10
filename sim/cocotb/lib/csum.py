@@ -11,8 +11,11 @@ protocol, and says what the RTL should do with them:
                             should compute (Expect)
 
 Scope mirrors rtl/net/csum_calc.v: the L4 checksum applies to TCP / UDP / ICMP
-over unfragmented IPv4 and TCP / UDP / ICMPv6 directly after the IPv6 fixed
-header. Sums cover the IP datagram only (IP length), not padding or trailer.
+over unfragmented IPv4 without a source route option, and TCP / UDP / ICMPv6
+directly after the IPv6 fixed header. Sums cover the IP datagram only (IP
+length), not padding or trailer; UDP covers only its Length field's bytes and
+applies only when 8 <= that length <= the IP payload. The IPv4 header verdict
+needs only the header to be present, the L4 verdict the whole datagram.
 """
 from dataclasses import dataclass, field
 import random
@@ -45,10 +48,59 @@ def csum(data: bytes) -> int:
     return (~ones_sum(data)) & 0xFFFF
 
 
+LSRR, SSRR = 0x83, 0x89
+
+
+def ip4_opts_skip(opts: bytes) -> bool:
+    """True if IPv4 options hold a source route or cannot be walked.
+
+    Walks the list as RFC 791 lays it out: EOL (0) ends it, NOP (1) is one
+    byte, any other option is type, length (>= 2), data.
+    """
+    i = 0
+    while i < len(opts):
+        t = opts[i]
+        if t == 0:
+            break
+        if t == 1:
+            i += 1
+            continue
+        if t in (LSRR, SSRR):
+            return True
+        if i + 1 >= len(opts):
+            break
+        n = opts[i + 1]
+        if n < 2:
+            return True
+        i += n
+    return False
+
+
+def random_opts(rng: random.Random, n: int) -> bytes:
+    """n bytes of IPv4 options: a well-formed list, sometimes with a source
+    route, sometimes with junk after EOL or a broken length."""
+    out = bytearray()
+    while len(out) < n:
+        room = n - len(out)
+        k = rng.choices(["nop", "eol", "tlv", "srr", "bad"], weights=[3, 1, 4, 1, 0.3])[0]
+        if k == "nop" or room < 2:
+            out.append(1)
+        elif k == "eol":
+            out.append(0)
+            out += bytes(rng.randrange(256) for _ in range(room - 1))   # ignored
+        elif k == "bad":
+            out += bytes([rng.choice([7, 68, 130]), rng.randint(0, 1)])
+        else:
+            ln = rng.randint(2, min(room, 11))
+            t = rng.choice([LSRR, SSRR]) if k == "srr" else rng.choice([7, 68, 130, 148])
+            out += bytes([t, ln]) + bytes(rng.randrange(256) for _ in range(ln - 2))
+    return bytes(out[:n])
+
+
 @dataclass
 class Expect:
     done: bool            # an IP datagram the engine recognises, fully present
-    ip4: bool             # IPv4 header checksum applies
+    ip4: bool             # IPv4 header checksum applies (header present)
     l4_ok: bool           # L4 checksum applies
     l4_udp: bool
     l3_end: int
@@ -72,7 +124,10 @@ class Packet:
     trailer: bytes = b""          # bytes after the datagram (padding etc.)
     bad_ip: bool = False          # corrupt the IPv4 header checksum
     bad_l4: bool = False          # corrupt the L4 checksum
-    udp_zero: bool = False        # send UDP checksum 0 (no checksum)
+    udp_zero: bool = False        # send UDP checksum 0 (no checksum; invalid over IPv6)
+    udp_len: int = None           # UDP Length field; None = l4_len
+    opts: bytes = None            # IPv4 options (ihl*4 - 20 bytes); None = random list
+    truncate: int = 0             # bytes cut from the end of the datagram (may reach the IP header)
     seed: int = 0
     _l4: bytes = field(default=b"", repr=False)
 
@@ -94,8 +149,9 @@ class Packet:
         b = bytearray(rng.randrange(256) for _ in range(self.l4_len))
         if self.proto == TCP and self.l4_len >= 20:
             b[12] = (5 << 4) | (b[12] & 0x0F)        # data offset 5
-        if self.proto == UDP and self.l4_len >= 8:
-            b[4:6] = self.l4_len.to_bytes(2, "big")  # UDP length
+        if self.proto == UDP and self.l4_len >= 6:
+            ul = self.l4_len if self.udp_len is None else self.udp_len
+            b[4:6] = ul.to_bytes(2, "big")           # UDP length
         off = L4_CSUM_OFF.get(self.proto)
         if off is not None and self.l4_len >= off + 2:
             b[off:off + 2] = b"\x00\x00"
@@ -109,7 +165,26 @@ class Packet:
         self._l4 = l4
         return self
 
-    def _l4_csum(self, l4: bytes) -> int:
+    def _udp_cov(self) -> int:
+        """Bytes the L4 checksum covers: UDP Length for UDP, else all."""
+        if self.proto == UDP and self.udp_len is not None:
+            return self.udp_len
+        return self.l4_len
+
+    def _opts(self) -> bytes:
+        n = self.ihl * 4 - 20
+        if self.opts is not None:
+            assert len(self.opts) == n, "opts must fill ihl*4 - 20 bytes"
+            return self.opts
+        return random_opts(random.Random(self.seed ^ 0x5A5A), n)
+
+    def _cut(self, dgram: bytes) -> bytes:
+        return dgram[:len(dgram) - self.truncate]
+
+    def _l4_csum(self, l4: bytes, cover: int = None) -> int:
+        """Checksum of l4 (field zeroed) over its first `cover` bytes
+        (default: the UDP Length as built, or all)."""
+        l4 = bytes(l4)[:self._udp_cov() if cover is None else cover]
         if self.proto == ICMP and self.family == 4:
             return csum(bytes(l4))
         ph = self._addr_bytes + bytes([0, self.proto]) + len(l4).to_bytes(2, "big")
@@ -117,12 +192,18 @@ class Packet:
             ph = self._addr_bytes + len(l4).to_bytes(4, "big") + bytes([0, 0, 0, self.proto])
         return csum(ph + bytes(l4))
 
-    def _l4_applies(self) -> bool:
+    def _l4_applies(self, udp_len: int = None) -> bool:
+        """Whether the L4 checksum applies, given the UDP Length (default:
+        as built; expect() passes the one in the frame)."""
         off = L4_CSUM_OFF.get(self.proto)
         if off is None or self.l4_len < off + 2:
             return False
+        ul = self._udp_cov() if udp_len is None else udp_len
+        if self.proto == UDP and not 8 <= ul <= self.l4_len:
+            return False
         if self.family == 4:
-            return self.proto in (TCP, UDP, ICMP) and not self.mf and self.frag_off == 0
+            return (self.proto in (TCP, UDP, ICMP) and not self.mf and
+                    self.frag_off == 0 and not ip4_opts_skip(self._opts()))
         if self.family == 6:
             return self.proto in (TCP, UDP, ICMPV6)
         return False
@@ -143,7 +224,7 @@ class Packet:
             c = self._l4_csum(l4)
             if self.proto == UDP and c == 0:
                 c = 0xFFFF
-            if self.proto == UDP and self.udp_zero and self.family == 4:
+            if self.proto == UDP and self.udp_zero:
                 c = 0
             if self.bad_l4:
                 c ^= 0x0101
@@ -160,13 +241,12 @@ class Packet:
             hdr[8] = 64
             hdr[9] = self.proto
             hdr[12:20] = self._addr_bytes
-            for i in range(20, hlen):
-                hdr[i] = rng.randrange(256)
+            hdr[20:hlen] = self._opts()
             c = csum(bytes(hdr))
             if self.bad_ip:
                 c ^= 0x8001
             hdr[10:12] = c.to_bytes(2, "big")
-            return eth + b"\x08\x00" + bytes(hdr) + bytes(l4) + self.trailer
+            return eth + b"\x08\x00" + self._cut(bytes(hdr) + bytes(l4)) + self.trailer
 
         hdr = bytearray(40)
         hdr[0] = 0x60
@@ -174,18 +254,23 @@ class Packet:
         hdr[6] = self.proto
         hdr[7] = 64
         hdr[8:40] = self._addr_bytes
-        return eth + b"\x86\xdd" + bytes(hdr) + bytes(l4) + self.trailer
+        return eth + b"\x86\xdd" + self._cut(bytes(hdr) + bytes(l4)) + self.trailer
 
     # ---- expectations ------------------------------------------------------
-    def expect(self) -> Expect:
-        f = self.frame()
+    def expect(self, frame: bytes = None) -> Expect:
+        """What the engine reports for this packet, sent as `frame` (default
+        p.frame(); pass the padded frame when the MAC pads). Bytes past a
+        truncated datagram's real end (padding, trailer) count where IP says
+        the datagram extends over them, as they do in the RTL."""
+        f = self.frame() if frame is None else frame
         l3 = self._l3_off()
         if self.family == 0:
             return Expect(False, False, False, False, 0, 0, 0, 0, 0, False, False)
         hlen = self._ip_hdr_len()
         l3_end = l3 + hlen + self.l4_len
         l4s = l3 + hlen
-        ip4 = self.family == 4
+        done = l3_end <= len(f)
+        ip4 = self.family == 4 and l4s <= len(f)
         ip_csum = 0
         ip_good = True
         if ip4:
@@ -193,7 +278,12 @@ class Packet:
             ip_good = ones_sum(bytes(hdr)) == 0xFFFF
             hdr[10:12] = b"\x00\x00"
             ip_csum = csum(bytes(hdr))
-        applies = self._l4_applies()
+        # Like the RTL, take the UDP Length from the frame: on a truncated
+        # datagram it may be trailer or padding bytes.
+        cover = self.l4_len
+        if self.proto == UDP and done and self.l4_len >= 6:
+            cover = int.from_bytes(f[l4s + 4:l4s + 6], "big")
+        applies = self._l4_applies(cover) and done
         l4_csum = l4_good = 0
         pos = l4s + L4_CSUM_OFF.get(self.proto, 0)
         if applies:
@@ -202,13 +292,13 @@ class Packet:
             off = L4_CSUM_OFF[self.proto]
             l4z = bytearray(l4)
             l4z[off:off + 2] = b"\x00\x00"
-            l4_csum = self._l4_csum(l4z)
+            l4_csum = self._l4_csum(l4z, cover)
             if self.proto == UDP and ip4 and field_val == 0:
                 l4_good = True
             else:
                 want = 0xFFFF if (self.proto == UDP and l4_csum == 0) else l4_csum
                 l4_good = field_val == want
-        return Expect(done=True, ip4=ip4, l4_ok=applies, l4_udp=self.proto == UDP,
+        return Expect(done=done, ip4=ip4, l4_ok=applies, l4_udp=self.proto == UDP,
                       l3_end=l3_end, ip_csum_pos=l3 + 10, l4_csum_pos=pos,
                       ip_csum=ip_csum, l4_csum=l4_csum, ip_good=ip_good,
                       l4_good=bool(l4_good))
@@ -241,6 +331,12 @@ def random_packet(rng: random.Random, max_l4: int = 300) -> Packet:
                seed=rng.randrange(1 << 30))
     if p.mf is False and frag and p.frag_off == 0:
         p.mf = True
+    if proto == UDP and l4_len >= 8 and rng.random() < 0.2:
+        p.udp_len = rng.choice([rng.randint(8, l4_len),            # shorter: valid
+                                l4_len + rng.randint(1, 20),       # past the payload
+                                rng.randint(0, 7)])                # below the header
+    if family and l4_len and rng.random() < 0.08:
+        p.truncate = rng.randint(1, l4_len)                        # IP length > data
     return p.build()
 
 

@@ -78,23 +78,34 @@ across all three on every run.
 | `[4:3]` | `speed` | `00` | `00` = 1G, `01` = 100M, `10` = 10M. |
 | `[5]` | `full_duplex` | `1` | Informational only; MAC is full-duplex by construction. |
 | `[6]` | `jumbo_en` | `0` | Accept frames up to `MAX_FRAME` instead of 1518. |
-| `[7]` | `tx_csum_off` | `0` | TX checksum insertion when `TX_CSUM_OFFLOAD=1`: the IPv4 header checksum and the TCP / UDP / ICMP / ICMPv6 checksum are computed and written, whatever software put there. Sampled at each frame's first byte, so it may change at any time. No datapath effect when the parameter is 0. |
+| `[7]` | `tx_csum_off` | `0` | TX checksum insertion when `TX_CSUM_OFFLOAD=1`: the IPv4 header checksum and the TCP / UDP / ICMP / ICMPv6 checksum are computed and written, whatever software put there, within the scope below (outside it the L4 field is left as software wrote it). Sampled at each frame's first byte, so it may change at any time. No datapath effect when the parameter is 0. |
 | `[8]` | `passthrough` | `0` | Sniffer mode: bypass MAC filter and deliver errored frames tagged via `m_axis_terror`. |
-| `[9]` | `rx_csum_off` | `0` | RX checksum verification when `RX_CSUM_OFFLOAD=1`: a frame whose IPv4 header or TCP / UDP / ICMP / ICMPv6 checksum is wrong ends with `m_axis_terror` (so the error-drop stage discards it) and counts in `RX_ERR` and `RX_ERR_CSUM`. Sampled at each frame's SFD. No effect when the parameter is 0. |
+| `[9]` | `rx_csum_off` | `0` | RX checksum verification when `RX_CSUM_OFFLOAD=1`: a frame whose IPv4 header or TCP / UDP / ICMP / ICMPv6 checksum is wrong ends with `m_axis_terror` and counts in `RX_ERR` and `RX_ERR_CSUM`. The frame is still delivered: the consumer must discard it. Sampled at each frame's SFD. No effect when the parameter is 0. |
 | `[31:10]` | reserved | `0` | Reads as 0; writes ignored. |
 
 Checksum offload scope (both directions): Ethernet II with at most one 802.1Q
 (0x8100) or 802.1ad (0x88A8) tag; IPv4 with any header length, or the IPv6
 fixed header followed directly by TCP (6), UDP (17) or ICMPv6 (58). The sums
-cover the IP datagram as its length field gives it, not padding. Left to
-software: IPv4 fragments (the header checksum is still handled, the L4 one is
-not), IPv6 packets with extension headers, and anything inside a tunnel; such
-frames pass through unchanged and unchecked. On RX a UDP-over-IPv4 checksum of
-0 means "no checksum" and passes; on TX a UDP checksum that computes to 0 is
-sent as 0xFFFF. A driver should therefore claim RX checksum offload only for
+cover the IP datagram as its length field gives it, not padding; UDP covers
+only its own Length field's bytes, which is also the length in its
+pseudo-header. Left to software, passed through with the L4 checksum
+unchanged and unchecked (the IPv4 header checksum is still handled):
+
+- IPv4 fragments;
+- IPv4 with a loose or strict source route option (the pseudo-header would
+  need the route's final destination), or an option with a length below 2;
+- UDP whose Length is below 8 or beyond the IP payload;
+- on RX, a datagram longer than its frame (the IPv4 header is checked as soon
+  as it has arrived).
+
+IPv6 packets with extension headers, and anything inside a tunnel, pass
+through unchanged and unchecked. On RX a UDP checksum of 0 means "no
+checksum" and passes over IPv4, and is an error over IPv6 (RFC 8200); on TX a
+UDP checksum that computes to 0 is sent as 0xFFFF. A driver should therefore claim RX checksum offload only for
 the packets above and verify the rest itself (for Zephyr, report the
 per-protocol capabilities and keep IPv6 extension-header and fragment checks
-in software).
+in software). RX checksum offload only flags a failing frame with
+`m_axis_terror`; whatever consumes `m_axis` must drop frames that end with it.
 
 Reset value `0x23` = `tx_en | rx_en | full_duplex`.
 
@@ -153,7 +164,7 @@ Both are 16-bit values in bits `[15:0]`; upper bits read as 0.
 | `0x2C` | TX_BYTE | Payload + header bytes transmitted. |
 | `0x30` | RX_FRAME | Frames passed to AXIS sink. |
 | `0x34` | RX_BYTE | Bytes accepted by RX FIFO. |
-| `0x38` | RX_ERR | RX frames delivered with `terror` (bad FCS, `rx_er`, overflow, size, or with CTRL[9] a wrong checksum); the system's error-drop stage discards them. |
+| `0x38` | RX_ERR | RX frames delivered with `terror` (bad FCS, `rx_er`, overflow, size, or with CTRL[9] a wrong checksum). The core does not drop them; the consumer must discard them. |
 | `0x80` | RX_ERR_CSUM | RX frames failed only for a wrong IP / L4 checksum (CTRL[9]). A frame that also has a bad FCS or another error is not counted here. |
 
 Writing any value to a TX counter clears both TX counters. Writing any value

@@ -57,12 +57,16 @@ ICMPv6 over IPv4 and IPv6).
   `rtl/net/tx_csum_off.v`, CTRL[7]) computes and inserts the IPv4 header
   checksum and the TCP / UDP / ICMP (IPv4) or TCP / UDP / ICMPv6 (IPv6)
   checksum, pseudo-header included; RX (`RX_CSUM_OFFLOAD=1`, CTRL[9]) verifies
-  the same checksums and drops a frame that fails, counting it in
-  `RX_ERR_CSUM`. Both handle one 802.1Q / 802.1ad tag and any IPv4 header
-  length. Not covered (left to software): IPv4 fragments (header checksum
-  only), IPv6 packets with extension headers, and tunnels. A UDP-over-IPv4
-  checksum of 0 means "none" on RX; a UDP checksum that computes to 0 is sent
-  as 0xFFFF. The TX side stores each frame whole before sending it (one
+  the same checksums and ends a frame that fails with `m_axis_terror`,
+  counting it in `RX_ERR_CSUM`. The core does not drop it: the consumer must
+  discard every frame that ends with `terror`. Both handle one 802.1Q /
+  802.1ad tag and any IPv4 header length, and UDP is summed over its own
+  Length field. Not covered (left to software): IPv4 fragments and IPv4 with
+  a source route option (header checksum only), UDP whose Length is below 8
+  or beyond the IP payload, a datagram longer than its frame (RX: header
+  checksum only), IPv6 packets with extension headers, and tunnels. A UDP
+  checksum of 0 means "none" over IPv4 and is rejected over IPv6 on RX; a UDP
+  checksum that computes to 0 is sent as 0xFFFF. The TX side stores each frame whole before sending it (one
   `MAX_FRAME` of block RAM, a few cycles per frame), since the checksum fields
   precede the bytes they cover. The checksum logic is `rtl/net/csum_calc.v`.
 - **CRC-32** - IEEE 802.3 FCS generation (TX) and validation (RX)

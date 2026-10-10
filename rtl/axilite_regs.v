@@ -26,7 +26,8 @@
 //                              deliver frames with FCS / size errors anyway,
 //                              still tagged via m_axis_terror)
 //                         [9] rx_csum_off (verify those checksums on RX and
-//                              drop frames that fail; needs RX_CSUM_OFFLOAD=1)
+//                              flag frames that fail with m_axis_terror;
+//                              needs RX_CSUM_OFFLOAD=1)
 //   0x08 STATUS     RO    [0] tx_active  [1] tx_fifo_busy  [2] mdio_busy
 //                         [3] mdio_cmd_dropped (sticky: an MDIO GO was written
 //                              while the master was busy and was ignored;
@@ -76,7 +77,7 @@
 //   0x70 RX_SIZE_512_1023  RO/WC
 //   0x74 RX_SIZE_1024_1518 RO/WC
 //   0x78 RX_SIZE_JUMBO     RO/WC  > 1518 bytes
-//   0x80 RX_ERR_CSUM       RO/WC  frames dropped for a wrong IP / L4 checksum
+//   0x80 RX_ERR_CSUM       RO/WC  frames flagged for a wrong IP / L4 checksum
 //                                 (CTRL[9]); otherwise sound frames only
 // =============================================================================
 

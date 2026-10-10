@@ -10,15 +10,16 @@
 module eth_mac_rx #(
     parameter MCAST_HASH_FILTER   = 0,
     // The PHY cannot be backpressured. Keep enough RX buffering for typical
-    // downstream DMA stalls before declaring an overflow error; the system
-    // wrapper's error-drop stage provides the full-frame correctness boundary.
+    // downstream DMA stalls before declaring an overflow error. Errored frames
+    // are delivered with terror; the consumer must discard them.
     parameter AXIS_FIFO_ADDR_WIDTH = 11,   // 2048 bytes (BRAM-backed sync FIFO)
     parameter MAX_FRAME_STD       = 1518,  // 802.3 standard
     parameter MAX_FRAME_JUMBO     = 9018,  // typical jumbo MTU + headers
     // 1 = build the RX checksum checker (csum_calc.v): with rx_csum_en set, a
     // frame whose IPv4 header, TCP, UDP, ICMP or ICMPv6 checksum is wrong is
-    // delivered with terror (and dropped by the wrapper's error-drop stage)
-    // and pulses stat_err_csum. 0 = no checker, rx_csum_en ignored.
+    // delivered with terror (the consumer must discard it) and pulses
+    // stat_err_csum. Scope is csum_calc.v's. 0 = no checker, rx_csum_en
+    // ignored.
     parameter RX_CSUM_OFFLOAD     = 0
 )(
     input  wire        clk,
@@ -191,19 +192,21 @@ module eth_mac_rx #(
     // Runt: a valid 802.3 frame is >= 64 wire bytes (60 data/pad + 4 FCS).
     // byte_cnt counts bytes after the SFD, so < 64 is undersized - a collision
     // fragment or truncated frame. Deliver it with terror instead of as a clean
-    // frame with a garbage FCS, so the wrapper's error-drop stage discards it.
+    // frame with a garbage FCS, so the consumer can discard it.
     wire err_undersize_now = (byte_cnt < 14'd64);
 
     // IP / L4 checksum verdict, from the GMII bytes of the frame (so it does
-    // not depend on what fit in the FIFO). csum_calc's results are final 3
-    // cycles after the datagram's last byte; the datagram must end at least 4
-    // bytes (the FCS) before the frame does, so they are final here at
-    // S_CRC_CHECK. A datagram longer than the frame gets no verdict.
+    // not depend on what fit in the FIFO). csum_calc also sees the FCS, so a
+    // header or datagram counts only if it ends at least 4 bytes (the FCS)
+    // before the frame does; its results are final within 3 cycles of its last
+    // byte, so they are final here at S_CRC_CHECK. An IPv4 header is checked
+    // even when the datagram is longer than the frame; such a datagram's L4
+    // checksum is not checked.
     wire csum_bad_now;
     generate
         if (RX_CSUM_OFFLOAD) begin : g_csum
             wire        c_done, c_ip4, c_l4_ok, c_l4_udp;
-            wire [13:0] c_l3_end, c_ip_pos, c_l4_pos;
+            wire [13:0] c_l3_end, c_hdr_end, c_ip_pos, c_l4_pos;
             wire [15:0] c_ip_sum, c_l4_sum, c_l4_field;
 
             csum_calc u_csum (
@@ -217,6 +220,7 @@ module eth_mac_rx #(
                 .l3_end      (c_l3_end),
                 .ip4         (c_ip4),
                 .ip_sum      (c_ip_sum),
+                .hdr_end     (c_hdr_end),
                 .ip_csum_pos (c_ip_pos),
                 .l4_ok       (c_l4_ok),
                 .l4_udp      (c_l4_udp),
@@ -226,12 +230,15 @@ module eth_mac_rx #(
             );
 
             // Summed with the received checksum in place, a correct datagram
-            // sums to 0xFFFF. A UDP-over-IPv4 checksum of 0 means "none".
-            wire ip_bad = c_ip4 && (c_ip_sum != 16'hFFFF);
-            wire l4_bad = c_l4_ok && !(c_l4_udp && c_ip4 && c_l4_field == 16'h0000) &&
-                          (c_l4_sum != 16'hFFFF);
-            wire whole  = ({1'b0, c_l3_end} + 15'd4 <= {1'b0, byte_cnt});
-            assign csum_bad_now = csum_en_r && c_done && whole && (ip_bad || l4_bad);
+            // sums to 0xFFFF. A UDP checksum of 0 means "none" over IPv4 and
+            // is invalid over IPv6 (RFC 8200 8.1), whatever the sum.
+            wire hdr_whole = ({1'b0, c_hdr_end} + 15'd4 <= {1'b0, byte_cnt});
+            wire whole     = ({1'b0, c_l3_end}  + 15'd4 <= {1'b0, byte_cnt});
+            wire udp_zero  = c_l4_udp && (c_l4_field == 16'h0000);
+            wire ip_bad    = c_ip4 && hdr_whole && (c_ip_sum != 16'hFFFF);
+            wire l4_bad    = c_done && whole && c_l4_ok &&
+                             (udp_zero ? !c_ip4 : (c_l4_sum != 16'hFFFF));
+            assign csum_bad_now = csum_en_r && (ip_bad || l4_bad);
         end else begin : g_no_csum
             assign csum_bad_now = 1'b0;
         end

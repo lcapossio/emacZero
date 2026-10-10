@@ -19,7 +19,8 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ReadOnly
 
 from lib.axis_sink import AxisSink
-from lib.csum import Packet, random_packet, pad60, UDP, TCP, ICMP, ICMPV6, TPID_8021Q
+from lib.csum import (Packet, random_packet, pad60, force_zero_l4_csum,
+                      UDP, TCP, ICMP, ICMPV6, TPID_8021Q, LSRR)
 from lib.gmii_rx_driver import GmiiRxDriver
 
 N_RANDOM = int(os.environ.get("CSUM_N_RANDOM", "300"))
@@ -44,8 +45,10 @@ class StatMon:
 
 
 def csum_bad(p: Packet) -> bool:
-    e = p.expect()
-    return e.done and ((e.ip4 and not e.ip_good) or (e.l4_ok and not e.l4_good))
+    """The checker's verdict: the IPv4 header is judged once it is in the
+    frame, the L4 checksum only when the whole datagram is."""
+    e = p.expect(pad60(p.frame()))
+    return (e.ip4 and not e.ip_good) or (e.done and e.l4_ok and not e.l4_good)
 
 
 async def _run(dut, items, rng):
@@ -114,6 +117,47 @@ async def directed(dut):
         p.build()
         items += [(p, True, False), (p, False, False)]
     items.append((cases[1], True, True))      # bad FCS and bad checksum
+    await _run(dut, items, rng)
+
+
+def _review_cases():
+    """(packet, checksum verdict bad?) with the verdict stated, not modelled."""
+    v6_zero = force_zero_l4_csum(Packet(family=6, proto=UDP, l4_len=8 + 20,
+                                        udp_zero=True, seed=501).build())
+    v6_ffff = force_zero_l4_csum(Packet(family=6, proto=UDP, l4_len=8 + 20,
+                                        seed=502).build())
+    route = bytes([LSRR, 7, 4, 10, 0, 0, 1, 1])
+    return [
+        # IPv6 UDP checksum 0 is invalid even when the data sums correctly
+        (v6_zero, True),
+        (v6_ffff, False),                       # the same datagram sent right
+        # UDP Length shorter than the IP payload
+        (Packet(family=4, proto=UDP, l4_len=16, udp_len=12, seed=503), False),
+        (Packet(family=4, proto=UDP, l4_len=16, udp_len=12, bad_l4=True, seed=504), True),
+        (Packet(family=6, proto=UDP, l4_len=40, udp_len=9, bad_l4=True, seed=505), True),
+        # Source route: L4 not checked, header still is
+        (Packet(family=4, proto=UDP, l4_len=20, ihl=7, opts=route, bad_l4=True, seed=506), False),
+        (Packet(family=4, proto=UDP, l4_len=20, ihl=7, opts=route, bad_ip=True, seed=507), True),
+        # Total Length 1500 in a 60-byte frame: header checked, L4 not
+        (Packet(family=4, proto=UDP, l4_len=1480, truncate=1480 - 26, seed=508), False),
+        (Packet(family=4, proto=UDP, l4_len=1480, truncate=1480 - 26, bad_ip=True, seed=509), True),
+        (Packet(family=4, proto=UDP, l4_len=1480, truncate=1480 - 26, bad_l4=True, seed=510), False),
+        # Frame ends 2 bytes into a 60-byte IPv4 header: the engine sees the
+        # FCS as the header's last bytes, which must not be judged
+        (Packet(family=4, proto=UDP, l4_len=8, ihl=15, vlan=TPID_8021Q,
+                opts=bytes(40), truncate=10, seed=511), False),
+    ]
+
+
+@cocotb.test(timeout_time=50, timeout_unit="ms")
+async def review_cases(dut):
+    """IPv6 UDP zero, UDP Length, source routes, truncated datagrams."""
+    rng = random.Random(11)
+    items = []
+    for n, (p, want_bad) in enumerate(_review_cases()):
+        assert len(p.frame()) >= 60 or p.truncate == 0, f"review[{n}] frame too short"
+        assert csum_bad(p) == want_bad, f"review[{n}]: model verdict {csum_bad(p)} want {want_bad}"
+        items.append((p, True, False))
     await _run(dut, items, rng)
 
 

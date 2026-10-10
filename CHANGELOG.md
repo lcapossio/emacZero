@@ -11,13 +11,19 @@ This project does not yet maintain long-lived release branches.
   `eth_mac_rx` verifies the IPv4 header checksum and the TCP / UDP / ICMP
   (IPv4) or TCP / UDP / ICMPv6 (IPv6) checksum of each frame, pseudo-header
   included, with one optional 802.1Q / 802.1ad tag and any IPv4 header length.
-  A frame that fails ends with `terror`, so the error-drop stage discards it,
-  and counts in `RX_ERR` and in the new `RX_ERR_CSUM` CSR at `0x80` (RO,
-  write-any-to-clear with the RX group; frames with another error, such as a
-  bad FCS, are not counted there). The check runs on the GMII bytes as they
-  arrive, so it adds no latency. Not checked: IPv4 fragments (the header
-  checksum still is), IPv6 packets with extension headers, tunnels; a UDP
-  checksum of 0 over IPv4 means "none". `0x80` reads 0 on older cores.
+  A frame that fails is still delivered, ends with `terror`, and counts in
+  `RX_ERR` and in the new `RX_ERR_CSUM` CSR at `0x80` (RO, write-any-to-clear
+  with the RX group; frames with another error, such as a bad FCS, are not
+  counted there). The consumer must discard frames that end with `terror`;
+  `eth_mac_sys` does not. The check runs on the GMII bytes as they arrive, so
+  it adds no latency. UDP is summed over its Length field, not the IP
+  payload. The IPv4 header checksum is checked even when the datagram is
+  longer than the frame. Not checked (left to software): the L4 checksum of
+  IPv4 fragments, of IPv4 with a source route option, of UDP whose Length is
+  below 8 or beyond the IP payload, and of a datagram longer than its frame;
+  IPv6 packets with extension headers; tunnels. A UDP checksum of 0 means
+  "none" over IPv4 and is an error over IPv6. `0x80` reads 0 on older
+  cores.
   `sw/emaczero/emaczero.h`: `EMZ_REG_RX_ERR_CSUM`, `EMZ_CTRL_RX_CSUM_OFF`.
   LiteX: `rx_csum_offload`.
 - `rtl/net/csum_calc.v`: the checksum engine shared by the TX inserter and
@@ -197,6 +203,11 @@ This project does not yet maintain long-lived release branches.
   checksum over IPv4 or IPv6, with one optional VLAN tag; a UDP checksum that
   computes to 0 is sent as 0xFFFF. Software that relied on the UDP checksum
   being zeroed now gets a real one.
+  - UDP is summed over its own Length field, which may be shorter than the IP
+    payload. The L4 checksum is left as software wrote it for IPv4 fragments,
+    IPv4 with a source route option (whose pseudo-header needs the route's
+    final destination), UDP whose Length is below 8 or beyond the IP payload,
+    and IPv6 packets with extension headers.
   - The stage now stores frames in a circular buffer with a separate queue of
     per-frame checksums, so the next frame comes in while the previous one
     goes out: about 1 byte per clock, against half that before.

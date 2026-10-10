@@ -12,9 +12,10 @@
 //     checksum over IPv6 (pseudo-header included where the protocol uses it),
 // with an optional single 802.1Q / 802.1ad tag. Whatever software left in
 // those fields is ignored. A UDP checksum that computes to 0 is sent as
-// 0xFFFF. Scope and limits are those of csum_calc.v: IPv4 fragments and IPv6
-// packets with extension headers get no L4 checksum (the IPv4 header checksum
-// is still written), and other frames pass unchanged. With `enable` low a
+// 0xFFFF. Scope and limits are those of csum_calc.v: IPv4 fragments,
+// source-routed IPv4, UDP with an out-of-range Length and IPv6 packets with
+// extension headers get no L4 checksum (the IPv4 header checksum is still
+// written), and other frames pass unchanged. With `enable` low a
 // frame passes unchanged.
 //
 // The checksum fields precede the bytes they cover, so the stage stores each
@@ -98,6 +99,7 @@ module tx_csum_off #(
         .l3_end      (c_l3_end),
         .ip4         (c_ip4),
         .ip_sum      (c_ip_sum),
+        .hdr_end     (),
         .ip_csum_pos (c_ip_pos),
         .l4_ok       (c_l4_ok),
         .l4_udp      (c_l4_udp),

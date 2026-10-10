@@ -17,8 +17,8 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ReadOnly
 
 from lib.axis_driver import AxisMaster
-from lib.csum import (Packet, random_packet, force_zero_l4_csum,
-                      UDP, TCP, ICMP, ICMPV6, TPID_8021AD)
+from lib.csum import (Packet, random_packet, force_zero_l4_csum, csum, ones_sum,
+                      UDP, TCP, ICMP, ICMPV6, TPID_8021AD, LSRR)
 
 N_RANDOM = int(os.environ.get("CSUM_N_RANDOM", "300"))
 MAX_FRAME = 600          # matches the run.py parameter
@@ -149,6 +149,55 @@ async def directed(dut):
     await _drain(dut, sink, len(sent))
     for n, ((p, en), got) in enumerate(zip(sent, sink.frames)):
         _compare(got, expected(p, en), f"directed[{n}] en={en} {p}")
+
+
+@cocotb.test()
+async def review_cases(dut):
+    """UDP Length below the IP payload, and frames whose L4 checksum must be
+    left as software wrote it (source route, bad UDP Length), checked against
+    values computed here rather than by the model."""
+    await _setup(dut)
+    rng = random.Random(8)
+    m = AxisMaster(dut, rng, p_bubble=0.1)
+    sink = Sink(dut, rng, p_stall=0.1)
+    cocotb.start_soon(sink.run())
+    sw = bytes([0xDB, 0xCC])                     # what software left in the field
+    route = bytes([LSRR, 7, 4, 203, 0, 113, 99, 1])
+    cases = [   # (packet, L4 field left alone?)
+        (Packet(family=4, proto=UDP, l4_len=16, udp_len=12, seed=601), False),
+        (Packet(family=6, proto=UDP, l4_len=30, udp_len=11, seed=602), False),
+        (Packet(family=4, proto=UDP, l4_len=20, ihl=7, opts=route, seed=603), True),
+        (Packet(family=4, proto=TCP, l4_len=24, ihl=7, opts=route, seed=604), True),
+        (Packet(family=4, proto=UDP, l4_len=16, udp_len=20, seed=605), True),
+    ]
+    frames = []
+    for p, _ in cases:
+        p.build()
+        f = bytearray(p.frame())
+        l4s = p._l3_off() + p._ip_hdr_len()
+        off = l4s + (6 if p.proto == UDP else 16)
+        f[off:off + 2] = sw
+        frames.append((bytes(f), l4s, off))
+        await _send(dut, m, bytes(f), True)
+    await _drain(dut, sink, len(cases))
+    for n, ((p, keep), (f, l4s, off), got) in enumerate(zip(cases, frames, sink.frames)):
+        tag = f"review[{n}] {p}"
+        l3 = p._l3_off()
+        if p.family == 4:
+            assert ones_sum(got[l3:l4s]) == 0xFFFF, f"{tag}: IPv4 header checksum"
+        if keep:
+            assert got[off:off + 2] == sw, f"{tag}: L4 field changed to {got[off:off + 2].hex()}"
+            continue
+        n_l4 = p.udp_len
+        seg = bytearray(f[l4s:l4s + n_l4])
+        seg[6:8] = bytes(2)
+        if p.family == 4:
+            ph = f[l3 + 12:l3 + 20] + bytes([0, UDP]) + n_l4.to_bytes(2, "big")
+        else:
+            ph = f[l3 + 8:l3 + 40] + n_l4.to_bytes(4, "big") + bytes([0, 0, 0, UDP])
+        c = csum(ph + bytes(seg)) or 0xFFFF
+        assert int.from_bytes(got[off:off + 2], "big") == c, \
+            f"{tag}: UDP checksum {got[off:off + 2].hex()} want {c:04x}"
 
 
 @cocotb.test()
