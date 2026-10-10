@@ -48,6 +48,7 @@ extern "C" {
 #define EMZ_REG_RX_SIZE_512_1023 0x70u
 #define EMZ_REG_RX_SIZE_1024_1518 0x74u
 #define EMZ_REG_RX_SIZE_JUMBO    0x78u
+#define EMZ_REG_RX_DROP          0x7Cu  /* frames dropped whole; 0 on older cores */
 #define EMZ_REG_PAUSE_CTRL       0x84u
 #define EMZ_REG_PAUSE_QUANTA     0x88u
 #define EMZ_REG_PAUSE_RX_CNT     0x8Cu

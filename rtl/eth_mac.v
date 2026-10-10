@@ -231,7 +231,8 @@ module eth_mac #(
         .stat_err_overflow (),
         .stat_err_oversize (),
         .stat_is_bcast     (),
-        .stat_is_mcast     ()
+        .stat_is_mcast     (),
+        .stat_drop         ()
     );
 
     // =========================================================================

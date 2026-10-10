@@ -53,7 +53,12 @@ module eth_mac_rx #(
     output reg         stat_err_overflow,// FIFO overflow during frame
     output reg         stat_err_oversize,// length > MAX_FRAME (std/jumbo gated)
     output reg         stat_is_bcast,    // dst-MAC = FF:FF:FF:FF:FF:FF
-    output reg         stat_is_mcast     // dst-MAC[byte0][LSB]=1 and !bcast
+    output reg         stat_is_mcast,    // dst-MAC[byte0][LSB]=1 and !bcast
+
+    // Pulses 1 cycle at end-of-frame for a frame that passed the MAC filter
+    // but was dropped whole because the FIFO had no room for its SOF. Such a
+    // frame produces no AXIS words and no stat_done, so this is its only trace.
+    output reg         stat_drop
 );
 
     localparam [2:0]
@@ -97,9 +102,9 @@ module eth_mac_rx #(
                                   mac_chk[29:24] ^ mac_chk[35:30] ^
                                   mac_chk[41:36] ^ mac_chk[47:42];
 
-    // Combinational MAC-pass at byte_cnt=5. Used to gate the byte_cnt=5 push
-    // since mac_ok is registered (lands one cycle later, after byte 0 has
-    // already shifted past delay_pipe1).
+    // Combinational MAC-pass at byte_cnt=5. Gates the byte_cnt=5 SOF push
+    // directly, since mac_ok is its registered copy and lands one cycle later,
+    // after byte 0 has already shifted past delay_pipe1.
     wire mac_pass_now = (mac_chk == our_mac) ||
                          (mac_chk == 48'hFFFFFFFFFFFF) ||
                          promisc || passthrough ||
@@ -129,12 +134,13 @@ module eth_mac_rx #(
     wire        fifo_rd_valid;
     wire [AXIS_FIFO_ADDR_WIDTH:0] fifo_count;
 
-    // Reserve a few slots so a frame's SOF and closing TLAST words are never the
-    // ones dropped on overflow: once occupancy passes the high-water mark we stop
-    // pushing DATA (dropped bytes just set the overflow/terror flag), but the SOF
-    // that starts a frame and the TLAST that ends it always find room. That keeps
-    // AXIS framing intact under backpressure - a dropped SOF would leave the sink
-    // unable to delimit, and a dropped TLAST would merge this frame into the next.
+    // Reserve a few slots above the high-water mark so a started frame's closing
+    // TLAST always finds room. A frame is only started (SOF pushed) while
+    // occupancy is below the mark; one that arrives above it is dropped whole
+    // and reported on stat_drop. A started frame that crosses the mark stops
+    // pushing DATA (dropped bytes set the overflow/terror flag) but still gets
+    // its TLAST. That keeps AXIS framing intact under backpressure - a dropped
+    // TLAST would merge this frame into the next.
     localparam [AXIS_FIFO_ADDR_WIDTH:0] FIFO_HWM = AXIS_FIFO_DEPTH - 4;
     wire fifo_room = (fifo_count < FIFO_HWM);
 
@@ -263,6 +269,7 @@ module eth_mac_rx #(
             stat_err_oversize <= 1'b0;
             stat_is_bcast     <= 1'b0;
             stat_is_mcast     <= 1'b0;
+            stat_drop         <= 1'b0;
             push_en_r         <= 1'b0;
             push_data_r       <= 8'd0;
             push_last_r       <= 1'b0;
@@ -272,6 +279,7 @@ module eth_mac_rx #(
             crc_init         <= 1'b0;
             crc_data_valid   <= 1'b0;
             stat_done         <= 1'b0;
+            stat_drop         <= 1'b0;
             push_en_r         <= push_en;
             push_data_r       <= push_data;
             push_last_r       <= push_last;
@@ -336,16 +344,7 @@ module eth_mac_rx #(
                             dst_mac_captured <= {dst_mac_captured[39:0], gmii_rxd};
 
                         if (byte_cnt == 14'd5) begin
-                            if (mac_chk == our_mac ||
-                                mac_chk == 48'hFFFFFFFFFFFF ||
-                                promisc || passthrough ||
-                                (MCAST_HASH_FILTER &&
-                                 mac_chk[40] &&
-                                 mac_chk != 48'hFFFFFFFFFFFF &&
-                                 mcast_hash_table[mcast_hash_idx]))
-                                mac_ok <= 1'b1;
-                            else
-                                mac_ok <= 1'b0;
+                            mac_ok <= mac_pass_now;
 
                             // Bcast / mcast classification on dst-MAC byte 0 LSB.
                             // mac_chk[40] = first dst-MAC byte's LSB (I/G bit).
@@ -388,6 +387,11 @@ module eth_mac_rx #(
                         stat_err_oversize <= err_oversize_now;
                         stat_is_bcast     <= is_bcast_r;
                         stat_is_mcast     <= is_mcast_r;
+                    end else if (mac_ok) begin
+                        // Passed the filter but its SOF found no FIFO room:
+                        // dropped whole. Counted whatever its FCS or length,
+                        // since the frame was never delivered to be judged.
+                        stat_drop <= 1'b1;
                     end
                 end
 

@@ -2,6 +2,10 @@
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
 // tb_eth_mac_rx_backpressure.v - RX AXI4-Stream backpressure regression
+// Also checks the per-frame stat pulses with the RX FIFO held full: every
+// frame for us ends in exactly one of stat_done (delivered, possibly
+// truncated with stat_err_overflow) or stat_drop (dropped whole), and a frame
+// for another MAC in neither.
 // =============================================================================
 `timescale 1ns / 1ps
 
@@ -54,6 +58,10 @@ module tb_eth_mac_rx_backpressure;
     wire       rx_terror;
     wire       rx_tsof;
 
+    wire stat_done;
+    wire stat_err_overflow;
+    wire stat_drop;
+
     eth_mac_rx u_rx (
         .clk              (clk),
         .rst_n            (rst_n),
@@ -71,15 +79,17 @@ module tb_eth_mac_rx_backpressure;
         .m_axis_tlast     (rx_tlast),
         .m_axis_terror    (rx_terror),
         .m_axis_tsof      (rx_tsof),
-        .stat_done         (),
+        .stat_done         (stat_done),
         .stat_len          (),
         .stat_err_fcs      (),
         .stat_err_align    (),
-        .stat_err_overflow (),
+        .stat_err_overflow (stat_err_overflow),
         .stat_err_oversize (),
         .stat_is_bcast     (),
-        .stat_is_mcast     ()
+        .stat_is_mcast     (),
+        .stat_drop         (stat_drop)
     );
+
 
     localparam FRAME_LEN = 74;
     reg [7:0] frame [0:FRAME_LEN-1];
@@ -89,6 +99,44 @@ module tb_eth_mac_rx_backpressure;
     reg     last_rx_error;
     integer pass_cnt;
     integer fail_cnt;
+
+    // Stat pulse and TLAST handshake tallies (cleared by the stimulus)
+    integer n_done;
+    integer n_overflow;
+    integer n_drop;
+    integer n_tlast;
+    integer n_tlast_err;
+
+    always @(posedge clk) begin
+        if (rst_n) begin
+            if (stat_done)                      n_done     = n_done + 1;
+            if (stat_done && stat_err_overflow) n_overflow = n_overflow + 1;
+            if (stat_drop)                      n_drop     = n_drop + 1;
+            if (stat_done && stat_drop) begin
+                $display("FAIL: stat_done and stat_drop in the same cycle");
+                fail_cnt = fail_cnt + 1;
+            end
+            if (rx_tvalid && rx_tready && rx_tlast) begin
+                n_tlast = n_tlast + 1;
+                if (rx_terror) n_tlast_err = n_tlast_err + 1;
+            end
+        end
+    end
+
+    task check_int;
+        input [255:0] name;
+        input integer actual;
+        input integer expected;
+        begin
+            if (actual == expected) begin
+                $display("PASS: %0s = %0d", name, actual);
+                pass_cnt = pass_cnt + 1;
+            end else begin
+                $display("FAIL: %0s = %0d, expected %0d", name, actual, expected);
+                fail_cnt = fail_cnt + 1;
+            end
+        end
+    endtask
 
     initial begin
         frame[0] = 8'hFF; frame[1] = 8'hFF; frame[2] = 8'hFF;
@@ -192,6 +240,50 @@ module tb_eth_mac_rx_backpressure;
         end else begin
             $display("FAIL: RX error asserted after backpressure");
             fail_cnt = fail_cnt + 1;
+        end
+
+        // -----------------------------------------------------------------
+        // FIFO held full: N frames for us, tready low throughout. Each frame
+        // stores FRAME_LEN bytes (FCS stripped), so FULL_FRAMES fit below the
+        // high-water mark (depth - 4), the next starts with room and is
+        // truncated, and the rest are dropped whole.
+        // -----------------------------------------------------------------
+        begin : fifo_full
+            integer f;
+            integer full_frames;
+            localparam N_FRAMES = 32;
+            full_frames = (2048 - 4) / FRAME_LEN;   // 27 for FRAME_LEN = 74
+
+            @(negedge clk);
+            rx_tready = 1'b0;
+            n_done = 0; n_overflow = 0; n_drop = 0; n_tlast = 0; n_tlast_err = 0;
+
+            for (f = 0; f < N_FRAMES; f = f + 1)
+                send_frame();
+            repeat (100) @(posedge clk);
+
+            check_int("done + drop (FIFO full)", n_done + n_drop, N_FRAMES);
+            check_int("stat_done (FIFO full)", n_done, full_frames + 1);
+            check_int("stat_err_overflow (FIFO full)", n_overflow, 1);
+            check_int("stat_drop (FIFO full)", n_drop, N_FRAMES - full_frames - 1);
+
+            // A frame for another MAC while the FIFO is full: no stat at all
+            frame[0] = 8'h02; frame[1] = 8'h00; frame[2] = 8'h00;
+            frame[3] = 8'h00; frame[4] = 8'h00; frame[5] = 8'h99;
+            n_done = 0; n_drop = 0;
+            send_frame();
+            repeat (100) @(posedge clk);
+            check_int("done + drop (other MAC)", n_done + n_drop, 0);
+            for (f = 0; f < 6; f = f + 1)
+                frame[f] = 8'hFF;
+
+            // Drain: the delivered frames come out, the truncated one with
+            // terror, and nothing of the dropped ones.
+            @(negedge clk);
+            rx_tready = 1'b1;
+            repeat (3000) @(posedge clk);
+            check_int("TLAST handshakes after drain", n_tlast, full_frames + 1);
+            check_int("terror TLASTs after drain", n_tlast_err, 1);
         end
 
         if (fail_cnt == 0) begin
