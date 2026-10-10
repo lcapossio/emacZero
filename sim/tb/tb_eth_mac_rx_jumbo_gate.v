@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
-// tb_eth_mac_rx_jumbo_gate.v - Verify cfg_jumbo_en gates oversize frames in RX
+// tb_eth_mac_rx_jumbo_gate.v - Verify the RX frame-size limits
 // Sends a 1600-byte frame (over the 1518 standard limit) twice:
 //   - jumbo_en=0 -> RX must mark it as terror (oversize error)
 //   - jumbo_en=1 -> RX must accept it cleanly
+// Then, with jumbo_en=0, frames at the standard limit with and without an
+// 802.1Q / 802.1ad tag: a tagged frame may be 1522 wire bytes, an untagged one
+// 1518. A second RX (u_rx2) with MAX_FRAME_JUMBO=1518, as eth_mac_sys builds it
+// for MAX_FRAME=1518, sees the same frames: jumbo_en must never lower its
+// limit below the standard one. Both RXs' oversize stat pulses are counted.
+// Lengths below are AXIS bytes; the wire adds the 4-byte FCS.
 // Verilog 2001
 // =============================================================================
 
@@ -57,6 +63,8 @@ module tb_eth_mac_rx_jumbo_gate;
     wire       rx_tlast;
     wire       rx_terror;
     wire       rx_tsof;
+    wire       rx2_tvalid, rx2_tlast, rx2_terror;
+    wire       stat_done1, stat_ovs1, stat_done2, stat_ovs2;
 
     eth_mac_rx u_rx (
         .clk              (clk),
@@ -75,12 +83,46 @@ module tb_eth_mac_rx_jumbo_gate;
         .m_axis_tlast     (rx_tlast),
         .m_axis_terror    (rx_terror),
         .m_axis_tsof      (rx_tsof),
-        .stat_done(), .stat_len(), .stat_err_fcs(), .stat_err_align(),
-        .stat_err_overflow(), .stat_err_oversize(),
+        .stat_done(stat_done1), .stat_len(), .stat_err_fcs(), .stat_err_align(),
+        .stat_err_overflow(), .stat_err_oversize(stat_ovs1),
+        .stat_is_bcast(), .stat_is_mcast()
+    );
+
+    eth_mac_rx #(.MAX_FRAME_JUMBO(1518)) u_rx2 (
+        .clk              (clk),
+        .rst_n            (rst_n),
+        .gmii_rxd         (lb_rxd),
+        .gmii_rx_dv       (lb_rx_dv),
+        .gmii_rx_er       (lb_rx_er),
+        .our_mac          (48'hFF_FF_FF_FF_FF_FF),
+        .promisc          (1'b0),
+        .passthrough      (1'b0),
+        .jumbo_en         (jumbo_en),
+        .mcast_hash_table (64'd0),
+        .m_axis_tdata     (),
+        .m_axis_tvalid    (rx2_tvalid),
+        .m_axis_tready    (1'b1),
+        .m_axis_tlast     (rx2_tlast),
+        .m_axis_terror    (rx2_terror),
+        .m_axis_tsof      (),
+        .stat_done(stat_done2), .stat_len(), .stat_err_fcs(), .stat_err_align(),
+        .stat_err_overflow(), .stat_err_oversize(stat_ovs2),
         .stat_is_bcast(), .stat_is_mcast()
     );
 
     integer pass_cnt = 0, fail_cnt = 0;
+
+    // Oversize stat pulses per RX, and the second RX's last TLAST.
+    integer ovs1_cnt = 0, ovs2_cnt = 0;
+    reg     saw_last2, saw_terror2;
+    always @(posedge clk) begin
+        if (stat_done1 && stat_ovs1) ovs1_cnt = ovs1_cnt + 1;
+        if (stat_done2 && stat_ovs2) ovs2_cnt = ovs2_cnt + 1;
+        if (rx2_tvalid && rx2_tlast) begin
+            saw_last2   <= 1'b1;
+            saw_terror2 <= rx2_terror;
+        end
+    end
 
     reg saw_last;
     reg saw_terror;
@@ -99,16 +141,19 @@ module tb_eth_mac_rx_jumbo_gate;
         end
     end
 
-    localparam integer FRAME_LEN = 1600;  // > 1518 (oversize for standard)
     integer i;
+    integer frame_len;
+    reg [15:0] frame_tpid;     // bytes 12-13; 0 = untagged sequential pattern
 
     function [7:0] frame_byte;
         input integer idx;
         begin
             // First 6 bytes = dst MAC = broadcast (FF) so RX accepts.
-            // Rest = sequential pattern.
-            if (idx < 6)      frame_byte = 8'hFF;
-            else              frame_byte = idx[7:0];
+            // Bytes 12-13 = frame_tpid when set. Rest = sequential pattern.
+            if (idx < 6)                        frame_byte = 8'hFF;
+            else if (idx == 12 && frame_tpid != 0) frame_byte = frame_tpid[15:8];
+            else if (idx == 13 && frame_tpid != 0) frame_byte = frame_tpid[7:0];
+            else                                frame_byte = idx[7:0];
         end
     endfunction
 
@@ -116,12 +161,14 @@ module tb_eth_mac_rx_jumbo_gate;
         begin
             saw_last    = 1'b0;
             saw_terror  = 1'b0;
+            saw_last2   = 1'b0;
+            saw_terror2 = 1'b0;
             rx_byte_cnt = 0;
             @(negedge clk);
-            for (i = 0; i < FRAME_LEN; i = i + 1) begin
+            for (i = 0; i < frame_len; i = i + 1) begin
                 tx_tdata  = frame_byte(i);
                 tx_tvalid = 1'b1;
-                tx_tlast  = (i == FRAME_LEN - 1);
+                tx_tlast  = (i == frame_len - 1);
                 @(negedge clk);
                 while (!tx_tready) @(negedge clk);
             end
@@ -130,6 +177,40 @@ module tb_eth_mac_rx_jumbo_gate;
 
             // Wait for the loopback frame to come back through RX
             #200000;
+        end
+    endtask
+
+    // Send one frame and check whether each RX ends it with terror and pulses
+    // its oversize stat (want_terror: u_rx, jumbo 9018; want_terror2: u_rx2,
+    // jumbo 1518).
+    integer ovs1_before, ovs2_before;
+    task check_frame;
+        input integer   len;
+        input [15:0]    tpid;
+        input           want_terror;
+        input           want_terror2;
+        begin
+            frame_len  = len;
+            frame_tpid = tpid;
+            ovs1_before = ovs1_cnt;
+            ovs2_before = ovs2_cnt;
+            send_frame();
+            if (saw_last && saw_terror == want_terror &&
+                saw_last2 && saw_terror2 == want_terror2 &&
+                ovs1_cnt - ovs1_before == want_terror &&
+                ovs2_cnt - ovs2_before == want_terror2) begin
+                $display("PASS: %0d-byte frame, TPID %04h, jumbo_en=%0d: %0s / %0s",
+                         len + 4, tpid, jumbo_en,
+                         want_terror  ? "oversize" : "accepted",
+                         want_terror2 ? "oversize" : "accepted");
+                pass_cnt = pass_cnt + 1;
+            end else begin
+                $display("FAIL: %0d-byte frame, TPID %04h, jumbo_en=%0d: terror %0d/%0d (last %0d/%0d), oversize pulses +%0d/+%0d",
+                         len + 4, tpid, jumbo_en, saw_terror, saw_terror2,
+                         saw_last, saw_last2, ovs1_cnt - ovs1_before,
+                         ovs2_cnt - ovs2_before);
+                fail_cnt = fail_cnt + 1;
+            end
         end
     endtask
 
@@ -145,7 +226,9 @@ module tb_eth_mac_rx_jumbo_gate;
         #50;
 
         // ---- Frame 1: jumbo_en = 0 ----
-        jumbo_en = 1'b0;
+        jumbo_en   = 1'b0;
+        frame_len  = 1600;     // > 1518 (oversize for standard)
+        frame_tpid = 16'h0000;
         send_frame();
         if (saw_last && saw_terror) begin
             $display("PASS: 1600-byte frame rejected with terror at jumbo_en=0");
@@ -172,6 +255,25 @@ module tb_eth_mac_rx_jumbo_gate;
             fail_cnt = fail_cnt + 1;
         end
 
+        // ---- VLAN allowance at the standard limit (jumbo_en = 0) ----
+        jumbo_en = 1'b0;
+        check_frame(1514, 16'h0000, 1'b0, 1'b0);   // 1518 untagged: at the limit
+        check_frame(1518, 16'h0000, 1'b1, 1'b1);   // 1522 untagged: oversize
+        check_frame(1518, 16'h8100, 1'b0, 1'b0);   // 1522 802.1Q: accepted
+        check_frame(1518, 16'h88A8, 1'b0, 1'b0);   // 1522 802.1ad: accepted
+        check_frame(1519, 16'h8100, 1'b1, 1'b1);   // 1523 802.1Q: oversize
+        check_frame(1518, 16'h9100, 1'b1, 1'b1);   // 0x9100 is not a recognised TPID
+
+        // ---- jumbo_en = 1: u_rx goes to 9018; u_rx2's jumbo limit (1518)
+        // must not take away the VLAN allowance ----
+        jumbo_en = 1'b1;
+        check_frame(1514, 16'h0000, 1'b0, 1'b0);   // 1518 untagged
+        check_frame(1515, 16'h0000, 1'b0, 1'b1);   // 1519 untagged
+        check_frame(1518, 16'h8100, 1'b0, 1'b0);   // 1522 802.1Q
+        check_frame(1518, 16'h88A8, 1'b0, 1'b0);   // 1522 802.1ad
+        check_frame(1519, 16'h88A8, 1'b0, 1'b1);   // 1523 802.1ad
+        check_frame(1596, 16'h0000, 1'b0, 1'b1);   // 1600 untagged
+
         if (fail_cnt == 0) begin
             $display("PASS: %0d tests passed", pass_cnt);
             $display("ALL TESTS PASSED");
@@ -182,7 +284,7 @@ module tb_eth_mac_rx_jumbo_gate;
     end
 
     initial begin
-        #2_000_000;
+        #8_000_000;
         $display("FAIL: timeout");
         $finish;
     end

@@ -318,9 +318,12 @@ module eth_mac_sys #(
     // =========================================================================
     // MAC RX - strips preamble/SFD, validates CRC
     // =========================================================================
+    // With jumbo_en, RX accepts up to MAX_FRAME wire bytes (FCS included),
+    // the size the RX FIFOs here are built for.
     eth_mac_rx #(
         .MCAST_HASH_FILTER   (MCAST_HASH_FILTER),
-        .AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH)
+        .AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH),
+        .MAX_FRAME_JUMBO     (MAX_FRAME)
     ) u_mac_rx (
         .clk              (clk),
         .rst_n            (rst_n),
