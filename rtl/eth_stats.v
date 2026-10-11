@@ -25,8 +25,8 @@ module eth_stats #(
 
     // ---- Frame completion pulses (single-cycle, sys_clk domain) ----
     input  wire        tx_frame_done,  // falling edge of gmii_tx_en
-    input  wire        rx_frame_good,  // m_axis_tlast && tvalid && !terror
-    input  wire        rx_frame_bad,   // m_axis_tlast && tvalid && terror
+    input  wire        rx_frame_good,  // TLAST handshake (tvalid && tready) && !terror
+    input  wire        rx_frame_bad,   // TLAST handshake (tvalid && tready) && terror
 
     // ---- RX classification bus (single-cycle, end-of-frame) ----
     input  wire        rx_stat_done,   // pulses when a delivered frame ends
@@ -37,6 +37,7 @@ module eth_stats #(
     input  wire        rx_stat_err_oversize,
     input  wire        rx_stat_is_bcast,
     input  wire        rx_stat_is_mcast,
+    input  wire        rx_stat_drop,   // pulses when a frame is dropped whole
 
     // ---- Counter outputs ----
     output reg  [STAT_CNT_W-1:0] tx_frame_cnt,
@@ -62,6 +63,9 @@ module eth_stats #(
     output reg  [STAT_CNT_W-1:0] rx_size_512_1023_cnt,
     output reg  [STAT_CNT_W-1:0] rx_size_1024_1518_cnt,
     output reg  [STAT_CNT_W-1:0] rx_size_jumbo_cnt,     // >1518
+
+    // RX frames dropped whole (no FIFO room at SOF; never delivered)
+    output reg  [STAT_CNT_W-1:0] rx_drop_cnt,
 
     // ---- Clear (active-high pulse) ----
     input  wire        clr_tx,
@@ -170,6 +174,20 @@ module eth_stats #(
             if (bucket_1024_1518) rx_size_1024_1518_cnt <= `SAT_INC(rx_size_1024_1518_cnt);
             if (bucket_jumbo)     rx_size_jumbo_cnt     <= `SAT_INC(rx_size_jumbo_cnt);
         end
+    end
+
+    // =====================================================================
+    // RX whole-frame drops. Separate from the stat_done-driven breakdown:
+    // a dropped frame never produces stat_done, so it is in none of the
+    // counters above.
+    // =====================================================================
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            rx_drop_cnt <= {STAT_CNT_W{1'b0}};
+        else if (clr_rx)
+            rx_drop_cnt <= {STAT_CNT_W{1'b0}};
+        else if (rx_stat_drop)
+            rx_drop_cnt <= `SAT_INC(rx_drop_cnt);
     end
 
     `undef SAT_INC

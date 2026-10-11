@@ -113,6 +113,7 @@ module tb_axilite_regs;
         .stat_rx_size_512_1023_cnt  (32'd0),
         .stat_rx_size_1024_1518_cnt (32'd0),
         .stat_rx_size_jumbo_cnt     (32'd0),
+        .stat_rx_drop_cnt           (32'd0),
         .cfg_pause_rx_en      (),
         .cfg_pause_tx_send    (),
         .cfg_pause_tx_quanta  (),

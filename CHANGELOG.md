@@ -7,6 +7,17 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- `RX_DROP` CSR (`0x7C`, RO/WC): frames that passed the MAC filter but were
+  dropped whole because the RX FIFO had no room at their start, which
+  happens while the AXIS sink holds `m_axis_tready` low (e.g. a DMA with no
+  free buffer). These frames produced no AXIS words and no stat pulse, so
+  until now they were in no frame counter (only RX_BYTE saw their bytes). `eth_mac_rx` gains a `stat_drop`
+  output and `eth_stats` an `rx_drop_cnt` counter in the RX clear group.
+  Once the RX FIFO has drained, `RX_FRAME + RX_DROP` accounts for every frame
+  for this station. The
+  VERSION value is unchanged; `0x7C` reads 0 on older cores, so software can
+  add it to its totals unconditionally (`EMZ_REG_RX_DROP` in `emaczero.h`).
+
 - `ddr_input` / `ddr_output`: an `XILINX_ULTRASCALE_PLUS` branch using
   `IDDRE1` / `ODDRE1`. Without a vendor define both modules are empty, and
   a Vivado block-design build keeps the GMII `gmii_txc` forwarder as a
@@ -251,6 +262,12 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **`RX_FRAME` and `RX_ERR` overcounted under RX backpressure.** They counted
+  every cycle with `m_axis_tvalid && m_axis_tlast`, without `m_axis_tready`,
+  so a TLAST word held at the RX FIFO head by a stalled sink was counted once
+  per stall cycle. They now count one per TLAST handshake. The stat-pulse
+  counters (`RX_ERR_*`, `RX_BCAST`, `RX_MCAST`, `RX_SIZE_*`) were not
+  affected.
 - **RGMII could not be implemented on Xilinx parts.** `rgmii_if` had one set
   of DDR output cells per speed and picked a set with a mux after the cells,
   so a LUT sat between each `ODDR` and its pad. Vivado rejects that
