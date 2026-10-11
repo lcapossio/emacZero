@@ -146,6 +146,11 @@ def _review_cases():
         # FCS as the header's last bytes, which must not be judged
         (Packet(family=4, proto=UDP, l4_len=8, ihl=15, vlan=TPID_8021Q,
                 opts=bytes(40), truncate=10, seed=511), False),
+        # 1522-byte 802.1Q frame (1518 + FCS), the standard tagged maximum
+        # with jumbo_en=0: a bad checksum counts as a checksum error, not
+        # oversize, and a good one passes clean
+        (Packet(family=4, proto=UDP, l4_len=1480, vlan=TPID_8021Q, seed=512), False),
+        (Packet(family=4, proto=UDP, l4_len=1480, vlan=TPID_8021Q, bad_l4=True, seed=513), True),
     ]
 
 
@@ -157,6 +162,8 @@ async def review_cases(dut):
     for n, (p, want_bad) in enumerate(_review_cases()):
         assert len(p.frame()) >= 60 or p.truncate == 0, f"review[{n}] frame too short"
         assert csum_bad(p) == want_bad, f"review[{n}]: model verdict {csum_bad(p)} want {want_bad}"
+        if p.vlan and p.l4_len == 1480:
+            assert len(p.frame()) + 4 == 1522, f"review[{n}]: not a 1522-byte frame"
         items.append((p, True, False))
     await _run(dut, items, rng)
 

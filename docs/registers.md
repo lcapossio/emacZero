@@ -25,7 +25,7 @@ dropped.
 | `0x24` | IRQ_STATUS | W1C | `0x00000000` | Interrupt latched status |
 | `0x28` | TX_FRAME | RO/WC | `0x00000000` | TX frame count |
 | `0x2C` | TX_BYTE | RO/WC | `0x00000000` | TX byte count |
-| `0x30` | RX_FRAME | RO/WC | `0x00000000` | RX frame count |
+| `0x30` | RX_FRAME | RO/WC | `0x00000000` | RX frames delivered to the AXIS sink |
 | `0x34` | RX_BYTE | RO/WC | `0x00000000` | RX byte count |
 | `0x38` | RX_ERR | RO/WC | `0x00000000` | RX error count (frames delivered with `terror`) |
 | `0x3C` | SCRATCH | RW | `0x00000000` | Scratch register |
@@ -33,7 +33,7 @@ dropped.
 | `0x44` | MCAST_LO | RW* | `0x00000000` | `mcast_hash_table[31:0]` |
 | `0x48` | MCAST_HI | RW* | `0x00000000` | `mcast_hash_table[63:32]` |
 | `0x4C` | RX_ERR_ALIGN | RO/WC | `0x00000000` | RX frames with `rx_er` asserted |
-| `0x50` | RX_ERR_OVERFLOW | RO/WC | `0x00000000` | RX frames lost to FIFO overflow |
+| `0x50` | RX_ERR_OVERFLOW | RO/WC | `0x00000000` | RX frames truncated by FIFO overflow |
 | `0x54` | RX_ERR_OVERSIZE | RO/WC | `0x00000000` | RX frames longer than current MAX |
 | `0x58` | RX_BCAST | RO/WC | `0x00000000` | RX broadcast frames |
 | `0x5C` | RX_MCAST | RO/WC | `0x00000000` | RX multicast frames |
@@ -44,6 +44,7 @@ dropped.
 | `0x70` | RX_SIZE_512_1023 | RO/WC | `0x00000000` | RX frames 512-1023 bytes |
 | `0x74` | RX_SIZE_1024_1518 | RO/WC | `0x00000000` | RX frames 1024-1518 bytes |
 | `0x78` | RX_SIZE_JUMBO | RO/WC | `0x00000000` | RX frames > 1518 bytes |
+| `0x7C` | RX_DROP | RO/WC | `0x00000000` | RX frames dropped whole (no FIFO room at their start) |
 | `0x80` | RX_ERR_CSUM | RO/WC | `0x00000000` | RX frames failed for a wrong IP / L4 checksum (CTRL[9]) |
 | `0x84` | PAUSE_CTRL | RW | `0x00000000` | 802.3x PAUSE control |
 | `0x88` | PAUSE_QUANTA | RW | `0x00000000` | Quanta payload of next emitted PAUSE frame |
@@ -77,7 +78,7 @@ across all three on every run.
 | `[2]` | `promisc` | `0` | Accept frames regardless of dst-MAC. |
 | `[4:3]` | `speed` | `00` | `00` = 1G, `01` = 100M, `10` = 10M. |
 | `[5]` | `full_duplex` | `1` | Informational only; MAC is full-duplex by construction. |
-| `[6]` | `jumbo_en` | `0` | Accept frames up to `MAX_FRAME` instead of 1518. |
+| `[6]` | `jumbo_en` | `0` | Accept frames up to `MAX_FRAME` wire bytes instead of 1518 (1522 with an 802.1Q / 802.1ad tag). Both limits count the FCS; jumbo never lowers the limit below the standard one. |
 | `[7]` | `tx_csum_off` | `0` | TX checksum insertion when `TX_CSUM_OFFLOAD=1`: the IPv4 header checksum and the TCP / UDP / ICMP / ICMPv6 checksum are computed and written, whatever software put there, within the scope below (outside it the L4 field is left as software wrote it). Sampled at each frame's first byte, so it may change at any time. No datapath effect when the parameter is 0. |
 | `[8]` | `passthrough` | `0` | Sniffer mode: bypass MAC filter and deliver errored frames tagged via `m_axis_terror`. |
 | `[9]` | `rx_csum_off` | `0` | RX checksum verification when `RX_CSUM_OFFLOAD=1`: a frame whose IPv4 header or TCP / UDP / ICMP / ICMPv6 checksum is wrong ends with `m_axis_terror` and counts in `RX_ERR` and `RX_ERR_CSUM`. The frame is still delivered: the consumer must discard it. Sampled at each frame's SFD. No effect when the parameter is 0. |
@@ -156,16 +157,30 @@ Both are 16-bit values in bits `[15:0]`; upper bits read as 0.
 `IRQ_EN` is a RW mask. `IRQ_STATUS` is W1C. Top-level `irq` is
 `|(IRQ_STATUS & IRQ_EN)`.
 
-## 0x28 / 0x2C / 0x30 / 0x34 / 0x38 - Statistics
+## 0x28 / 0x2C / 0x30 / 0x34 / 0x38 / 0x50 / 0x7C - Statistics
 
 | Offset | Name | Counts |
 |-------:|------|--------|
 | `0x28` | TX_FRAME | Frames accepted by TX. |
 | `0x2C` | TX_BYTE | Payload + header bytes transmitted. |
-| `0x30` | RX_FRAME | Frames passed to AXIS sink. |
-| `0x34` | RX_BYTE | Bytes accepted by RX FIFO. |
-| `0x38` | RX_ERR | RX frames delivered with `terror` (bad FCS, `rx_er`, overflow, size, or with CTRL[9] a wrong checksum). The core does not drop them; the consumer must discard them. |
+| `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. While RX is disabled (CTRL[1]=0) the MAC drains its own FIFO with `m_axis_tvalid` held low, and frames drained that way are counted here too. |
+| `0x34` | RX_BYTE | Bytes with `rx_dv` on the MAC's GMII input, whether or not the frame is delivered. |
+| `0x38` | RX_ERR | Frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, oversize, runt, or with CTRL[9] a wrong checksum), counted on the same handshake as RX_FRAME, including frames drained while RX is disabled. The core does not drop them; the consumer must discard them. |
+| `0x50` | RX_ERR_OVERFLOW | Frames that started with RX FIFO room and ran out mid-frame: truncated and delivered with terror, so also in RX_FRAME and RX_ERR. |
+| `0x7C` | RX_DROP | Frames that passed the MAC filter but found no RX FIFO room at their start, because the sink held `m_axis_tready` low. Dropped whole: no AXIS words, so they are in no other RX frame or classification counter (RX_BYTE does include their bytes). Counted whatever their FCS or length. |
 | `0x80` | RX_ERR_CSUM | RX frames failed only for a wrong IP / L4 checksum (CTRL[9]). A frame that also has a bad FCS or another error is not counted here. |
+
+Every frame that passes the MAC filter ends up in exactly one of RX_FRAME or
+RX_DROP, so once the RX FIFO has drained, `RX_FRAME + RX_DROP` is the number
+of frames for this station and `RX_DROP + RX_ERR` the number not delivered
+clean. A frame still waiting in the FIFO is in neither until the sink takes
+its TLAST, and the totals only hold between clears and below saturation.
+Frames for other addresses and fragments shorter than 6 bytes are in
+neither.
+
+RX_DROP was added after the original map. On a core without it, `0x7C` reads
+0 (unmapped offsets read 0), so software can add it to its totals
+unconditionally.
 
 Writing any value to a TX counter clears both TX counters. Writing any value
 to an RX counter clears all RX counters in the `eth_stats` RX block.

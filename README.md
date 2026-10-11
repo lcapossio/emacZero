@@ -53,6 +53,12 @@ ICMPv6 over IPv4 and IPv6).
   The MII 10/100 path is standard-MTU only: its 4096-byte TX FIFO and RX replay
   buffer cannot buffer a jumbo frame while the slow MII side drains it, so set
   `MAX_FRAME=1518` for MII builds.
+  On RX, `MAX_FRAME` is the wire size with the FCS, like the 1518 standard
+  limit: with `jumbo_en=1` RX accepts up to `MAX_FRAME` bytes, with
+  `jumbo_en=0` 1518, or 1522 with an 802.1Q / 802.1ad tag. TX counts the same
+  parameter in AXIS bytes, before the FCS it appends, so it can send a frame
+  4 bytes longer than an identically built RX accepts. `MAX_FRAME` must be at
+  most 16382; a larger value is an elaboration error.
 - **Checksum offload** - optional, per direction. TX (`TX_CSUM_OFFLOAD=1`,
   `rtl/net/tx_csum_off.v`, CTRL[7]) computes and inserts the IPv4 header
   checksum and the TCP / UDP / ICMP (IPv4) or TCP / UDP / ICMPv6 (IPv6)
@@ -243,15 +249,15 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0x24 | IRQ_STATUS | W1C | Same bits as IRQ_EN, write-1-to-clear |
 | 0x28 | TX_FRAME_CNT | RO/WC | TX frame counter (write-any-to-clear) |
 | 0x2C | TX_BYTE_CNT | RO/WC | TX byte counter |
-| 0x30 | RX_FRAME_CNT | RO/WC | RX frame counter |
+| 0x30 | RX_FRAME_CNT | RO/WC | RX frames delivered to the AXIS sink (one per TLAST handshake, incl. errored) |
 | 0x34 | RX_BYTE_CNT | RO/WC | RX byte counter |
-| 0x38 | RX_ERR_CNT | RO/WC | RX frames delivered with `terror` (FCS, size, `rx_er`, overflow, or checksum with CTRL[9]) |
+| 0x38 | RX_ERR_CNT | RO/WC | RX frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, size, or a wrong checksum with CTRL[9]) |
 | 0x3C | SCRATCH | RW | Read-back test register |
 | 0x40 | IP_ADDR | RW | Demo L3 stack IPv4, `cfg_ip_addr[31:0]` (default 0xC0A889C8 = 192.168.137.200); sets the ARP/ICMP/UDP match address in the example L3 design. Unused by the bare MAC. |
 | 0x44 | MCAST_LO | RW | mcast_hash_table[31:0] (only if MCAST_HASH_FILTER=1) |
 | 0x48 | MCAST_HI | RW | mcast_hash_table[63:32] (only if MCAST_HASH_FILTER=1) |
 | 0x4C | RX_ERR_ALIGN | RO/WC | RX frames with `rx_er` asserted |
-| 0x50 | RX_ERR_OVERFLOW | RO/WC | RX frames lost to FIFO overflow |
+| 0x50 | RX_ERR_OVERFLOW | RO/WC | RX frames truncated by FIFO overflow (delivered with terror) |
 | 0x54 | RX_ERR_OVERSIZE | RO/WC | RX frames longer than current MAX |
 | 0x58 | RX_BCAST | RO/WC | RX broadcast frames |
 | 0x5C | RX_MCAST | RO/WC | RX multicast frames |
@@ -262,6 +268,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0x70 | RX_SIZE_512_1023 | RO/WC | RX frames 512-1023 bytes |
 | 0x74 | RX_SIZE_1024_1518 | RO/WC | RX frames 1024-1518 bytes |
 | 0x78 | RX_SIZE_JUMBO | RO/WC | RX frames > 1518 bytes |
+| 0x7C | RX_DROP | RO/WC | RX frames for us dropped whole: no RX FIFO room at their start (sink stalled). In no other RX frame counter (RX_BYTE includes their bytes) |
 | 0x80 | RX_ERR_CSUM | RO/WC | RX frames failed for a wrong IPv4 header / TCP / UDP / ICMP / ICMPv6 checksum (CTRL[9], `RX_CSUM_OFFLOAD=1`); counts only frames with no other error |
 | 0x84 | PAUSE_CTRL | RW | [0] tx_send [1] rx_en |
 | 0x88 | PAUSE_QUANTA | RW | [15:0] quanta for next emitted PAUSE frame |
@@ -321,13 +328,13 @@ after changing `rgmii_if.v` or the DDR wrappers.
 | ETH-STATS | Statistics counters: increment, saturation, clear | 19 |
 | AXILITE-REGS | AXI4-Lite CSR: all register behaviors | 35 |
 | GMII-CDC | GMII CDC bridge: loopback, data integrity, back-to-back | 7 |
-| ETH-MAC-SYS | Full integration: AXI-Lite config, MII loopback, stats, MDIO | 10 |
+| ETH-MAC-SYS | Full integration: AXI-Lite config, MII loopback, stats, MDIO | 27 |
 | RGMII-IF | RGMII DDR pin packing/unpacking at 1G | 14 |
 | RGMII-IF-100M | 100M then 10M RGMII pin loopback, RX clocked by the forwarded TXC: low-nibble-first TX, byte-exact RX pairing, one unbroken `gmii_rx_dv` envelope per burst, TXC period and duty cycle, TXC edges >= 8 ns from data changes | 13 |
 | RGMII-IF-SPEED-SWITCH | `cfg_speed` changed between every pair of 1G / 100M / 10M at all 50 TX counter phases (100M <-> 10M also through `11` for a cycle): every TXC high time is a full pulse of a speed in flight, no short low time, TXC low through reset, a byte-exact burst after each change | 6 |
 | MCAST-FILTER | Multicast hash filter accept/drop behavior | 6 |
 | ETH-MAC-RX-BACKPRESSURE | RX path holds frames when downstream stalls | 3 |
-| ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate | 3 |
+| ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate; 1518 untagged / 1522 VLAN-tagged standard limit; jumbo with a 1518 limit keeps the VLAN allowance; oversize stat pulses | 15 |
 | ETH-MAC-RX-BYTE0 | RX byte-zero/start-of-frame handling | 4 |
 | MDIO-MASTER | MDIO master read/write protocol, 1-bit shift fix | 10 |
 | TX-CSUM-OFF | TX checksum inserter: exact IPv4 header and UDP checksums on a known frame | 5 |
@@ -352,6 +359,7 @@ after changing `rgmii_if.v` or the DDR wrappers.
 | RGMII-10M-LOOPBACK | As RGMII-100M-LOOPBACK at 10M (no jumbo) | 14 |
 | GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er` on the last kept byte, whole-frame drop, EOF-only frames, no merged frames, recovery | 31 |
 | GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, back-to-back frames with IFG >= 12 byte times, oversize gate, GTX_CLK integrity | 27 |
+| ETH-MAC-SYS-MAX-FRAME | `eth_mac_sys` with `MAX_FRAME=2000`: RX jumbo limit follows `MAX_FRAME`, VLAN-tagged 1522-byte frame accepted with jumbo off, `RX_ERR_OVERSIZE` | 8 |
 | GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |
 | ZCU106-I2C-INIT | ZCU106 Si5328 I2C write sequence against the register list, NACK retry at the alternate address | 3 |
 | ZCU106-SFP-LB | ZCU106 loopback tester against the emacZero demo back to back: ARP / ICMP / UDP requests all answered exactly, a corrupted reply caught, frames for another MAC / IP / port or with a bad checksum / FCS / `tx_er` ignored, short (padded) payloads echoed exactly | 15 |

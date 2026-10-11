@@ -197,6 +197,7 @@ module eth_mac_sys #(
     wire [31:0] stat_rx_size_512_1023_cnt;
     wire [31:0] stat_rx_size_1024_1518_cnt;
     wire [31:0] stat_rx_size_jumbo_cnt;
+    wire [31:0] stat_rx_drop_cnt;
     wire [31:0] stat_rx_err_csum_cnt;
 
     // RX classification bus (from eth_mac_rx)
@@ -209,6 +210,7 @@ module eth_mac_sys #(
     wire        rx_stat_err_csum;
     wire        rx_stat_is_bcast;
     wire        rx_stat_is_mcast;
+    wire        rx_stat_drop;
 
     wire        stat_clr_tx;
     wire        stat_clr_rx;
@@ -322,9 +324,12 @@ module eth_mac_sys #(
     // =========================================================================
     // MAC RX - strips preamble/SFD, validates CRC
     // =========================================================================
+    // With jumbo_en, RX accepts up to MAX_FRAME wire bytes (FCS included),
+    // the size the RX FIFOs here are built for.
     eth_mac_rx #(
         .MCAST_HASH_FILTER   (MCAST_HASH_FILTER),
         .AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH),
+        .MAX_FRAME_JUMBO     (MAX_FRAME),
         .RX_CSUM_OFFLOAD     (RX_CSUM_OFFLOAD)
     ) u_mac_rx (
         .clk              (clk),
@@ -352,7 +357,8 @@ module eth_mac_sys #(
         .stat_err_oversize (rx_stat_err_oversize),
         .stat_err_csum     (rx_stat_err_csum),
         .stat_is_bcast     (rx_stat_is_bcast),
-        .stat_is_mcast     (rx_stat_is_mcast)
+        .stat_is_mcast     (rx_stat_is_mcast),
+        .stat_drop         (rx_stat_drop)
     );
 
     // =========================================================================
@@ -775,9 +781,11 @@ module eth_mac_sys #(
     // TX byte / frame-done events come from the active PHY's TX framer
     // (tx_byte_ev / tx_frame_done_ev), muxed in the generate branches above.
 
-    // RX frame done pulses
-    wire rx_frame_good = m_axis_tvalid_mac & m_axis_tlast_mac & ~m_axis_terror_mac;
-    wire rx_frame_bad  = m_axis_tvalid_mac & m_axis_tlast_mac &  m_axis_terror_mac;
+    // RX frame done pulses: one per TLAST handshake. Without tready, a TLAST
+    // word held at the FIFO head by a stalled sink would count once per cycle.
+    wire rx_tlast_hs   = m_axis_tvalid_mac & m_axis_tready_mac & m_axis_tlast_mac;
+    wire rx_frame_good = rx_tlast_hs & ~m_axis_terror_mac;
+    wire rx_frame_bad  = rx_tlast_hs &  m_axis_terror_mac;
 
     eth_stats u_stats (
         .clk            (clk),
@@ -796,6 +804,7 @@ module eth_mac_sys #(
         .rx_stat_err_csum     (rx_stat_err_csum),
         .rx_stat_is_bcast     (rx_stat_is_bcast),
         .rx_stat_is_mcast     (rx_stat_is_mcast),
+        .rx_stat_drop         (rx_stat_drop),
         .tx_frame_cnt   (stat_tx_frame_cnt),
         .tx_byte_cnt    (stat_tx_byte_cnt),
         .rx_frame_cnt   (stat_rx_frame_cnt),
@@ -814,6 +823,7 @@ module eth_mac_sys #(
         .rx_size_512_1023_cnt  (stat_rx_size_512_1023_cnt),
         .rx_size_1024_1518_cnt (stat_rx_size_1024_1518_cnt),
         .rx_size_jumbo_cnt     (stat_rx_size_jumbo_cnt),
+        .rx_drop_cnt           (stat_rx_drop_cnt),
         .clr_tx         (stat_clr_tx),
         .clr_rx         (stat_clr_rx)
     );
@@ -893,6 +903,7 @@ module eth_mac_sys #(
         .stat_rx_size_1024_1518_cnt (stat_rx_size_1024_1518_cnt),
         .stat_rx_err_csum_cnt     (stat_rx_err_csum_cnt),
         .stat_rx_size_jumbo_cnt     (stat_rx_size_jumbo_cnt),
+        .stat_rx_drop_cnt           (stat_rx_drop_cnt),
         .cfg_pause_rx_en      (cfg_pause_rx_en),
         .cfg_pause_tx_send    (cfg_pause_tx_send),
         .cfg_pause_tx_quanta  (cfg_pause_tx_quanta),

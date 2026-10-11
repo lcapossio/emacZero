@@ -45,6 +45,7 @@ module tb_eth_stats;
         .rx_stat_err_csum     (1'b0),
         .rx_stat_is_bcast     (1'b0),
         .rx_stat_is_mcast     (1'b0),
+        .rx_stat_drop         (1'b0),
         .tx_frame_cnt   (tx_frame_cnt),
         .tx_byte_cnt    (tx_byte_cnt),
         .rx_frame_cnt   (rx_frame_cnt),
@@ -63,6 +64,7 @@ module tb_eth_stats;
         .rx_size_512_1023_cnt  (),
         .rx_size_1024_1518_cnt (),
         .rx_size_jumbo_cnt     (),
+        .rx_drop_cnt           (),
         .clr_tx         (clr_tx),
         .clr_rx         (clr_rx)
     );

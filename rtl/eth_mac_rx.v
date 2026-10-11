@@ -13,6 +13,10 @@ module eth_mac_rx #(
     // downstream DMA stalls before declaring an overflow error. Errored frames
     // are delivered with terror; the consumer must discard them.
     parameter AXIS_FIFO_ADDR_WIDTH = 11,   // 2048 bytes (BRAM-backed sync FIFO)
+    // Frame-size limits in wire bytes after the SFD, FCS included. A frame
+    // with an 802.1Q / 802.1ad tag may be 4 bytes over MAX_FRAME_STD (1522),
+    // as 802.3 allows. jumbo_en raises the limit to MAX_FRAME_JUMBO, tagged
+    // or not, and never lowers it below the standard one.
     parameter MAX_FRAME_STD       = 1518,  // 802.3 standard
     parameter MAX_FRAME_JUMBO     = 9018,  // typical jumbo MTU + headers
     // 1 = build the RX checksum checker (csum_calc.v): with rx_csum_en set, a
@@ -60,10 +64,16 @@ module eth_mac_rx #(
     output reg         stat_err_fcs,
     output reg         stat_err_align,   // rx_er asserted during frame
     output reg         stat_err_overflow,// FIFO overflow during frame
-    output reg         stat_err_oversize,// length > MAX_FRAME (std/jumbo gated)
+    output reg         stat_err_oversize,// length > MAX_FRAME (std/jumbo gated,
+                                         // std +4 for a VLAN-tagged frame)
     output reg         stat_err_csum,    // IP/L4 checksum wrong, no other error
     output reg         stat_is_bcast,    // dst-MAC = FF:FF:FF:FF:FF:FF
-    output reg         stat_is_mcast     // dst-MAC[byte0][LSB]=1 and !bcast
+    output reg         stat_is_mcast,    // dst-MAC[byte0][LSB]=1 and !bcast
+
+    // Pulses 1 cycle at end-of-frame for a frame that passed the MAC filter
+    // but was dropped whole because the FIFO had no room for its SOF. Such a
+    // frame produces no AXIS words and no stat_done, so this is its only trace.
+    output reg         stat_drop
 );
 
     localparam [2:0]
@@ -100,6 +110,7 @@ module eth_mac_rx #(
     reg        rx_overflow_seen;
     reg        is_bcast_r;
     reg        is_mcast_r;
+    reg        vlan_tag;         // bytes 12-13 are TPID 0x8100 or 0x88A8
     reg        csum_en_r;        // rx_csum_en latched at this frame's SFD
 
     wire [47:0] mac_chk = {dst_mac_captured[39:0], gmii_rxd};
@@ -108,9 +119,9 @@ module eth_mac_rx #(
                                   mac_chk[29:24] ^ mac_chk[35:30] ^
                                   mac_chk[41:36] ^ mac_chk[47:42];
 
-    // Combinational MAC-pass at byte_cnt=5. Used to gate the byte_cnt=5 push
-    // since mac_ok is registered (lands one cycle later, after byte 0 has
-    // already shifted past delay_pipe1).
+    // Combinational MAC-pass at byte_cnt=5. Gates the byte_cnt=5 SOF push
+    // directly, since mac_ok is its registered copy and lands one cycle later,
+    // after byte 0 has already shifted past delay_pipe1.
     wire mac_pass_now = (mac_chk == our_mac) ||
                          (mac_chk == 48'hFFFFFFFFFFFF) ||
                          promisc || passthrough ||
@@ -140,12 +151,13 @@ module eth_mac_rx #(
     wire        fifo_rd_valid;
     wire [AXIS_FIFO_ADDR_WIDTH:0] fifo_count;
 
-    // Reserve a few slots so a frame's SOF and closing TLAST words are never the
-    // ones dropped on overflow: once occupancy passes the high-water mark we stop
-    // pushing DATA (dropped bytes just set the overflow/terror flag), but the SOF
-    // that starts a frame and the TLAST that ends it always find room. That keeps
-    // AXIS framing intact under backpressure - a dropped SOF would leave the sink
-    // unable to delimit, and a dropped TLAST would merge this frame into the next.
+    // Reserve a few slots above the high-water mark so a started frame's closing
+    // TLAST always finds room. A frame is only started (SOF pushed) while
+    // occupancy is below the mark; one that arrives above it is dropped whole
+    // and reported on stat_drop. A started frame that crosses the mark stops
+    // pushing DATA (dropped bytes set the overflow/terror flag) but still gets
+    // its TLAST. That keeps AXIS framing intact under backpressure - a dropped
+    // TLAST would merge this frame into the next.
     localparam [AXIS_FIFO_ADDR_WIDTH:0] FIFO_HWM = AXIS_FIFO_DEPTH - 4;
     wire fifo_room = (fifo_count < FIFO_HWM);
 
@@ -187,8 +199,22 @@ module eth_mac_rx #(
     wire err_fcs_now      = (crc_out != 32'hDEBB20E3);
     wire err_align_now    = rx_er_seen;
     wire err_overflow_now = rx_overflow_seen;
-    wire err_oversize_now = (!jumbo_en && (byte_cnt > MAX_FRAME_STD)) ||
-                            (jumbo_en  && (byte_cnt > MAX_FRAME_JUMBO));
+    wire over_std_now     = vlan_tag ? (byte_cnt > MAX_FRAME_STD + 4)
+                                     : (byte_cnt > MAX_FRAME_STD);
+    wire err_oversize_now = over_std_now &&
+                            (!jumbo_en || (byte_cnt > MAX_FRAME_JUMBO));
+
+    // byte_cnt saturates at 16383, so a limit of 16383 or more could never be
+    // exceeded and oversize frames would pass clean. Verilog-2001 has no
+    // elaboration-time $error, so an unsupported limit instantiates a module
+    // that does not exist; its name is the error message.
+    generate
+        if ((MAX_FRAME_JUMBO > 16382) || (MAX_FRAME_STD + 4 > 16382)) begin : gen_limit_check
+            EMACZERO_CONFIG_ERROR_eth_mac_rx_frame_limit_must_be_at_most_16382
+                u_frame_limit_too_large ();
+        end
+    endgenerate
+
     // Runt: a valid 802.3 frame is >= 64 wire bytes (60 data/pad + 4 FCS).
     // byte_cnt counts bytes after the SFD, so < 64 is undersized - a collision
     // fragment or truncated frame. Deliver it with terror instead of as a clean
@@ -322,6 +348,7 @@ module eth_mac_rx #(
             rx_overflow_seen <= 1'b0;
             is_bcast_r       <= 1'b0;
             is_mcast_r       <= 1'b0;
+            vlan_tag         <= 1'b0;
             csum_en_r        <= 1'b0;
             stat_done         <= 1'b0;
             stat_len          <= 14'd0;
@@ -332,6 +359,7 @@ module eth_mac_rx #(
             stat_err_csum     <= 1'b0;
             stat_is_bcast     <= 1'b0;
             stat_is_mcast     <= 1'b0;
+            stat_drop         <= 1'b0;
             push_en_r         <= 1'b0;
             push_data_r       <= 8'd0;
             push_last_r       <= 1'b0;
@@ -341,6 +369,7 @@ module eth_mac_rx #(
             crc_init         <= 1'b0;
             crc_data_valid   <= 1'b0;
             stat_done         <= 1'b0;
+            stat_drop         <= 1'b0;
             push_en_r         <= push_en;
             push_data_r       <= push_data;
             push_last_r       <= push_last;
@@ -370,6 +399,7 @@ module eth_mac_rx #(
                     rx_overflow_seen <= 1'b0;
                     is_bcast_r       <= 1'b0;
                     is_mcast_r       <= 1'b0;
+                    vlan_tag         <= 1'b0;
                     if (gmii_rx_dv && gmii_rxd == 8'h55)
                         state <= S_PREAMBLE;
                 end
@@ -406,16 +436,7 @@ module eth_mac_rx #(
                             dst_mac_captured <= {dst_mac_captured[39:0], gmii_rxd};
 
                         if (byte_cnt == 14'd5) begin
-                            if (mac_chk == our_mac ||
-                                mac_chk == 48'hFFFFFFFFFFFF ||
-                                promisc || passthrough ||
-                                (MCAST_HASH_FILTER &&
-                                 mac_chk[40] &&
-                                 mac_chk != 48'hFFFFFFFFFFFF &&
-                                 mcast_hash_table[mcast_hash_idx]))
-                                mac_ok <= 1'b1;
-                            else
-                                mac_ok <= 1'b0;
+                            mac_ok <= mac_pass_now;
 
                             // Bcast / mcast classification on dst-MAC byte 0 LSB.
                             // mac_chk[40] = first dst-MAC byte's LSB (I/G bit).
@@ -423,6 +444,11 @@ module eth_mac_rx #(
                             is_mcast_r <= mac_chk[40] &&
                                           (mac_chk != 48'hFFFFFFFFFFFF);
                         end
+
+                        // delay_pipe5 still holds byte 12 here.
+                        if (byte_cnt == 14'd13)
+                            vlan_tag <= ({delay_pipe5, gmii_rxd} == 16'h8100) ||
+                                        ({delay_pipe5, gmii_rxd} == 16'h88A8);
 
                         delay_pipe5 <= gmii_rxd;
                         delay_pipe4 <= delay_pipe5;
@@ -459,6 +485,11 @@ module eth_mac_rx #(
                         stat_err_csum     <= err_csum_now;
                         stat_is_bcast     <= is_bcast_r;
                         stat_is_mcast     <= is_mcast_r;
+                    end else if (mac_ok) begin
+                        // Passed the filter but its SOF found no FIFO room:
+                        // dropped whole. Counted whatever its FCS or length,
+                        // since the frame was never delivered to be judged.
+                        stat_drop <= 1'b1;
                     end
                 end
 

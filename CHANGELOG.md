@@ -7,6 +7,17 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- `RX_DROP` CSR (`0x7C`, RO/WC): frames that passed the MAC filter but were
+  dropped whole because the RX FIFO had no room at their start, which
+  happens while the AXIS sink holds `m_axis_tready` low (e.g. a DMA with no
+  free buffer). These frames produced no AXIS words and no stat pulse, so
+  until now they were in no frame counter (only RX_BYTE saw their bytes). `eth_mac_rx` gains a `stat_drop`
+  output and `eth_stats` an `rx_drop_cnt` counter in the RX clear group.
+  Once the RX FIFO has drained, `RX_FRAME + RX_DROP` accounts for every frame
+  for this station. The
+  VERSION value is unchanged; `0x7C` reads 0 on older cores, so software can
+  add it to its totals unconditionally (`EMZ_REG_RX_DROP` in `emaczero.h`).
+
 - **RX checksum offload** (`RX_CSUM_OFFLOAD=1`, CTRL[9] `rx_csum_off`).
   `eth_mac_rx` verifies the IPv4 header checksum and the TCP / UDP / ICMP
   (IPv4) or TCP / UDP / ICMPv6 (IPv6) checksum of each frame, pseudo-header
@@ -304,6 +315,28 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **`RX_FRAME` and `RX_ERR` overcounted under RX backpressure.** They counted
+  every cycle with `m_axis_tvalid && m_axis_tlast`, without `m_axis_tready`,
+  so a TLAST word held at the RX FIFO head by a stalled sink was counted once
+  per stall cycle. They now count one per TLAST handshake. The stat-pulse
+  counters (`RX_ERR_*`, `RX_BCAST`, `RX_MCAST`, `RX_SIZE_*`) were not
+  affected.
+- RX accepts a full-size VLAN-tagged frame. A frame with an 802.1Q (0x8100)
+  or 802.1ad (0x88A8) tag may be 1522 bytes on the wire with `jumbo_en=0`;
+  RX used to flag it oversize (`terror`, `RX_ERR_OVERSIZE`), so a VLAN trunk
+  lost every max-MTU frame. Untagged frames keep the 1518 limit.
+- RX's jumbo limit now follows `MAX_FRAME`. `eth_mac_sys` and `eth_mac` pass
+  it to `eth_mac_rx`, which used to keep its own 9018-byte limit, so a build
+  with a smaller `MAX_FRAME` and `jumbo_en=1` accepted frames longer than its
+  buffers were sized for. Both limits count the FCS. `jumbo_en` now only
+  raises the limit: with `MAX_FRAME=1518` and `jumbo_en=1` a tagged 1522-byte
+  frame is still accepted. Default builds (`MAX_FRAME=9018`) behave as
+  before. TX still counts `MAX_FRAME` in AXIS bytes, before the FCS, so it
+  can send 4 bytes more than RX accepts; README states both.
+- `eth_mac_rx` rejects a frame limit above 16382 at elaboration (an
+  `EMACZERO_CONFIG_ERROR_...` module), so `MAX_FRAME` must be at most 16382.
+  Its byte counter stops at 16383, so a larger limit could never be exceeded
+  and oversize frames would have passed clean.
 - **RGMII could not be implemented on Xilinx parts.** `rgmii_if` had one set
   of DDR output cells per speed and picked a set with a mux after the cells,
   so a LUT sat between each `ODDR` and its pad. Vivado rejects that
