@@ -27,7 +27,7 @@ dropped.
 | `0x2C` | TX_BYTE | RO/WC | `0x00000000` | TX byte count |
 | `0x30` | RX_FRAME | RO/WC | `0x00000000` | RX frames delivered to the AXIS sink |
 | `0x34` | RX_BYTE | RO/WC | `0x00000000` | RX byte count |
-| `0x38` | RX_ERR | RO/WC | `0x00000000` | RX frames delivered with terror |
+| `0x38` | RX_ERR | RO/WC | `0x00000000` | RX error count (frames delivered with `terror`) |
 | `0x3C` | SCRATCH | RW | `0x00000000` | Scratch register |
 | `0x40` | IP_ADDR | RW | `0xC0A889C8` | Demo L3 stack IPv4 (`cfg_ip_addr`, default 192.168.137.200) |
 | `0x44` | MCAST_LO | RW* | `0x00000000` | `mcast_hash_table[31:0]` |
@@ -45,6 +45,7 @@ dropped.
 | `0x74` | RX_SIZE_1024_1518 | RO/WC | `0x00000000` | RX frames 1024-1518 bytes |
 | `0x78` | RX_SIZE_JUMBO | RO/WC | `0x00000000` | RX frames > 1518 bytes |
 | `0x7C` | RX_DROP | RO/WC | `0x00000000` | RX frames dropped whole (no FIFO room at their start) |
+| `0x80` | RX_ERR_CSUM | RO/WC | `0x00000000` | RX frames failed for a wrong IP / L4 checksum (CTRL[9]) |
 | `0x84` | PAUSE_CTRL | RW | `0x00000000` | 802.3x PAUSE control |
 | `0x88` | PAUSE_QUANTA | RW | `0x00000000` | Quanta payload of next emitted PAUSE frame |
 | `0x8C` | PAUSE_RX_CNT | RO/WC | `0x00000000` | Received PAUSE frames |
@@ -78,9 +79,34 @@ across all three on every run.
 | `[4:3]` | `speed` | `00` | `00` = 1G, `01` = 100M, `10` = 10M. |
 | `[5]` | `full_duplex` | `1` | Informational only; MAC is full-duplex by construction. |
 | `[6]` | `jumbo_en` | `0` | Accept frames up to `MAX_FRAME` wire bytes instead of 1518 (1522 with an 802.1Q / 802.1ad tag). Both limits count the FCS; jumbo never lowers the limit below the standard one. |
-| `[7]` | `tx_csum_off` | `0` | Runtime select for TX checksum offload when `TX_CSUM_OFFLOAD=1`; no datapath effect when that parameter is 0. |
+| `[7]` | `tx_csum_off` | `0` | TX checksum insertion when `TX_CSUM_OFFLOAD=1`: the IPv4 header checksum and the TCP / UDP / ICMP / ICMPv6 checksum are computed and written, whatever software put there, within the scope below (outside it the L4 field is left as software wrote it). Sampled at each frame's first byte, so it may change at any time. No datapath effect when the parameter is 0. |
 | `[8]` | `passthrough` | `0` | Sniffer mode: bypass MAC filter and deliver errored frames tagged via `m_axis_terror`. |
-| `[31:9]` | reserved | `0` | Reads as 0; writes ignored. |
+| `[9]` | `rx_csum_off` | `0` | RX checksum verification when `RX_CSUM_OFFLOAD=1`: a frame whose IPv4 header or TCP / UDP / ICMP / ICMPv6 checksum is wrong ends with `m_axis_terror` and counts in `RX_ERR` and `RX_ERR_CSUM`. The frame is still delivered: the consumer must discard it. Sampled at each frame's SFD. No effect when the parameter is 0. |
+| `[31:10]` | reserved | `0` | Reads as 0; writes ignored. |
+
+Checksum offload scope (both directions): Ethernet II with at most one 802.1Q
+(0x8100) or 802.1ad (0x88A8) tag; IPv4 with any header length, or the IPv6
+fixed header followed directly by TCP (6), UDP (17) or ICMPv6 (58). The sums
+cover the IP datagram as its length field gives it, not padding; UDP covers
+only its own Length field's bytes, which is also the length in its
+pseudo-header. Left to software, passed through with the L4 checksum
+unchanged and unchecked (the IPv4 header checksum is still handled):
+
+- IPv4 fragments;
+- IPv4 with a loose or strict source route option (the pseudo-header would
+  need the route's final destination), or an option with a length below 2;
+- UDP whose Length is below 8 or beyond the IP payload;
+- on RX, a datagram longer than its frame (the IPv4 header is checked as soon
+  as it has arrived).
+
+IPv6 packets with extension headers, and anything inside a tunnel, pass
+through unchanged and unchecked. On RX a UDP checksum of 0 means "no
+checksum" and passes over IPv4, and is an error over IPv6 (RFC 8200); on TX a
+UDP checksum that computes to 0 is sent as 0xFFFF. A driver should therefore claim RX checksum offload only for
+the packets above and verify the rest itself (for Zephyr, report the
+per-protocol capabilities and keep IPv6 extension-header and fragment checks
+in software). RX checksum offload only flags a failing frame with
+`m_axis_terror`; whatever consumes `m_axis` must drop frames that end with it.
 
 Reset value `0x23` = `tx_en | rx_en | full_duplex`.
 
@@ -139,9 +165,10 @@ Both are 16-bit values in bits `[15:0]`; upper bits read as 0.
 | `0x2C` | TX_BYTE | Payload + header bytes transmitted. |
 | `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. While RX is disabled (CTRL[1]=0) the MAC drains its own FIFO with `m_axis_tvalid` held low, and frames drained that way are counted here too. |
 | `0x34` | RX_BYTE | Bytes with `rx_dv` on the MAC's GMII input, whether or not the frame is delivered. |
-| `0x38` | RX_ERR | Frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, oversize, runt), counted on the same handshake as RX_FRAME, including frames drained while RX is disabled. |
+| `0x38` | RX_ERR | Frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, oversize, runt, or with CTRL[9] a wrong checksum), counted on the same handshake as RX_FRAME, including frames drained while RX is disabled. The core does not drop them; the consumer must discard them. |
 | `0x50` | RX_ERR_OVERFLOW | Frames that started with RX FIFO room and ran out mid-frame: truncated and delivered with terror, so also in RX_FRAME and RX_ERR. |
 | `0x7C` | RX_DROP | Frames that passed the MAC filter but found no RX FIFO room at their start, because the sink held `m_axis_tready` low. Dropped whole: no AXIS words, so they are in no other RX frame or classification counter (RX_BYTE does include their bytes). Counted whatever their FCS or length. |
+| `0x80` | RX_ERR_CSUM | RX frames failed only for a wrong IP / L4 checksum (CTRL[9]). A frame that also has a bad FCS or another error is not counted here. |
 
 Every frame that passes the MAC filter ends up in exactly one of RX_FRAME or
 RX_DROP, so once the RX FIFO has drained, `RX_FRAME + RX_DROP` is the number
