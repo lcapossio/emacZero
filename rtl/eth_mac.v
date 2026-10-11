@@ -207,7 +207,10 @@ module eth_mac #(
     // =========================================================================
     // MAC RX ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â strips preamble/SFD, validates CRC
     // =========================================================================
-    eth_mac_rx #(.AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH)) u_mac_rx (
+    eth_mac_rx #(
+        .AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH),
+        .MAX_FRAME_JUMBO     (MAX_FRAME)          // with jumbo_en, FCS included
+    ) u_mac_rx (
         .clk              (clk),
         .rst_n            (rst_n),
         .gmii_rxd         (gmii_rxd),

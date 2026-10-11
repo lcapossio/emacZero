@@ -47,8 +47,9 @@ def rx_expected(frames, our_mac, promisc, passthrough, jumbo_en,
             continue                                  # dropped: no output, no stat
         dst = _dst_int(fr.payload)
         byte_cnt = len(fr.payload) + 4                # data + FCS on the wire
-        limit = max_jumbo if jumbo_en else max_std
-        oversize = byte_cnt > limit
+        tagged = bytes(fr.payload[12:14]) in (bytes([0x81, 0x00]), bytes([0x88, 0xA8]))
+        over_std = byte_cnt > max_std + (4 if tagged else 0)
+        oversize = over_std and (not jumbo_en or byte_cnt > max_jumbo)
         is_bcast = dst == BROADCAST
         is_mcast = bool(fr.payload[0] & 1) and not is_bcast
         terror = fr.corrupt_fcs or fr.align_err or oversize
