@@ -85,7 +85,7 @@ module tb_eth_mac_rx_jumbo_gate;
         .m_axis_tsof      (rx_tsof),
         .stat_done(stat_done1), .stat_len(), .stat_err_fcs(), .stat_err_align(),
         .stat_err_overflow(), .stat_err_oversize(stat_ovs1),
-        .stat_is_bcast(), .stat_is_mcast()
+        .stat_is_bcast(), .stat_is_mcast(), .stat_drop()
     );
 
     eth_mac_rx #(.MAX_FRAME_JUMBO(1518)) u_rx2 (
@@ -107,7 +107,7 @@ module tb_eth_mac_rx_jumbo_gate;
         .m_axis_tsof      (),
         .stat_done(stat_done2), .stat_len(), .stat_err_fcs(), .stat_err_align(),
         .stat_err_overflow(), .stat_err_oversize(stat_ovs2),
-        .stat_is_bcast(), .stat_is_mcast()
+        .stat_is_bcast(), .stat_is_mcast(), .stat_drop()
     );
 
     integer pass_cnt = 0, fail_cnt = 0;

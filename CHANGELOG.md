@@ -7,6 +7,17 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- `RX_DROP` CSR (`0x7C`, RO/WC): frames that passed the MAC filter but were
+  dropped whole because the RX FIFO had no room at their start, which
+  happens while the AXIS sink holds `m_axis_tready` low (e.g. a DMA with no
+  free buffer). These frames produced no AXIS words and no stat pulse, so
+  until now they were in no frame counter (only RX_BYTE saw their bytes). `eth_mac_rx` gains a `stat_drop`
+  output and `eth_stats` an `rx_drop_cnt` counter in the RX clear group.
+  Once the RX FIFO has drained, `RX_FRAME + RX_DROP` accounts for every frame
+  for this station. The
+  VERSION value is unchanged; `0x7C` reads 0 on older cores, so software can
+  add it to its totals unconditionally (`EMZ_REG_RX_DROP` in `emaczero.h`).
+
 - `ddr_input` / `ddr_output`: an `XILINX_ULTRASCALE_PLUS` branch using
   `IDDRE1` / `ODDRE1`. Without a vendor define both modules are empty, and
   a Vivado block-design build keeps the GMII `gmii_txc` forwarder as a
@@ -251,6 +262,12 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **`RX_FRAME` and `RX_ERR` overcounted under RX backpressure.** They counted
+  every cycle with `m_axis_tvalid && m_axis_tlast`, without `m_axis_tready`,
+  so a TLAST word held at the RX FIFO head by a stalled sink was counted once
+  per stall cycle. They now count one per TLAST handshake. The stat-pulse
+  counters (`RX_ERR_*`, `RX_BCAST`, `RX_MCAST`, `RX_SIZE_*`) were not
+  affected.
 - RX accepts a full-size VLAN-tagged frame. A frame with an 802.1Q (0x8100)
   or 802.1ad (0x88A8) tag may be 1522 bytes on the wire with `jumbo_en=0`;
   RX used to flag it oversize (`terror`, `RX_ERR_OVERSIZE`), so a VLAN trunk

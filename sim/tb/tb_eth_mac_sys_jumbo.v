@@ -90,7 +90,7 @@ module tb_eth_mac_sys_jumbo;
         .m_axis_tsof      (rx_tsof),
         .stat_done(), .stat_len(), .stat_err_fcs(), .stat_err_align(),
         .stat_err_overflow(), .stat_err_oversize(),
-        .stat_is_bcast(), .stat_is_mcast()
+        .stat_is_bcast(), .stat_is_mcast(), .stat_drop()
     );
 
     integer pass_cnt = 0;

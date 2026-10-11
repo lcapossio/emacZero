@@ -73,6 +73,10 @@
 //   0x70 RX_SIZE_512_1023  RO/WC
 //   0x74 RX_SIZE_1024_1518 RO/WC
 //   0x78 RX_SIZE_JUMBO     RO/WC  > 1518 bytes
+//   0x7C RX_DROP           RO/WC  frames for us dropped whole: no RX FIFO
+//                                 room at their start, so never delivered and
+//                                 in no other RX counter. Reads 0 on cores
+//                                 that predate it (unmapped CSRs read 0).
 // =============================================================================
 
 `include "version.vh"
@@ -163,6 +167,7 @@ module axilite_regs #(
     input  wire [31:0] stat_rx_size_512_1023_cnt,
     input  wire [31:0] stat_rx_size_1024_1518_cnt,
     input  wire [31:0] stat_rx_size_jumbo_cnt,
+    input  wire [31:0] stat_rx_drop_cnt,
     output reg         stat_clr_tx,
     output reg         stat_clr_rx,
 
@@ -219,6 +224,7 @@ module axilite_regs #(
     localparam [5:0] A_RX_SIZE_512_1023 = 6'h1C;  // 0x70
     localparam [5:0] A_RX_SIZE_1024_1518= 6'h1D;  // 0x74
     localparam [5:0] A_RX_SIZE_JUMBO    = 6'h1E;  // 0x78
+    localparam [5:0] A_RX_DROP          = 6'h1F;  // 0x7C
     // PAUSE registers (require ADDR_WIDTH >= 8)
     localparam [5:0] A_PAUSE_CTRL    = 6'h21;  // 0x84
     localparam [5:0] A_PAUSE_QUANTA  = 6'h22;  // 0x88
@@ -433,7 +439,8 @@ module axilite_regs #(
                     A_RX_SIZE_256_511,
                     A_RX_SIZE_512_1023,
                     A_RX_SIZE_1024_1518,
-                    A_RX_SIZE_JUMBO: stat_clr_rx <= 1'b1;
+                    A_RX_SIZE_JUMBO,
+                    A_RX_DROP:       stat_clr_rx <= 1'b1;
                     A_PAUSE_CTRL: begin
                         if (w_strb[0]) begin
                             // [0] tx_send (W1S, self-clearing pulse to eth_pause)
@@ -508,6 +515,7 @@ module axilite_regs #(
                     A_RX_SIZE_512_1023:  s_axi_rdata <= stat_rx_size_512_1023_cnt;
                     A_RX_SIZE_1024_1518: s_axi_rdata <= stat_rx_size_1024_1518_cnt;
                     A_RX_SIZE_JUMBO:     s_axi_rdata <= stat_rx_size_jumbo_cnt;
+                    A_RX_DROP:           s_axi_rdata <= stat_rx_drop_cnt;
                     A_PAUSE_CTRL:        s_axi_rdata <= {30'd0, reg_pause_rx_en, 1'b0};
                     A_PAUSE_QUANTA:      s_axi_rdata <= {16'd0, reg_pause_quanta};
                     A_PAUSE_RX_CNT:      s_axi_rdata <= stat_pause_rx_cnt;
