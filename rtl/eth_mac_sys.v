@@ -415,11 +415,13 @@ module eth_mac_sys #(
         .cfg_pause_tx_quanta (cfg_pause_tx_quanta),
         .gmii_rxd            (gmii_rxd),
         .gmii_rx_dv          (gmii_rx_dv),
+        .gmii_rx_er          (gmii_rx_er),
         .tx_paused           (tx_paused),
         .pause_tdata         (pause_tdata),
         .pause_tvalid        (pause_tvalid),
         .pause_tready        (pause_tready),
         .pause_tlast         (pause_tlast),
+        .stat_clr            (stat_clr_pause),
         .pause_rx_cnt        (stat_pause_rx_cnt),
         .pause_tx_cnt        (stat_pause_tx_cnt)
     );

@@ -5,13 +5,16 @@
 //
 // Two cooperating units:
 //
-//   * RX parser: snoops the GMII RX byte stream looking for PAUSE frames
-//                (dst=01:80:C2:00:00:01, EtherType=0x8808, opcode=0x0001).
-//                On match, latches the 16-bit quanta value into pause_remaining,
-//                which then decrements at one tick per "pause quantum" of the
-//                current line rate. While pause_remaining != 0, tx_paused is
-//                asserted to gate eth_mac_tx from starting a new frame. A
-//                quanta of 0 cancels the pause immediately.
+//   * RX parser: snoops the GMII RX byte stream, preamble and SFD included,
+//                looking for PAUSE frames (dst=01:80:C2:00:00:01,
+//                EtherType=0x8808, opcode=0x0001). A matched frame counts and
+//                takes effect when it ends, and only if it is a valid frame:
+//                good FCS, no rx_er after the SFD, and at least 64 bytes. It
+//                then loads its 16-bit quanta into pause_remaining, which
+//                decrements at one tick per "pause quantum" of the current
+//                line rate. While pause_remaining != 0, tx_paused is asserted
+//                to gate eth_mac_tx from starting a new frame. A quanta of 0
+//                cancels the pause immediately.
 //
 //   * TX generator: when cfg_pause_tx_send pulses, enqueues a single 60-byte
 //                   MAC-Control PAUSE frame on its own AXIS-byte master. The
@@ -42,20 +45,22 @@ module eth_pause #(
     input  wire        cfg_pause_tx_send,     // 1-cycle pulse: emit a PAUSE frame
     input  wire [15:0] cfg_pause_tx_quanta,   // quanta value to send
 
-    // ---- Snoop GMII RX ----
+    // ---- Snoop GMII RX (preamble and SFD included, as from the PHY) ----
     input  wire [7:0]  gmii_rxd,
     input  wire        gmii_rx_dv,
+    input  wire        gmii_rx_er,
 
     // ---- TX gate to eth_mac_tx ----
     output wire        tx_paused,             // 1 = block new frame starts
 
     // ---- AXIS-byte master output (PAUSE frame source) ----
     output reg  [7:0]  pause_tdata,
-    output reg         pause_tvalid,
+    output wire        pause_tvalid,
     input  wire        pause_tready,
-    output reg         pause_tlast,
+    output wire        pause_tlast,
 
     // ---- Status counters (32-bit saturating) ----
+    input  wire        stat_clr,              // 1-cycle pulse: clear both counters
     output reg  [31:0] pause_rx_cnt,
     output reg  [31:0] pause_tx_cnt
 );
@@ -86,8 +91,11 @@ module eth_pause #(
 
     // ============================================================
     // RX parser FSM
-    // Looks for 802.3x PAUSE frame after preamble/SFD (handled upstream by the
-    // PHY interface so gmii_rx_dv first goes high on byte 0 of dst-MAC).
+    // The snooped bus is the PHY byte stream: one or more 0x55 preamble bytes,
+    // the 0xD5 SFD, then the frame, as eth_mac_rx sees it. Bytes after the SFD
+    // run through a CRC-32 and a length count so a PAUSE frame is acted on
+    // only once its FCS has checked out, as 802.3 requires of a MAC Control
+    // frame.
     // ============================================================
     localparam [3:0]
         RX_IDLE     = 4'd0,
@@ -100,12 +108,33 @@ module eth_pause #(
         RX_QUANTA_HI= 4'd7,
         RX_QUANTA_LO= 4'd8,
         RX_LATCH    = 4'd9,
-        RX_DRAIN    = 4'd10;
+        RX_DRAIN    = 4'd10,
+        RX_PRE      = 4'd11;
 
     reg [3:0]  rx_state;
     reg [2:0]  rx_idx;       // 0..5 within DST/SRC fields
     reg [15:0] rx_quanta;
     reg [15:0] pause_remaining;
+    reg [6:0]  rx_len;       // bytes after the SFD, saturating at 64
+    reg        rx_bad;       // rx_er seen after the SFD
+
+    // CRC over the bytes after the SFD. A frame whose FCS is good leaves the
+    // register at the CRC-32 residue, as in eth_mac_rx.
+    wire        rx_sfd    = gmii_rx_dv && (rx_state == RX_PRE) && (gmii_rxd == 8'hD5);
+    wire        rx_body   = gmii_rx_dv && (rx_state != RX_IDLE) && (rx_state != RX_PRE) &&
+                            (rx_state != RX_DRAIN);
+    wire [31:0] rx_crc;
+    wire        rx_fcs_ok = (rx_crc == 32'hDEBB20E3);
+
+    crc32 u_rx_crc (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .data_in   (gmii_rxd),
+        .data_valid(rx_body),
+        .crc_init  (rx_sfd),
+        .crc_out   (),
+        .crc_raw   (rx_crc)
+    );
 
     // Constant: 802.3x reserved multicast address for MAC Control frames.
     // Wire-byte order: 01 80 C2 00 00 01.
@@ -130,6 +159,8 @@ module eth_pause #(
             rx_state         <= RX_IDLE;
             rx_idx           <= 3'd0;
             rx_quanta        <= 16'd0;
+            rx_len           <= 7'd0;
+            rx_bad           <= 1'b0;
             pause_remaining  <= 16'd0;
             pause_rx_cnt     <= 32'd0;
         end else begin
@@ -137,13 +168,25 @@ module eth_pause #(
             if (pause_tick && pause_remaining != 16'd0)
                 pause_remaining <= pause_remaining - 16'd1;
 
+            if (rx_body) begin
+                if (rx_len != 7'd64)
+                    rx_len <= rx_len + 7'd1;
+                if (gmii_rx_er)
+                    rx_bad <= 1'b1;
+            end
+
             if (gmii_rx_dv) begin
                 case (rx_state)
-                    RX_IDLE: begin
-                        rx_idx <= 3'd1;
-                        if (dst_byte_match(3'd0, gmii_rxd))
+                    RX_IDLE:
+                        rx_state <= (gmii_rxd == 8'h55) ? RX_PRE : RX_DRAIN;
+
+                    RX_PRE: begin
+                        rx_idx <= 3'd0;
+                        rx_len <= 7'd0;
+                        rx_bad <= 1'b0;
+                        if (gmii_rxd == 8'hD5)
                             rx_state <= RX_DST;
-                        else
+                        else if (gmii_rxd != 8'h55)
                             rx_state <= RX_DRAIN;
                     end
 
@@ -186,8 +229,9 @@ module eth_pause #(
                     default:    rx_state <= RX_IDLE;
                 endcase
             end else if (rx_state != RX_IDLE) begin
-                // gmii_rx_dv low: end of frame.  Commit if PAUSE was matched.
-                if (rx_state == RX_LATCH) begin
+                // gmii_rx_dv low: end of frame. Commit a matched PAUSE frame
+                // only if it was a valid frame.
+                if (rx_state == RX_LATCH && rx_fcs_ok && !rx_bad && rx_len == 7'd64) begin
                     pause_rx_cnt <= (pause_rx_cnt == 32'hFFFFFFFF)
                                     ? pause_rx_cnt : pause_rx_cnt + 32'd1;
                     if (cfg_pause_rx_en)
@@ -196,6 +240,9 @@ module eth_pause #(
                 rx_state <= RX_IDLE;
                 rx_idx   <= 3'd0;
             end
+
+            if (stat_clr)
+                pause_rx_cnt <= 32'd0;
         end
     end
 
@@ -256,41 +303,35 @@ module eth_pause #(
         endcase
     end
 
+    // tvalid and tlast follow the state and index directly, like tdata, so
+    // the 60th byte carries tlast whether or not tready stalls before it.
+    assign pause_tvalid = (tx_state == TX_RUN);
+    assign pause_tlast  = (tx_state == TX_RUN) && (tx_idx == 6'd59);
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             tx_state      <= TX_IDLE;
             tx_idx        <= 6'd0;
             tx_quanta_lat <= 16'd0;
             tx_src_lat    <= 48'd0;
-            pause_tvalid  <= 1'b0;
-            pause_tlast   <= 1'b0;
             pause_tx_cnt  <= 32'd0;
         end else begin
             case (tx_state)
                 TX_IDLE: begin
-                    pause_tvalid <= 1'b0;
-                    pause_tlast  <= 1'b0;
                     if (cfg_pause_tx_send) begin
                         tx_quanta_lat <= cfg_pause_tx_quanta;
                         tx_src_lat    <= our_mac;
                         tx_idx        <= 6'd0;
                         tx_state      <= TX_RUN;
-                        pause_tvalid  <= 1'b1;
-                        pause_tlast   <= 1'b0;
                     end
                 end
 
                 TX_RUN: begin
-                    pause_tvalid <= 1'b1;
-                    pause_tlast  <= (tx_idx == 6'd59);
                     if (pause_tready) begin
-                        if (tx_idx == 6'd59) begin
-                            tx_state     <= TX_DONE;
-                            pause_tvalid <= 1'b0;
-                            pause_tlast  <= 1'b0;
-                        end else begin
+                        if (tx_idx == 6'd59)
+                            tx_state <= TX_DONE;
+                        else
                             tx_idx <= tx_idx + 6'd1;
-                        end
                     end
                 end
 
@@ -302,6 +343,9 @@ module eth_pause #(
 
                 default: tx_state <= TX_IDLE;
             endcase
+
+            if (stat_clr)
+                pause_tx_cnt <= 32'd0;
         end
     end
 

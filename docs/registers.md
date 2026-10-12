@@ -223,6 +223,12 @@ quantum is 512 bit-times of the current line rate.
 Saturating 32-bit counters. Writing any value to either register clears both
 PAUSE counters together.
 
+PAUSE_RX_CNT counts valid PAUSE frames received: destination
+`01:80:C2:00:00:01`, EtherType `0x8808`, opcode `0x0001`, a good FCS, no
+`rx_er` after the SFD, and at least 64 bytes. It counts them whether or not
+`PAUSE_CTRL[1]` is set; only with `rx_en` does a frame's quanta hold off
+transmission. A frame that fails any check is ignored.
+
 ## 0x94 - SAF_DBG
 
 Read-only debug snapshot of the store-and-forward MII transmit path

@@ -315,6 +315,23 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **802.3x PAUSE did not work.** Four faults in `eth_pause`, none covered by
+  a test until now (`tb_eth_mac_sys_pause`):
+  - Received PAUSE frames were never recognized, so `PAUSE_CTRL[1]` (`rx_en`)
+    had no effect and `PAUSE_RX_CNT` stayed 0. The parser expected the
+    destination MAC as the first byte, but the RX bus it watches carries the
+    preamble and SFD. It now waits for the SFD, as `eth_mac_rx` does.
+  - A received PAUSE frame now acts only if it is valid: good FCS, no
+    `rx_er` after the SFD, and at least 64 bytes. A corrupted frame could
+    otherwise stall transmission for up to 65535 quanta.
+  - A PAUSE frame sent with `PAUSE_CTRL[0]` lost `tlast` on its last byte
+    whenever the TX path was ready (the usual case), so the frame ran on into
+    the next user frame instead of ending at 64 bytes.
+  - Writing `PAUSE_RX_CNT` or `PAUSE_TX_CNT` did not clear the counters as
+    documented: the clear strobe was not connected.
+
+  `eth_pause` gains `gmii_rx_er` and `stat_clr` inputs. CSRs and the VERSION
+  value are unchanged.
 - **`RX_FRAME` and `RX_ERR` overcounted under RX backpressure.** They counted
   every cycle with `m_axis_tvalid && m_axis_tlast`, without `m_axis_tready`,
   so a TLAST word held at the RX FIFO head by a stalled sink was counted once
