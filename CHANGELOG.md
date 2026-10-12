@@ -315,8 +315,8 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
-- **802.3x PAUSE did not work.** Four faults in `eth_pause`, none covered by
-  a test until now (`tb_eth_mac_sys_pause`):
+- **802.3x PAUSE did not work.** Five faults in `eth_pause` and its TX mux,
+  none covered by a test until now (`tb_eth_mac_sys_pause`):
   - Received PAUSE frames were never recognized, so `PAUSE_CTRL[1]` (`rx_en`)
     had no effect and `PAUSE_RX_CNT` stayed 0. The parser expected the
     destination MAC as the first byte, but the RX bus it watches carries the
@@ -327,11 +327,17 @@ This project does not yet maintain long-lived release branches.
   - A PAUSE frame sent with `PAUSE_CTRL[0]` lost `tlast` on its last byte
     whenever the TX path was ready (the usual case), so the frame ran on into
     the next user frame instead of ending at 64 bytes.
+  - A PAUSE frame requested while a user frame was part-way into the MAC was
+    spliced into it: the TX mux switched to the PAUSE frame at once. Both
+    frames were corrupted. The PAUSE frame now waits for the user frame's
+    `tlast`.
   - Writing `PAUSE_RX_CNT` or `PAUSE_TX_CNT` did not clear the counters as
     documented: the clear strobe was not connected.
 
   `eth_pause` gains `gmii_rx_er` and `stat_clr` inputs. CSRs and the VERSION
-  value are unchanged.
+  value are unchanged. Known limit, still open: on GMII and RGMII a received
+  PAUSE frame stops new frames entering the TX CDC FIFO, but frames already
+  in it (up to about 7 KB) still go out. On MII the hold-off acts at the wire.
 - **`RX_FRAME` and `RX_ERR` overcounted under RX backpressure.** They counted
   every cycle with `m_axis_tvalid && m_axis_tlast`, without `m_axis_tready`,
   so a TLAST word held at the RX FIFO head by a stalled sink was counted once

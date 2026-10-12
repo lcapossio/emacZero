@@ -209,14 +209,22 @@ When `MCAST_HASH_FILTER == 1`, an incoming multicast frame is hashed into a
 
 | Bits | Name | Description |
 |-----:|------|-------------|
-| `[0]` | `tx_send` | W1S: emit one PAUSE frame using `PAUSE_QUANTA`. Reads 0. |
+| `[0]` | `tx_send` | W1S: emit one PAUSE frame using `PAUSE_QUANTA`. Reads 0. A user frame already part-way into the MAC finishes first. |
 | `[1]` | `rx_en` | When `1`, received PAUSE frames load the local TX gate counter. |
 | `[31:2]` | reserved | Reads as 0. |
+
+While the TX gate counter is non-zero, no new frame starts; a frame in
+progress finishes. On MII this acts at the wire. On GMII and RGMII it acts
+ahead of the TX CDC FIFO, so frames already queued there (up to about 7 KB)
+still go out.
 
 ## 0x88 - PAUSE_QUANTA
 
 Bits `[15:0]` are the quanta value loaded into the next PAUSE frame. One
-quantum is 512 bit-times of the current line rate.
+quantum is 512 bit-times of the current line rate. The receive-side pause
+timer takes the line rate from `CTRL[4:3]`, which resets to `00` (1G); on an
+MII build set it to `01` (100M) or `10` (10M) to match the link, or received
+quanta are timed 10x or 100x too short. GMII builds always use 1G.
 
 ## 0x8C / 0x90 - PAUSE_RX_CNT / PAUSE_TX_CNT
 

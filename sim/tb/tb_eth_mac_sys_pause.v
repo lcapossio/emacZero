@@ -376,6 +376,24 @@ module tb_eth_mac_sys_pause;
         check("PAUSE then queued frame: user frame is separate (112 bytes)",
               wire_len[n0 + 1] == 112);
 
+        // ---- 3b. PAUSE requested mid user frame: waits for the frame to end ----
+        n0 = wire_n;
+        fork
+            send_frame(300);
+            begin
+                repeat (40) @(posedge sys_clk);
+                axi_write(8'h84, 32'h0000_0001);
+            end
+        join
+        wait_wire(n0 + 2);
+        // The RX CDC drains the 312-byte frame before the looped-back PAUSE
+        // frame, so wait long enough for it to be counted before section 4.
+        repeat (600) @(posedge sys_clk);
+        check("PAUSE mid user frame: user frame intact (312 bytes)",
+              wire_len[n0] == 312);
+        check("PAUSE mid user frame: PAUSE frame follows (72 bytes)",
+              wire_len[n0 + 1] == 72);
+
         // ---- 4. Injected frames: only a valid PAUSE frame counts ----
         axi_write(8'h8C, 32'd0);               // clears both counters
         axi_read(8'h8C, rd_result);
