@@ -58,7 +58,7 @@ extern "C" {
 
 /* Mirror of rtl/version.vh. build_and_test.py asserts these match. */
 #define EMZ_VERSION_MAJOR        0u
-#define EMZ_VERSION_MINOR        1u
+#define EMZ_VERSION_MINOR        2u
 #define EMZ_VERSION_ID           0x454Du  /* ASCII "EM" */
 #define EMZ_VERSION_VALUE        ((EMZ_VERSION_MAJOR << 24) | \
                                   (EMZ_VERSION_MINOR << 16) | \
@@ -164,7 +164,7 @@ static inline void emz_irq_ack(emz_t *d, uint32_t bits)
     emz_write32(d->base + EMZ_REG_IRQ_STATUS, bits);
 }
 
-/* Read VERSION register. axilite_regs.v reports 0x0001454D for v0.1/"EM". */
+/* Read VERSION register. axilite_regs.v reports 0x0002454D for v0.2/"EM". */
 static inline uint32_t emz_version(emz_t *d)
 {
     return emz_read32(d->base + EMZ_REG_VERSION);

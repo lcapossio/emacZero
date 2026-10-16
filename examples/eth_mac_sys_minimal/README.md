@@ -36,7 +36,7 @@ debug capture/counters preserved for bring-up.
 
 Use one of:
 
-- FuseSoC core: `bard0:eth:emaczero:0.1.0`, target `default`
+- FuseSoC core: `bard0:eth:emaczero:0.2.0`, target `default`
 - Flat filelist: [rtl/eth_mac_sys.f](../../rtl/eth_mac_sys.f) + this file
 
 ```

@@ -237,7 +237,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 
 | Offset | Name | R/W | Description |
 |--------|------|-----|-------------|
-| 0x00 | VERSION | RO | 0x0001454D: [31:24] major [23:16] minor [15:0] ID `"EM"` |
+| 0x00 | VERSION | RO | 0x0002454D: [31:24] major [23:16] minor [15:0] ID `"EM"` |
 | 0x04 | CTRL | RW | [0] tx_en [1] rx_en [2] promisc [4:3] speed (00=1G,01=100M,10=10M) [5] full_duplex (informational; FD-only MAC) [6] jumbo_en [7] tx_csum_off [8] passthrough [9] rx_csum_off |
 | 0x08 | STATUS | RO | [0] tx_active [1] tx_fifo_busy [2] mdio_busy [3] mdio_cmd_dropped (sticky: a GO was written while busy and ignored; cleared by the next successful GO) |
 | 0x0C | MAC_LO | RW | MAC address [31:0] |
@@ -496,6 +496,7 @@ notes are tracked in:
 - [SECURITY.md](SECURITY.md) - vulnerability reporting policy and hardening guidance
 - [docs/security_model.md](docs/security_model.md) - intended use, trust boundaries, assumptions, and residual risks
 - [docs/cra-readiness.md](docs/cra-readiness.md) - CRA-oriented evidence map and release checklist
+- [docs/sbom.md](docs/sbom.md) - component inventory for building an SBOM of the configuration you use
 
 ## Resource Usage
 
@@ -538,7 +539,7 @@ exactly once in [`rtl/version.vh`](rtl/version.vh):
 
 ```verilog
 `define EMZ_VERSION_MAJOR 8'h00
-`define EMZ_VERSION_MINOR 8'h01
+`define EMZ_VERSION_MINOR 8'h02
 `define EMZ_VERSION_ID    16'h454D  // ASCII "EM"
 ```
 
@@ -556,6 +557,12 @@ Two derived files mirror the same numbers:
 every run and fails if they disagree, so you cannot ship a mismatched bump.
 To change the version, edit `rtl/version.vh` and update the two mirrored
 constants in lockstep.
+
+Releases are published as tags and GitHub releases
+(https://github.com/lcapossio/emacZero/releases), each with the regression
+log of its commit; [CHANGELOG.md](CHANGELOG.md) lists the changes and
+security-relevant fixes of each one. The latest release is the supported
+version.
 
 ## License
 

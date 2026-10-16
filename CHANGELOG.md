@@ -5,6 +5,40 @@ This project does not yet maintain long-lived release branches.
 
 ## Unreleased
 
+Nothing yet.
+
+## v0.2.0 - 2026-10-16
+
+First release published on GitHub (`v0.1.0` was tagged locally only). VERSION
+reads `0x0002454D`. Breaking: 1G-capable builds need `CLK_FREQ_HZ` >= 125 MHz,
+and direct instantiations of `eth_mac_rx`, `gmii_cdc` and the L3 helpers gain
+ports (see Changed and Fixed).
+
+### Security
+
+These fixes change behaviour a peer on the link can trigger. All of them
+affect `v0.1.0` and every earlier commit. No CVE or GitHub advisory has been
+assigned; integrators on `v0.1.0` should update. Details are under Fixed.
+
+- A received frame longer than 16383 bytes wrapped the `eth_mac_rx` byte
+  counter, re-captured the destination MAC and injected a phantom start of
+  frame that corrupted the following frame.
+- With `MCAST_HASH_FILTER=1` the hash filter tested the wrong address bit, so
+  unicast frames for other stations could be admitted when their hash bucket
+  was set, and valid multicast frames could be rejected.
+- A runt (under 64 bytes) was delivered as a clean frame instead of with
+  `terror`.
+- RX FIFO overflow in `eth_mac_rx` could drop a frame's first or last word,
+  merging it into the next frame; RX CDC FIFO overflow in `gmii_cdc` (GMII and
+  RGMII) could drop an EOF marker with the same result.
+- The RX jumbo limit ignored `MAX_FRAME`, so a build with a smaller
+  `MAX_FRAME` and `jumbo_en=1` accepted frames larger than its buffers were
+  sized for; a limit above 16382 was never enforced at all.
+- Optional L3 demo (`with_l3`): `net_rx` answered frames with a bad FCS or a
+  malformed IPv4 header and echoed the 802.3 pad bytes of short requests back
+  as payload; `icmp_echo` overwrote its reply buffer when pings arrived during
+  a reply or were longer than 248 bytes of data.
+
 ### Added
 
 - `RX_DROP` CSR (`0x7C`, RO/WC): frames that passed the MAC filter but were
@@ -281,9 +315,6 @@ This project does not yet maintain long-lived release branches.
   next successfully-issued `GO`) so software can detect the dropped command.
 - `async_fifo` exposes an exact write-side `wr_data_count` (`wr_ptr` minus the
   synchronized read Gray pointer); leave it unconnected when not needed.
-
-### Changed
-
 - `gmii_cdc` TX fill level / `tx_busy` now use `async_fifo.wr_data_count`
   instead of a per-byte read toggle synchronizer, which could drop counts when
   `media_clk` (125 MHz) outran `sys_clk` (100 MHz) at 1G.
@@ -625,6 +656,16 @@ This project does not yet maintain long-lived release branches.
 - `rgmii_if` synchronizes the system reset into the `rgmii_rxc` domain (async
   assert, 2-FF deassert) instead of using `rst_n` directly, removing a
   metastable reset-release path on the RX nibble-pairing state.
+
+### Evidence
+
+- Release tag: `v0.2.0` (the tag names the commit).
+- Regression: `python build_and_test.py` on a clean checkout of the tagged
+  commit; the full log is attached to the GitHub release, and the `sim`
+  workflow ran on the same commit.
+- Hardware: the Arty A7 and ZCU106 results above were measured on development
+  commits leading up to this release, not re-run on the tagged commit. RGMII
+  has not been tested on hardware.
 
 ## v0.1.0 - 2026-06-10
 
