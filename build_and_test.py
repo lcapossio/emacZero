@@ -789,6 +789,17 @@ TESTS = [
         "out": "sim/tb_eth_mac_sys_max_frame.vvp",
     },
     {
+        "name": "ETH-MAC-SYS-PAUSE",
+        "srcs": ["rtl/crc32.v", "rtl/async_fifo.v", "rtl/mii_if.v",
+                 "rtl/sync_fifo.v", "rtl/net/csum_calc.v", "rtl/eth_mac_rx.v", "rtl/eth_mac_tx.v",
+                 "rtl/eth_stats.v", "rtl/eth_pause.v", "rtl/axilite_regs.v", "rtl/mdio_master.v",
+                 "rtl/ddr_output.v", "rtl/ddr_input.v", "rtl/rgmii_if.v", "rtl/gmii_if.v",
+                 "rtl/gmii_cdc.v", "rtl/net/tx_csum_off.v",
+                 "rtl/mii_tx_saf.v", "rtl/eth_mac_sys.v",
+                 "sim/tb/tb_eth_mac_sys_pause.v"],
+        "out": "sim/tb_eth_mac_sys_pause.vvp",
+    },
+    {
         "name": "GMII-RX-LINE-RATE",
         "srcs": ["rtl/crc32.v", "rtl/async_fifo.v", "rtl/mii_if.v",
                  "rtl/sync_fifo.v", "rtl/net/csum_calc.v", "rtl/eth_mac_rx.v", "rtl/eth_mac_tx.v",

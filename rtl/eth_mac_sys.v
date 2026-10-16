@@ -289,14 +289,25 @@ module eth_mac_sys #(
         end
     endgenerate
 
-    // PAUSE-priority mux: while a pause frame is being emitted, route
-    // pause_* into eth_mac_tx and stall user_*. Pause frames are short and
-    // rare, so simple priority-on-tvalid is acceptable here.
-    wire [7:0] mac_tx_in_tdata  = pause_tvalid ? pause_tdata  : user_tx_tdata;
-    wire       mac_tx_in_tvalid = pause_tvalid ? pause_tvalid : user_tx_tvalid;
-    wire       mac_tx_in_tlast  = pause_tvalid ? pause_tlast  : user_tx_tlast;
-    assign     pause_tready     = pause_tvalid &  s_axis_tready_mac;
-    assign     user_tx_tready   = ~pause_tvalid & s_axis_tready_mac;
+    // PAUSE-priority mux, switched only between user frames. A PAUSE frame
+    // requested while a user frame is part-way through waits (eth_pause holds
+    // in TX_RUN until pause_tready) for that frame's tlast; switching on
+    // pause_tvalid alone spliced the PAUSE bytes into the user frame. Once
+    // the PAUSE frame has the bus, user_tx_tready is low, so user_mid stays
+    // clear and the PAUSE frame keeps the bus until its own tlast.
+    reg        user_mid;           // a user frame is part-way accepted
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            user_mid <= 1'b0;
+        else if (user_tx_tvalid && user_tx_tready)
+            user_mid <= !user_tx_tlast;
+    end
+    wire       pause_sel        = pause_tvalid & ~user_mid;
+    wire [7:0] mac_tx_in_tdata  = pause_sel ? pause_tdata  : user_tx_tdata;
+    wire       mac_tx_in_tvalid = pause_sel ? pause_tvalid : user_tx_tvalid;
+    wire       mac_tx_in_tlast  = pause_sel ? pause_tlast  : user_tx_tlast;
+    assign     pause_tready     = pause_sel &  s_axis_tready_mac;
+    assign     user_tx_tready   = ~pause_sel & s_axis_tready_mac;
 
     // RX gating: mask tvalid when rx disabled
     wire [7:0] m_axis_tdata_mac;
@@ -415,11 +426,13 @@ module eth_mac_sys #(
         .cfg_pause_tx_quanta (cfg_pause_tx_quanta),
         .gmii_rxd            (gmii_rxd),
         .gmii_rx_dv          (gmii_rx_dv),
+        .gmii_rx_er          (gmii_rx_er),
         .tx_paused           (tx_paused),
         .pause_tdata         (pause_tdata),
         .pause_tvalid        (pause_tvalid),
         .pause_tready        (pause_tready),
         .pause_tlast         (pause_tlast),
+        .stat_clr            (stat_clr_pause),
         .pause_rx_cnt        (stat_pause_rx_cnt),
         .pause_tx_cnt        (stat_pause_tx_cnt)
     );
