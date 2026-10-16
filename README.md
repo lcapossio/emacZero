@@ -496,6 +496,7 @@ notes are tracked in:
 - [SECURITY.md](SECURITY.md) - vulnerability reporting policy and hardening guidance
 - [docs/security_model.md](docs/security_model.md) - intended use, trust boundaries, assumptions, and residual risks
 - [docs/cra-readiness.md](docs/cra-readiness.md) - CRA-oriented evidence map and release checklist
+- [docs/sbom.md](docs/sbom.md) - component inventory for building an SBOM of the configuration you use
 
 ## Resource Usage
 
@@ -556,6 +557,12 @@ Two derived files mirror the same numbers:
 every run and fails if they disagree, so you cannot ship a mismatched bump.
 To change the version, edit `rtl/version.vh` and update the two mirrored
 constants in lockstep.
+
+Releases are published as tags and GitHub releases
+(https://github.com/lcapossio/emacZero/releases), each with the regression
+log of its commit; [CHANGELOG.md](CHANGELOG.md) lists the changes and
+security-relevant fixes of each one. The latest release is the supported
+version.
 
 ## License
 

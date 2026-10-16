@@ -132,8 +132,13 @@ run for the exact commit and target.
 Before using emacZero in a product, integrators should close or explicitly
 accept these gaps:
 
-- No machine-readable SBOM is checked in yet.
-- No signed release process exists yet, and no GHSA has been published yet.
+- No machine-readable SBOM is published with releases yet.
+- Releases (from `v0.2.0`) are published on GitHub but not signed, and no GHSA
+  has been published yet.
+- No end-of-support date has been set; only the latest release receives fixes.
+- The MAC leaves reset with TX and RX enabled on a placeholder MAC address
+  (`02:00:00:00:00:01`), and `eth_mac_sys` defaults to `MAX_FRAME=9018`. Set
+  both explicitly in a product.
 - No fuzzing or formal verification harness is currently checked in.
 - Standalone resource/timing matrices are not yet maintained for every target
   FPGA, PHY mode, and parameter set.
