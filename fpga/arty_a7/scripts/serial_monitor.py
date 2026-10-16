@@ -229,7 +229,7 @@ def run_monitor(port, baud, timeout, board_ip, sustained_ping_count):
             print(f"  FAIL  {name}: {actual} (expected {expected})")
             all_pass = False
 
-    check("VER", results.get("VER", ""), "0001454D")
+    check("VER", results.get("VER", ""), "0002454D")
     check("SCR", results.get("SCR", ""), "DEADBEEF")
     check("PHY1", results.get("PHY1", ""), "2000")
     check("PHY2", results.get("PHY2", ""), "5C9", prefix_match=True)

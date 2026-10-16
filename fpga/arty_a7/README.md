@@ -73,7 +73,7 @@ multiplexes the on-chip test sequencer (priority master) with the bridge, so
 the host can read and write every CSR live over JTAG while the design runs:
 
 ```bash
-fcapz axi-read  --addr 0x00                 # VERSION = 0x0001454D
+fcapz axi-read  --addr 0x00                 # VERSION = 0x0002454D
 fcapz axi-write --addr 0x40 --data 0xC0A8EDC8   # retarget demo IP -> 192.168.237.200
 fcapz axi-read  --addr 0x28                 # TX_FRAME counter
 ```
@@ -126,7 +126,7 @@ prefers the Digilent FT2232 channel-B UART but also accepts an explicit port.
 
 The UART phase checks:
 
-1. `VERSION` register readback, expected `0x0001454D`.
+1. `VERSION` register readback, expected `0x0002454D`.
 2. `SCRATCH` write/readback, expected `0xDEADBEEF`.
 3. PHY ID registers, expected `0x2000` and `0x5C9x`.
 4. BMCR readback, expected `0x1000` (autonegotiation enabled; restart bit

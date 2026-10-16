@@ -13,7 +13,7 @@ dropped.
 
 | Offset | Name | Access | Reset | Description |
 |-------:|------|:------:|------:|-------------|
-| `0x00` | VERSION | RO | `0x0001454D` | Version and unique ID |
+| `0x00` | VERSION | RO | `0x0002454D` | Version and unique ID |
 | `0x04` | CTRL | RW | `0x00000023` | Master control bits |
 | `0x08` | STATUS | RO | - | Live status |
 | `0x0C` | MAC_LO | RW | `0x00000001` | `our_mac[31:0]` |
@@ -57,7 +57,7 @@ hash registers read 0 and writes are ignored.
 
 ## 0x00 - VERSION
 
-Current value: `0x0001_454D`. The constants live in
+Current value: `0x0002_454D`. The constants live in
 [`rtl/version.vh`](../rtl/version.vh) and are mirrored in
 [`sw/emaczero/emaczero.h`](../sw/emaczero/emaczero.h) and
 [`emaczero.core`](../emaczero.core); `build_and_test.py` enforces consistency
@@ -66,7 +66,7 @@ across all three on every run.
 | Bits | Meaning |
 |-----:|---------|
 | `[31:24]` | Major version, currently `0x00`. |
-| `[23:16]` | Minor version, currently `0x01`. |
+| `[23:16]` | Minor version, currently `0x02`. |
 | `[15:0]` | Unique identifier, currently `0x454D` (ASCII `"EM"`). |
 
 ## 0x04 - CTRL

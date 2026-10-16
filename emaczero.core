@@ -2,7 +2,7 @@ CAPI=2:
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 
-name: bard0:eth:emaczero:0.1.0
+name: bard0:eth:emaczero:0.2.0
 description: emacZero — open-source 10/100/1G Ethernet MAC (MII / GMII / RGMII)
 
 filesets:
