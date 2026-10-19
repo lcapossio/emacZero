@@ -13,22 +13,16 @@
 # clock and data connections. ddr_output / ddr_input are proven per target in
 # their own directories.
 #
-# This manifest proves RGMII_SPEEDS = "ALL" (the default). "1G_ONLY" and
-# "10_100" are proven by prove_rgmii_if.py, which runs translateHDL's own L2
-# flow with the string generic passed directly: translateHDL passes integer
-# parameters only, and its one-instance-wrapper route makes Yosys 0.63
-# `rename -unescape` assert (GHDL's `<inst>_<port>` nets and the flattened
-# `<inst>.<port>` wires unescape to the same name one level down).
-#   python3 sim/parity/rgmii_if/prove_rgmii_if.py <translateHDL>/skills/translate-hdl/scripts
-# With --ddr <target> the same script also proves rgmii_if with the real DDR
-# cells of that target, after a label-only rename of the generate instances.
+# All three RGMII_SPEEDS values are proven here (string parameters need
+# translateHDL aa89bb2 or later). prove_rgmii_if.py additionally proves
+# rgmii_if with the real DDR cells of each target, after a label-only rename of
+# the for-generate instances (GHDL ordinals vs Yosys indices):
+#   python3 sim/parity/rgmii_if/prove_rgmii_if.py <translateHDL>/skills/translate-hdl/scripts [--ddr <target>]
 #
-# L4 compares the top module's own cells (submodules are not counted). GHDL
-# builds the if/elsif chains as more $mux/$and/$or cells than Yosys' proc
-# (115 vs 101), hence the 15% tolerance.
+# L4 counts the flattened design (translateHDL ca8054d or later).
 version: 1
 name: rgmii_if_parity
-description: rgmii_if Verilog golden vs VHDL port, RGMII_SPEEDS="ALL", stateless DDR stand-ins
+description: rgmii_if Verilog golden vs VHDL port, all RGMII_SPEEDS, stateless DDR stand-ins
 
 golden:
   language: verilog
@@ -50,7 +44,11 @@ formal:
   induct_depth: 20
   modules:
     - name: rgmii_if
+      param_sets:
+        - {RGMII_SPEEDS: "ALL"}
+        - {RGMII_SPEEDS: "1G_ONLY"}
+        - {RGMII_SPEEDS: "10_100"}
 
 synth:
   enabled: true
-  tolerance_pct: 15.0
+  tolerance_pct: 10.0
