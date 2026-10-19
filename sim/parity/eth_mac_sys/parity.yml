@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 # translateHDL parity manifest: rtl/eth_mac_sys.v (golden) vs rtl/vhdl/eth_mac_sys.vhd,
-# flattened with every submodule. GMII and RGMII branches.
+# flattened with every submodule. MII, GMII and RGMII branches.
 # Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/eth_mac_sys/parity.yml --strict
 #
 # Every submodule is proven on its own in its sim/parity/<module>/ directory.
@@ -15,17 +15,21 @@
 #     They sit in rgmii_if's for-generates, whose instance names differ between
 #     Yosys and GHDL, so state inside them could not pair by name. The real
 #     cells are proven per target in sim/parity/ddr_output, ddr_input, rgmii_if.
+#   - mii_if -> sim/parity/mii_if/mii_if_smallram.{v,vhd}: generated from the
+#     real files with the 4096x9 RX frame RAM cut to 8 words (gen_smallram.py).
+#     Only the MII branch instantiates it.
 # Target: SIM on both sides (defines/sim.vh, emz_target_sim.vhd); only mii_if
 # and the DDR cells depend on the target, and both are covered above.
 # version.vh here forwards to rtl/version.vh (iverilog include path, L1).
 #
-# Configs: MAX_FRAME 1518 and CLK_FREQ_HZ 125 MHz (required for a 1G-capable
-# build), as on the ZCU106 GMII build. RX_AXIS_ADDR_WIDTH is cut from 11 to 3
+# Configs: MAX_FRAME 1518. CLK_FREQ_HZ is 125 MHz for GMII/RGMII (required for
+# a 1G-capable build, as on the ZCU106 GMII build) and 100 MHz for MII (as on
+# the Arty A7 build). RX_AXIS_ADDR_WIDTH is cut from 11 to 3
 # (eth_mac_rx's RX FIFO is a plain sync_fifo array; 3 is the smallest depth
 # with a non-zero high-water mark, as in sim/parity/eth_mac_rx).
 version: 1
 name: eth_mac_sys_parity
-description: eth_mac_sys Verilog golden vs VHDL port (flattened), GMII and RGMII
+description: eth_mac_sys Verilog golden vs VHDL port (flattened), MII, GMII and RGMII
 
 golden:
   language: verilog
@@ -35,7 +39,7 @@ golden:
     - ../../../rtl/crc32.v
     - ../gmii_cdc/async_fifo_smallmem.v
     - ../../../rtl/sync_fifo.v
-    - ../../../rtl/mii_if.v
+    - ../mii_if/mii_if_smallram.v
     - ../../../rtl/mii_tx_saf.v
     - ../../../rtl/net/csum_calc.v
     - ../../../rtl/eth_mac_rx.v
@@ -62,7 +66,7 @@ candidate:
     - ../../../rtl/vhdl/crc32.vhd
     - ../gmii_cdc/async_fifo_smallmem.vhd
     - ../../../rtl/vhdl/sync_fifo.vhd
-    - ../../../rtl/vhdl/mii_if.vhd
+    - ../mii_if/mii_if_smallram.vhd
     - ../../../rtl/vhdl/mii_tx_saf.vhd
     - ../../../rtl/vhdl/csum_calc.vhd
     - ../../../rtl/vhdl/eth_mac_rx.vhd
@@ -88,6 +92,7 @@ formal:
   modules:
     - name: eth_mac_sys
       param_sets:
+        - {PHY_INTERFACE: "MII",   MAX_FRAME: 1518, RX_AXIS_ADDR_WIDTH: 3, CLK_FREQ_HZ: 100000000}
         - {PHY_INTERFACE: "GMII",  MAX_FRAME: 1518, RX_AXIS_ADDR_WIDTH: 3, CLK_FREQ_HZ: 125000000}
         - {PHY_INTERFACE: "RGMII", MAX_FRAME: 1518, RX_AXIS_ADDR_WIDTH: 3, CLK_FREQ_HZ: 125000000}
 
