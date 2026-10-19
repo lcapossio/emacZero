@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/eth_pause.v (golden) vs rtl/vhdl/eth_pause.vhd.
+# crc32 (the RX FCS check, instance u_rx_crc) is listed on both sides.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/eth_pause/parity.yml --strict
+# Proven at the tick dividers eth_mac_sys derives for CLK_FREQ_HZ = 100 MHz
+# (the defaults, 52/512/5120) and 125 MHz (64/640/6400), plus a corner set:
+# TICK_DIV 0 (tick_div - 1 wraps to 0xFFFF), 1, and 70000 (truncated to 16
+# bits by the Verilog `parameter [15:0]`, = 4464).
+version: 1
+name: eth_pause_parity
+description: eth_pause Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: eth_pause
+  sources: [../../../rtl/crc32.v, ../../../rtl/eth_pause.v]
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: eth_pause
+  sources: [../../../rtl/vhdl/crc32.vhd, ../../../rtl/vhdl/eth_pause.vhd]
+
+interface:
+  top: eth_pause
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: eth_pause
+      param_sets:
+        - {}
+        - {TICK_DIV_1G: 64, TICK_DIV_100M: 640, TICK_DIV_10M: 6400}
+        - {TICK_DIV_1G: 0, TICK_DIV_100M: 1, TICK_DIV_10M: 70000}
+
+# L4 tolerance is wider than the 10% default: GHDL lowers every `case` (the
+# two FSMs, dst_byte_match and the 19-way pause_tdata mux) to a one-hot decode
+# plus a $pmux keyed on that one-hot vector, so the coarse $eq count roughly
+# doubles (45 -> 83 before opt). Cell delta is +21.9% (178 -> 217, translateHDL
+# ca8054d). The register cells ($adff/$adffe) match exactly; L2 is the
+# equivalence proof.
+synth:
+  enabled: true
+  tolerance_pct: 30.0
+  param_sets:
+    - {}
