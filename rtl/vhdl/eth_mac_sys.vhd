@@ -49,7 +49,12 @@ entity eth_mac_sys is
         -- standard frames. Override smaller to save BRAM when the downstream sink
         -- never stalls for a full frame.
         RX_AXIS_ADDR_WIDTH : integer := maximum(clog2(MAX_FRAME), 11);
-        TX_CSUM_OFFLOAD    : integer := 0;       -- 1 = synthesize IPv4/UDP TX checksum patcher
+        -- Checksum offload (IPv4 header, TCP, UDP, ICMP, ICMPv6; IPv4 and IPv6;
+        -- one optional VLAN tag). 1 = synthesize the TX inserter (tx_csum_off,
+        -- CTRL[7] turns insertion on) / the RX checker (in eth_mac_rx, CTRL[9]
+        -- turns dropping on).
+        TX_CSUM_OFFLOAD    : integer := 0;
+        RX_CSUM_OFFLOAD    : integer := 0;
         -- GMII/RGMII CDC FIFO storage: "BLOCK" (block RAM) or "DISTRIBUTED"
         -- (LUTRAM). Jumbo depths need "BLOCK" to fit and close timing.
         CDC_RAM_STYLE      : string  := "BLOCK";
@@ -161,6 +166,7 @@ architecture rtl of eth_mac_sys is
     signal cfg_jumbo_en         : std_logic;
     signal cfg_tx_csum_off      : std_logic;
     signal cfg_passthrough      : std_logic;
+    signal cfg_rx_csum_off      : std_logic;
     signal cfg_mac_addr         : std_logic_vector(47 downto 0);
     signal cfg_mcast_hash_table : std_logic_vector(63 downto 0);
 
@@ -206,6 +212,8 @@ architecture rtl of eth_mac_sys is
     signal stat_rx_size_512_1023_cnt  : std_logic_vector(31 downto 0);
     signal stat_rx_size_1024_1518_cnt : std_logic_vector(31 downto 0);
     signal stat_rx_size_jumbo_cnt     : std_logic_vector(31 downto 0);
+    signal stat_rx_drop_cnt           : std_logic_vector(31 downto 0);
+    signal stat_rx_err_csum_cnt       : std_logic_vector(31 downto 0);
 
     -- RX classification bus (from eth_mac_rx)
     signal rx_stat_done         : std_logic;
@@ -214,8 +222,10 @@ architecture rtl of eth_mac_sys is
     signal rx_stat_err_align    : std_logic;
     signal rx_stat_err_overflow : std_logic;
     signal rx_stat_err_oversize : std_logic;
+    signal rx_stat_err_csum     : std_logic;
     signal rx_stat_is_bcast     : std_logic;
     signal rx_stat_is_mcast     : std_logic;
+    signal rx_stat_drop         : std_logic;
 
     signal stat_clr_tx : std_logic;
     signal stat_clr_rx : std_logic;
@@ -254,6 +264,9 @@ architecture rtl of eth_mac_sys is
     signal mac_tx_in_tvalid : std_logic;
     signal mac_tx_in_tlast  : std_logic;
 
+    signal user_mid  : std_logic;   -- a user frame is part-way accepted
+    signal pause_sel : std_logic;
+
     -- RX gating: mask tvalid when rx disabled
     signal m_axis_tdata_mac  : std_logic_vector(7 downto 0);
     signal m_axis_tvalid_mac : std_logic;
@@ -264,6 +277,7 @@ architecture rtl of eth_mac_sys is
 
     signal cfg_speed_eff : std_logic_vector(1 downto 0);
 
+    signal rx_tlast_hs   : std_logic;
     signal rx_frame_good : std_logic;
     signal rx_frame_bad  : std_logic;
 
@@ -323,21 +337,16 @@ begin
 
     -- =========================================================================
     -- Optional TX checksum offload.
-    -- TX_CSUM_OFFLOAD=0 removes the frame-buffering checksum patcher from
+    -- TX_CSUM_OFFLOAD=0 removes the frame-buffering checksum inserter from
     -- synthesis; CTRL[7] then reads/writes normally but has no datapath effect.
-    -- TX_CSUM_OFFLOAD=1 lets CTRL[7] select the patcher at runtime.
+    -- TX_CSUM_OFFLOAD=1 sends every frame through the inserter, which stores
+    -- each frame whole (one MAX_FRAME of buffer) and fills in its checksums
+    -- when CTRL[7] was set at the frame's first byte. The path never switches
+    -- while a frame is in flight, so CTRL[7] may change at any time.
     -- =========================================================================
     gen_tx_csum : if TX_CSUM_OFFLOAD /= 0 generate
-        signal csum_m_tdata    : std_logic_vector(7 downto 0);
-        signal csum_m_tvalid   : std_logic;
-        signal csum_m_tlast    : std_logic;
-        signal csum_s_tready   : std_logic;
-        signal csum_s_tvalid   : std_logic;
-        signal csum_m_tready   : std_logic;
+        signal csum_s_tready : std_logic;
     begin
-        csum_s_tvalid <= s_axis_tvalid_gated and cfg_tx_csum_off;
-        csum_m_tready <= s_axis_tready_mac and cfg_tx_csum_off;
-
         u_tx_csum : entity work.tx_csum_off
             generic map (MAX_FRAME => MAX_FRAME)
             port map (
@@ -345,20 +354,16 @@ begin
                 rst_n         => rst_n,
                 enable        => cfg_tx_csum_off,
                 s_axis_tdata  => s_axis_tdata,
-                s_axis_tvalid => csum_s_tvalid,
+                s_axis_tvalid => s_axis_tvalid_gated,
                 s_axis_tready => csum_s_tready,
                 s_axis_tlast  => s_axis_tlast,
-                m_axis_tdata  => csum_m_tdata,
-                m_axis_tvalid => csum_m_tvalid,
-                m_axis_tready => csum_m_tready,
-                m_axis_tlast  => csum_m_tlast
+                m_axis_tdata  => user_tx_tdata,
+                m_axis_tvalid => user_tx_tvalid,
+                m_axis_tready => user_tx_tready,
+                m_axis_tlast  => user_tx_tlast
             );
 
-        user_tx_tdata  <= csum_m_tdata  when cfg_tx_csum_off = '1' else s_axis_tdata;
-        user_tx_tvalid <= csum_m_tvalid when cfg_tx_csum_off = '1' else s_axis_tvalid_gated;
-        user_tx_tlast  <= csum_m_tlast  when cfg_tx_csum_off = '1' else s_axis_tlast;
-        s_axis_tready  <= (csum_s_tready and cfg_tx_en) when cfg_tx_csum_off = '1'
-                          else (user_tx_tready and cfg_tx_en);
+        s_axis_tready <= csum_s_tready and cfg_tx_en;
     end generate gen_tx_csum;
 
     gen_no_tx_csum : if TX_CSUM_OFFLOAD = 0 generate
@@ -368,14 +373,28 @@ begin
         s_axis_tready  <= user_tx_tready and cfg_tx_en;
     end generate gen_no_tx_csum;
 
-    -- PAUSE-priority mux: while a pause frame is being emitted, route
-    -- pause_* into eth_mac_tx and stall user_*. Pause frames are short and
-    -- rare, so simple priority-on-tvalid is acceptable here.
-    mac_tx_in_tdata  <= pause_tdata  when pause_tvalid = '1' else user_tx_tdata;
-    mac_tx_in_tvalid <= pause_tvalid when pause_tvalid = '1' else user_tx_tvalid;
-    mac_tx_in_tlast  <= pause_tlast  when pause_tvalid = '1' else user_tx_tlast;
-    pause_tready     <= pause_tvalid and s_axis_tready_mac;
-    user_tx_tready   <= (not pause_tvalid) and s_axis_tready_mac;
+    -- PAUSE-priority mux, switched only between user frames. A PAUSE frame
+    -- requested while a user frame is part-way through waits (eth_pause holds
+    -- in TX_RUN until pause_tready) for that frame's tlast; switching on
+    -- pause_tvalid alone spliced the PAUSE bytes into the user frame. Once
+    -- the PAUSE frame has the bus, user_tx_tready is low, so user_mid stays
+    -- clear and the PAUSE frame keeps the bus until its own tlast.
+    process (clk, rst_n)
+    begin
+        if rst_n = '0' then
+            user_mid <= '0';
+        elsif rising_edge(clk) then
+            if user_tx_tvalid = '1' and user_tx_tready = '1' then
+                user_mid <= not user_tx_tlast;
+            end if;
+        end if;
+    end process;
+    pause_sel        <= pause_tvalid and (not user_mid);
+    mac_tx_in_tdata  <= pause_tdata  when pause_sel = '1' else user_tx_tdata;
+    mac_tx_in_tvalid <= pause_tvalid when pause_sel = '1' else user_tx_tvalid;
+    mac_tx_in_tlast  <= pause_tlast  when pause_sel = '1' else user_tx_tlast;
+    pause_tready     <= pause_sel and s_axis_tready_mac;
+    user_tx_tready   <= (not pause_sel) and s_axis_tready_mac;
 
     -- RX gating: mask tvalid when rx disabled
     m_axis_tready_mac <= m_axis_tready when cfg_rx_en = '1' else '1';
@@ -398,10 +417,14 @@ begin
     -- =========================================================================
     -- MAC RX - strips preamble/SFD, validates CRC
     -- =========================================================================
+    -- With jumbo_en, RX accepts up to MAX_FRAME wire bytes (FCS included),
+    -- the size the RX FIFOs here are built for.
     u_mac_rx : entity work.eth_mac_rx
         generic map (
             MCAST_HASH_FILTER    => MCAST_HASH_FILTER,
-            AXIS_FIFO_ADDR_WIDTH => RX_AXIS_ADDR_WIDTH
+            AXIS_FIFO_ADDR_WIDTH => RX_AXIS_ADDR_WIDTH,
+            MAX_FRAME_JUMBO      => MAX_FRAME,
+            RX_CSUM_OFFLOAD      => RX_CSUM_OFFLOAD
         )
         port map (
             clk               => clk,
@@ -413,6 +436,7 @@ begin
             promisc           => cfg_promisc,
             passthrough       => cfg_passthrough,
             jumbo_en          => cfg_jumbo_en,
+            rx_csum_en        => cfg_rx_csum_off,
             mcast_hash_table  => cfg_mcast_hash_table,
             m_axis_tdata      => m_axis_tdata_mac,
             m_axis_tvalid     => m_axis_tvalid_mac,
@@ -426,8 +450,10 @@ begin
             stat_err_align    => rx_stat_err_align,
             stat_err_overflow => rx_stat_err_overflow,
             stat_err_oversize => rx_stat_err_oversize,
+            stat_err_csum     => rx_stat_err_csum,
             stat_is_bcast     => rx_stat_is_bcast,
-            stat_is_mcast     => rx_stat_is_mcast
+            stat_is_mcast     => rx_stat_is_mcast,
+            stat_drop         => rx_stat_drop
         );
 
     -- =========================================================================
@@ -462,11 +488,13 @@ begin
             cfg_pause_tx_quanta => cfg_pause_tx_quanta,
             gmii_rxd            => gmii_rxd,
             gmii_rx_dv          => gmii_rx_dv,
+            gmii_rx_er          => gmii_rx_er,
             tx_paused           => tx_paused,
             pause_tdata         => pause_tdata,
             pause_tvalid        => pause_tvalid,
             pause_tready        => pause_tready,
             pause_tlast         => pause_tlast,
+            stat_clr            => stat_clr_pause,
             pause_rx_cnt        => stat_pause_rx_cnt,
             pause_tx_cnt        => stat_pause_tx_cnt
         );
@@ -866,9 +894,11 @@ begin
     -- TX byte / frame-done events come from the active PHY's TX framer
     -- (tx_byte_ev / tx_frame_done_ev), muxed in the generate branches above.
 
-    -- RX frame done pulses
-    rx_frame_good <= m_axis_tvalid_mac and m_axis_tlast_mac and (not m_axis_terror_mac);
-    rx_frame_bad  <= m_axis_tvalid_mac and m_axis_tlast_mac and m_axis_terror_mac;
+    -- RX frame done pulses: one per TLAST handshake. Without tready, a TLAST
+    -- word held at the FIFO head by a stalled sink would count once per cycle.
+    rx_tlast_hs   <= m_axis_tvalid_mac and m_axis_tready_mac and m_axis_tlast_mac;
+    rx_frame_good <= rx_tlast_hs and (not m_axis_terror_mac);
+    rx_frame_bad  <= rx_tlast_hs and m_axis_terror_mac;
 
     u_stats : entity work.eth_stats
         port map (
@@ -885,8 +915,10 @@ begin
             rx_stat_err_align     => rx_stat_err_align,
             rx_stat_err_overflow  => rx_stat_err_overflow,
             rx_stat_err_oversize  => rx_stat_err_oversize,
+            rx_stat_err_csum      => rx_stat_err_csum,
             rx_stat_is_bcast      => rx_stat_is_bcast,
             rx_stat_is_mcast      => rx_stat_is_mcast,
+            rx_stat_drop          => rx_stat_drop,
             tx_frame_cnt          => stat_tx_frame_cnt,
             tx_byte_cnt           => stat_tx_byte_cnt,
             rx_frame_cnt          => stat_rx_frame_cnt,
@@ -895,6 +927,7 @@ begin
             rx_err_align_cnt      => stat_rx_err_align_cnt,
             rx_err_overflow_cnt   => stat_rx_err_overflow_cnt,
             rx_err_oversize_cnt   => stat_rx_err_oversize_cnt,
+            rx_err_csum_cnt       => stat_rx_err_csum_cnt,
             rx_bcast_cnt          => stat_rx_bcast_cnt,
             rx_mcast_cnt          => stat_rx_mcast_cnt,
             rx_size_64_cnt        => stat_rx_size_64_cnt,
@@ -904,6 +937,7 @@ begin
             rx_size_512_1023_cnt  => stat_rx_size_512_1023_cnt,
             rx_size_1024_1518_cnt => stat_rx_size_1024_1518_cnt,
             rx_size_jumbo_cnt     => stat_rx_size_jumbo_cnt,
+            rx_drop_cnt           => stat_rx_drop_cnt,
             clr_tx                => stat_clr_tx,
             clr_rx                => stat_clr_rx
         );
@@ -955,6 +989,7 @@ begin
             cfg_jumbo_en               => cfg_jumbo_en,
             cfg_tx_csum_off            => cfg_tx_csum_off,
             cfg_passthrough            => cfg_passthrough,
+            cfg_rx_csum_off            => cfg_rx_csum_off,
             cfg_mac_addr               => cfg_mac_addr,
             cfg_ip_addr                => cfg_ip_addr,
             dbg_saf                    => dbg_mii_tx_saf,
@@ -985,7 +1020,9 @@ begin
             stat_rx_size_256_511_cnt   => stat_rx_size_256_511_cnt,
             stat_rx_size_512_1023_cnt  => stat_rx_size_512_1023_cnt,
             stat_rx_size_1024_1518_cnt => stat_rx_size_1024_1518_cnt,
+            stat_rx_err_csum_cnt       => stat_rx_err_csum_cnt,
             stat_rx_size_jumbo_cnt     => stat_rx_size_jumbo_cnt,
+            stat_rx_drop_cnt           => stat_rx_drop_cnt,
             cfg_pause_rx_en            => cfg_pause_rx_en,
             cfg_pause_tx_send          => cfg_pause_tx_send,
             cfg_pause_tx_quanta        => cfg_pause_tx_quanta,

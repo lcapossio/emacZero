@@ -221,7 +221,10 @@ begin
     -- MAC RX - strips preamble/SFD, validates CRC
     -- =========================================================================
     u_mac_rx : entity work.eth_mac_rx
-        generic map (AXIS_FIFO_ADDR_WIDTH => RX_AXIS_ADDR_WIDTH)
+        generic map (
+            AXIS_FIFO_ADDR_WIDTH => RX_AXIS_ADDR_WIDTH,
+            MAX_FRAME_JUMBO      => MAX_FRAME          -- with jumbo_en, FCS included
+        )
         port map (
             clk               => clk,
             rst_n             => rst_n,
@@ -232,6 +235,7 @@ begin
             promisc           => promisc,
             passthrough       => '0',
             jumbo_en          => '1',       -- standalone wrapper: always allow jumbo
+            rx_csum_en        => '0',
             mcast_hash_table  => (others => '0'),
             m_axis_tdata      => m_axis_tdata,
             m_axis_tvalid     => m_axis_tvalid,
@@ -245,8 +249,10 @@ begin
             stat_err_align    => open,
             stat_err_overflow => open,
             stat_err_oversize => open,
+            stat_err_csum     => open,
             stat_is_bcast     => open,
-            stat_is_mcast     => open
+            stat_is_mcast     => open,
+            stat_drop         => open
         );
 
     -- =========================================================================

@@ -24,6 +24,7 @@ rtl/vhdl/async_fifo.vhd
 rtl/vhdl/sync_fifo.vhd
 rtl/vhdl/mii_if.vhd
 rtl/vhdl/mii_tx_saf.vhd
+rtl/vhdl/csum_calc.vhd
 rtl/vhdl/eth_mac_rx.vhd
 rtl/vhdl/eth_mac_tx.vhd
 rtl/vhdl/eth_mac.vhd
