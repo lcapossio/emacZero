@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/eth_mac_tx.v (golden) vs rtl/vhdl/eth_mac_tx.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/eth_mac_tx/parity.yml --strict
+# Proves the two MAX_FRAME values the design instantiates (1518 standard,
+# 9018 jumbo default of eth_mac / eth_mac_sys). No RAM, so no shrinking needed.
+version: 1
+name: eth_mac_tx_parity
+description: eth_mac_tx Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: eth_mac_tx
+  sources: [../../../rtl/eth_mac_tx.v]
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: eth_mac_tx
+  sources: [../../../rtl/vhdl/eth_mac_tx.vhd]
+
+interface:
+  top: eth_mac_tx
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: eth_mac_tx
+      param_sets:
+        - {MAX_FRAME: 1518}
+        - {MAX_FRAME: 9018}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {MAX_FRAME: 9018}
