@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/net/csum_calc.v (golden) vs rtl/vhdl/csum_calc.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/csum_calc/parity.yml --strict
+# csum_calc has no parameters; the one configuration is proven at full width.
+version: 1
+name: csum_calc_parity
+description: csum_calc Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: csum_calc
+  sources: [../../../rtl/net/csum_calc.v]
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: csum_calc
+  sources: [../../../rtl/vhdl/csum_calc.vhd]
+
+interface:
+  top: csum_calc
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: csum_calc
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
