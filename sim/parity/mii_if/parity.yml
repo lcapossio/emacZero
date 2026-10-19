@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/mii_if.v (golden) vs rtl/vhdl/mii_if.vhd,
+# non-Xilinx branch (portable async_fifo + inferred RX frame RAM).
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/mii_if/parity.yml --strict
+#
+# Target: SIM. mii_if only tests `ifdef XILINX_7SERIES, so SIM, none,
+# XILINX_ULTRASCALE_PLUS and INTEL_CYCLONE all elaborate this same branch on
+# both sides; this manifest covers all of them. The XILINX_7SERIES branch is
+# in parity_xilinx_7series.yml.
+#
+# FIFO MODEL: mii_if hard-codes two async_fifo instances (RX 2048x10, TX
+# 4096x9). Both sides read sim/parity/gmii_cdc/async_fifo_smallmem.{v,vhd} in
+# place of rtl/async_fifo.{v,vhd}: the same FIFO with its memory clamped to 8
+# words (pointers, Gray synchronizers, full/empty and wr_data_count keep their
+# real widths). The async_fifo obligation below proves that model pair
+# equivalent at the two parameter sets mii_if uses; the real async_fifo pair is
+# proven in sim/parity/async_fifo/.
+#
+# OPEN: the mii_if obligation itself is not listed. The 4096x9 RX frame RAM is
+# inline in mii_if (literal [0:4095], no module or parameter to swap without
+# editing the golden), so 36864 memory bits become flops. Every word pairs by
+# name (rx_frame_mem_N_), but equiv_induct under yowasp-yosys 0.63 (4 GB wasm
+# limit, ezSAT) does not finish: clk2fflogic depth 2 ran >60 min in one SAT
+# call; global depth 4 ran 75 min (~3M clauses per step) with no result; with
+# the real FIFOs it ran out of memory. Uncomment the mii_if entry to retry with a
+# stronger solver. Evidence meanwhile: the XILINX_7SERIES branch (all shared
+# logic) is proven in parity_xilinx_7series.yml, and parity_smallram.yml
+# proves both configs of this branch with only the RAM cut to 8 words on both
+# sides (clk2fflogic, depth 20).
+#
+# Param sets: the two instantiated configurations (eth_mac: MII_DEBUG=0,
+# TX_ENABLE=1; eth_mac_sys MII path: MII_DEBUG=0, TX_ENABLE=0).
+#
+# MII_DEBUG=1 (set only by tb_mii_tx_burst_backpressure and tb_eth_mac_jumbo)
+# is NOT proven. It adds byte arrays reset by a for loop. Yosys splits them
+# into one register per word (rx_mii_cap_rxclk_0_ ...), GHDL keeps one wide
+# register, so they do not pair by name. mii_cap and rx_mii_word_sys still
+# pair through the dbg_* output ports that read them, but rx_mii_cap_rxclk
+# (rx-clock capture, read only through rx_mii_word_sys) has no output and
+# stays unpaired, so the dbg_rx_mii_word0..15 outputs cannot be closed by
+# induction. Dropping those outputs with a wrapper crashes Yosys 0.63
+# `rename -unescape` (GHDL's <inst>_<port> nets collide with the flattened
+# <inst>.<port> names), and the bounded fallback reports a spurious step-1
+# counterexample (no reset, no common initial state). So no MII_DEBUG=1
+# obligation is listed here.
+version: 1
+name: mii_if_parity
+description: mii_if Verilog golden vs VHDL port (non-Xilinx branch)
+
+golden:
+  language: verilog
+  top: mii_if
+  sources: [../defines/sim.vh, ../../../rtl/mii_if.v, ../gmii_cdc/async_fifo_smallmem.v]
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: mii_if
+  sources: [../../../rtl/vhdl/target/emz_target_sim.vhd, ../gmii_cdc/async_fifo_smallmem.vhd,
+            ../../../rtl/vhdl/mii_if.vhd]
+
+interface:
+  top: mii_if
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  modules:
+    - name: async_fifo
+      param_sets:
+        - {DATA_WIDTH: 10, ADDR_WIDTH: 11}
+        - {DATA_WIDTH: 9, ADDR_WIDTH: 12}
+    # - name: mii_if            # does not finish under yowasp-yosys; see OPEN above
+    #   param_sets:
+    #     - {MII_DEBUG: 0, TX_ENABLE: 1}
+    #     - {MII_DEBUG: 0, TX_ENABLE: 0}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {MII_DEBUG: 0, TX_ENABLE: 1}

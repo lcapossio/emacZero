@@ -395,8 +395,21 @@ def run_ghdl_lint():
     """Analyse the VHDL port (rtl/vhdl/) once per vendor target, then
     elaborate eth_mac_sys. The proofs of equivalence with the Verilog live in
     sim/parity/ (translateHDL); this phase only keeps the VHDL compiling.
-    Skipped (not failed) where GHDL is unavailable, natively or in WSL."""
+    Skipped (not failed) where GHDL is unavailable, natively or in WSL.
+    The generated parity models of mii_if are checked first (no GHDL needed)."""
     header("PHASE 0d: GHDL lint (VHDL port)")
+    all_ok = True
+    gen = os.path.join(PROJECT_DIR, "sim", "parity", "mii_if", "gen_smallram.py")
+    rc, stdout, stderr = run_cmd(f'"{sys.executable}" "{gen}" --check',
+                                 cwd=PROJECT_DIR, timeout=60)
+    if rc != 0:
+        all_ok = False
+        fail("mii_if small-RAM parity models are out of date")
+        for line in (stdout.strip() + "\n" + stderr.strip()).strip().splitlines()[:5]:
+            print(f"    {line}")
+    else:
+        ok("mii_if small-RAM parity models match rtl/mii_if.v and rtl/vhdl/mii_if.vhd")
+
     ghdl = os.environ.get("GHDL") or shutil.which("ghdl")
     wsl = None if ghdl else _find_wsl()
     if wsl:
@@ -406,9 +419,8 @@ def run_ghdl_lint():
     if not ghdl and not wsl:
         print(f"  {C.YELLOW}SKIP{C.END} GHDL not found (native PATH, $GHDL or WSL) - "
               "the VHDL port is NOT checked by this run")
-        return True
+        return all_ok
 
-    all_ok = True
     for target in VHDL_TARGETS:
         rel = f"sim/.ghdl_{os.getpid()}_{target}"
         workdir = os.path.join(PROJECT_DIR, rel)
