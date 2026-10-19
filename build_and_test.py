@@ -5,7 +5,8 @@
 """
 build_and_test.py — emacZero: lint and simulate Ethernet MAC
 ============================================================
-Runs version checks, Icarus lint, Verilator lint, and all Icarus testbenches.
+Runs version checks, Icarus lint, Verilator lint, GHDL lint of the VHDL port,
+and all Icarus testbenches.
 
 Usage:
   python build_and_test.py              # run all tests
@@ -73,6 +74,7 @@ def run_cmd(cmd, cwd=None, timeout=None):
 VERSION_VH       = os.path.join(PROJECT_DIR, "rtl", "version.vh")
 VERSION_C_HEADER = os.path.join(PROJECT_DIR, "sw", "emaczero", "emaczero.h")
 VERSION_FUSESOC  = os.path.join(PROJECT_DIR, "emaczero.core")
+VERSION_VHDL     = os.path.join(PROJECT_DIR, "rtl", "vhdl", "emz_version_pkg.vhd")
 
 _VH_DEFINE_RE = re.compile(
     r'`define\s+(EMZ_VERSION_MAJOR|EMZ_VERSION_MINOR|EMZ_VERSION_ID)\s+'
@@ -93,6 +95,10 @@ _C_VALUE_LITERAL_RE = re.compile(
 )
 _CORE_NAME_RE = re.compile(
     r"^name:\s*[^:]+:[^:]+:[^:]+:(\d+)\.(\d+)\.\d+", re.MULTILINE
+)
+_VHDL_CONST_RE = re.compile(
+    r"constant\s+(EMZ_VERSION_MAJOR|EMZ_VERSION_MINOR|EMZ_VERSION_ID)\s*:"
+    r"[^:]*:=\s*x\"([0-9A-Fa-f_]+)\"", re.IGNORECASE
 )
 
 
@@ -140,6 +146,11 @@ def _parse_c_version_value(text, cdef):
     return None
 
 
+def _parse_vhdl(text):
+    return {m.group(1).upper(): int(m.group(2).replace("_", ""), 16)
+            for m in _VHDL_CONST_RE.finditer(text)}
+
+
 def _parse_core(text):
     m = _CORE_NAME_RE.search(text)
     if not m:
@@ -153,12 +164,14 @@ def run_version_check():
         vh   = _parse_vh(_read(VERSION_VH))
         cdef = _parse_c(_read(VERSION_C_HEADER))
         core = _parse_core(_read(VERSION_FUSESOC))
+        vhdl = _parse_vhdl(_read(VERSION_VHDL))
     except (OSError, ValueError) as e:
         fail(f"Version check: {e}")
         return False
 
     keys = ("EMZ_VERSION_MAJOR", "EMZ_VERSION_MINOR", "EMZ_VERSION_ID")
-    missing = [(name, k) for name, src in (("version.vh", vh), ("emaczero.h", cdef))
+    others = (("emaczero.h", cdef), ("emz_version_pkg.vhd", vhdl))
+    missing = [(name, k) for name, src in (("version.vh", vh), *others)
                           for k in keys if k not in src]
     if missing:
         for src, k in missing:
@@ -168,11 +181,12 @@ def run_version_check():
         fail("Version check: could not parse package version from emaczero.core")
         return False
 
-    mismatches = [k for k in keys if vh[k] != cdef[k]]
+    mismatches = [(name, k, src[k]) for name, src in others
+                  for k in keys if vh[k] != src[k]]
     if mismatches:
-        for k in mismatches:
+        for name, k, val in mismatches:
             fail(f"Version check: {k} mismatch — version.vh=0x{vh[k]:X}, "
-                 f"emaczero.h=0x{cdef[k]:X}")
+                 f"{name}=0x{val:X}")
         return False
 
     c_value = _parse_c_version_value(_read(VERSION_C_HEADER), cdef)
@@ -356,6 +370,86 @@ def run_vivado_elab():
 
     ok("Vivado RTL elaboration: clean")
     return True
+
+
+VHDL_FILELIST = os.path.join(PROJECT_DIR, "rtl", "eth_mac_sys_vhdl.f")
+VHDL_TARGETS = ("sim", "xilinx_7series", "xilinx_ultrascale_plus",
+                "intel_cyclone", "none")
+
+
+def _vhdl_sources(target):
+    """rtl/eth_mac_sys_vhdl.f with its target package swapped for `target`."""
+    srcs = []
+    with open(VHDL_FILELIST, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "/target/emz_target_" in line:
+                line = f"rtl/vhdl/target/emz_target_{target}.vhd"
+            srcs.append(line)
+    return srcs
+
+
+def run_ghdl_lint():
+    """Analyse the VHDL port (rtl/vhdl/) once per vendor target, then
+    elaborate eth_mac_sys. The proofs of equivalence with the Verilog live in
+    sim/parity/ (translateHDL); this phase only keeps the VHDL compiling.
+    Skipped (not failed) where GHDL is unavailable, natively or in WSL."""
+    header("PHASE 0d: GHDL lint (VHDL port)")
+    ghdl = os.environ.get("GHDL") or shutil.which("ghdl")
+    wsl = None if ghdl else _find_wsl()
+    if wsl:
+        rc, _, _ = _wsl_run(wsl, "command -v ghdl")
+        if rc != 0:
+            wsl = None
+    if not ghdl and not wsl:
+        print(f"  {C.YELLOW}SKIP{C.END} GHDL not found (native PATH, $GHDL or WSL) - "
+              "the VHDL port is NOT checked by this run")
+        return True
+
+    all_ok = True
+    for target in VHDL_TARGETS:
+        rel = f"sim/.ghdl_{os.getpid()}_{target}"
+        workdir = os.path.join(PROJECT_DIR, rel)
+        os.makedirs(workdir, exist_ok=True)
+        flags = f"--std=08 --workdir={rel}"
+        script = (f"{{q}} -a {flags} {' '.join(_vhdl_sources(target))} && "
+                  f"{{q}} -e {flags} eth_mac_sys")
+        try:
+            if ghdl:
+                rc, stdout, stderr = run_cmd(script.format(q=f'"{ghdl}"'),
+                                             cwd=PROJECT_DIR, timeout=300)
+            else:
+                rc, stdout, stderr = _wsl_run(wsl, script.format(q="ghdl"), 300)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+            # Native GHDL drops the elaborated binary/object in the cwd.
+            for junk in ("eth_mac_sys", "eth_mac_sys.exe", "e~eth_mac_sys.o"):
+                p = os.path.join(PROJECT_DIR, junk)
+                if os.path.isfile(p):
+                    os.remove(p)
+        if rc != 0:
+            all_ok = False
+            fail(f"GHDL lint ({target})")
+            output = "\n".join(x for x in [stdout.strip(), stderr.strip()] if x)
+            for line in output.splitlines()[:20]:
+                print(f"    {line}")
+        else:
+            ok(f"GHDL lint ({target}): analyse + elaborate eth_mac_sys")
+    return all_ok
+
+
+def _wsl_run(wsl, cmd, timeout=120):
+    wsl_cmd = f"cd '{_windows_to_wsl_path(PROJECT_DIR)}' && {cmd}"
+    try:
+        r = subprocess.run([wsl, "-e", "bash", "-lc", wsl_cmd],
+                           cwd=PROJECT_DIR, timeout=timeout,
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        return r.returncode, r.stdout, r.stderr
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return -1, "", str(exc)
 
 
 def run_lint():
@@ -1069,12 +1163,13 @@ def main():
     lint_ok = run_lint()
     verilator_ok = run_verilator_lint()
     elab_ok = run_vivado_elab()
+    ghdl_ok = run_ghdl_lint()
     sim_ok = run_simulation()
     vendor_ok = run_vendor_ddr_sims()
     cocotb_ok = run_cocotb()
     impl_ok = run_rgmii_impl() if args.impl else True
 
-    if (version_ok and lint_ok and verilator_ok and elab_ok
+    if (version_ok and lint_ok and verilator_ok and elab_ok and ghdl_ok
             and sim_ok and vendor_ok and cocotb_ok and impl_ok):
         print(f"\n{C.GREEN}{C.BOLD}All tests passed.{C.END}")
         sys.exit(0)
