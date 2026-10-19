@@ -412,6 +412,7 @@ Drop `eth_mac_sys` into another design via either of:
 |--------|-----|----------|
 | `default` | `eth_mac_sys` | MAC IP only |
 | `with_l3` | `eth_mac_sys` | + ICMP echo / IP RX parser |
+| `vhdl` | `eth_mac_sys` | MAC IP, VHDL port |
 | `arty_a7` | `arty_a7_top` | full demo + XDC |
 
 ```bash
@@ -428,6 +429,13 @@ iverilog -g2001 -I rtl -f rtl/eth_mac_sys.f your_top.v
 [rtl/eth_mac_sys_l3.f](rtl/eth_mac_sys_l3.f) adds the optional L3 helpers.
 `-I rtl` is required because [`axilite_regs.v`](rtl/axilite_regs.v) does
 `` `include "version.vh" `` (single source of truth — see *Versioning* below).
+
+**VHDL** — [rtl/vhdl/](rtl/vhdl/) is a VHDL-2008 port of the MAC IP, with
+the filelist [rtl/eth_mac_sys_vhdl.f](rtl/eth_mac_sys_vhdl.f). Its first file
+picks the vendor target (one package per target in
+[rtl/vhdl/target/](rtl/vhdl/target/)). Each module is formally proven
+equivalent to its Verilog original. The port has not been run on hardware
+yet. See [docs/vhdl_port.md](docs/vhdl_port.md).
 
 **LiteX** — `litex_emaczero/emaczero.py` ships an `EmacZero` `LiteXModule` that wraps
 `eth_mac_sys` with LiteX-native AXI-Lite + AXI-Stream interfaces:

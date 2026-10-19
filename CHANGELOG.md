@@ -5,7 +5,23 @@ This project does not yet maintain long-lived release branches.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- VHDL-2008 port of the MAC IP (`rtl/eth_mac_sys.f`) in `rtl/vhdl/`, with the
+  filelist `rtl/eth_mac_sys_vhdl.f` and FuseSoC target `vhdl`. Vendor
+  selection uses one target package per vendor in `rtl/vhdl/target/`. Every
+  module is formally proven equivalent to the v0.2.0 Verilog with translateHDL
+  (manifests in `sim/parity/`; see `docs/vhdl_port.md`). Not yet run on
+  hardware.
+- `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
+  vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
+  The phase is skipped when GHDL is not installed.
+
+### Fixed
+
+- `emaczero.core`: `rtl_core` did not list `rtl/mii_tx_saf.v`, so FuseSoC
+  builds of the `default` and `with_l3` targets could not elaborate
+  `eth_mac_sys` on its default MII path.
 
 ## v0.2.0 - 2026-10-16
 
