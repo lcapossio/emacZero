@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/eth_mac_sys.v (golden) vs rtl/vhdl/eth_mac_sys.vhd,
+# flattened with every submodule. GMII and RGMII branches.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/eth_mac_sys/parity.yml --strict
+#
+# Every submodule is proven on its own in its sim/parity/<module>/ directory.
+# This proof covers eth_mac_sys's own logic (TX/RX gating, PAUSE mux and
+# user_mid, stats events, generics plumbing, the PHY generate branches) in
+# composition, with these stand-ins, identical on both sides:
+#   - async_fifo -> sim/parity/gmii_cdc/async_fifo_smallmem.{v,vhd}: the real
+#     FIFO with only the memory array clamped to 8 words (see that manifest).
+#     gmii_cdc hard-codes a 16K-word TX FIFO that SAT cannot hold.
+#   - ddr_output / ddr_input -> sim/parity/stubs/ddr_standin.{v,vhd}: stateless.
+#     They sit in rgmii_if's for-generates, whose instance names differ between
+#     Yosys and GHDL, so state inside them could not pair by name. The real
+#     cells are proven per target in sim/parity/ddr_output, ddr_input, rgmii_if.
+# Target: SIM on both sides (defines/sim.vh, emz_target_sim.vhd); only mii_if
+# and the DDR cells depend on the target, and both are covered above.
+# version.vh here forwards to rtl/version.vh (iverilog include path, L1).
+#
+# Configs: MAX_FRAME 1518 and CLK_FREQ_HZ 125 MHz (required for a 1G-capable
+# build), as on the ZCU106 GMII build. RX_AXIS_ADDR_WIDTH is cut from 11 to 3
+# (eth_mac_rx's RX FIFO is a plain sync_fifo array; 3 is the smallest depth
+# with a non-zero high-water mark, as in sim/parity/eth_mac_rx).
+version: 1
+name: eth_mac_sys_parity
+description: eth_mac_sys Verilog golden vs VHDL port (flattened), GMII and RGMII
+
+golden:
+  language: verilog
+  top: eth_mac_sys
+  sources:
+    - ../defines/sim.vh
+    - ../../../rtl/crc32.v
+    - ../gmii_cdc/async_fifo_smallmem.v
+    - ../../../rtl/sync_fifo.v
+    - ../../../rtl/mii_if.v
+    - ../../../rtl/mii_tx_saf.v
+    - ../../../rtl/net/csum_calc.v
+    - ../../../rtl/eth_mac_rx.v
+    - ../../../rtl/eth_mac_tx.v
+    - ../../../rtl/mdio_master.v
+    - ../../../rtl/eth_stats.v
+    - ../../../rtl/eth_pause.v
+    - ../../../rtl/axilite_regs.v
+    - ../stubs/ddr_standin.v
+    - ../../../rtl/rgmii_if.v
+    - ../../../rtl/gmii_if.v
+    - ../../../rtl/gmii_cdc.v
+    - ../../../rtl/net/tx_csum_off.v
+    - ../../../rtl/eth_mac_sys.v
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: eth_mac_sys
+  sources:
+    - ../../../rtl/vhdl/target/emz_target_sim.vhd
+    - ../../../rtl/vhdl/emz_util_pkg.vhd
+    - ../../../rtl/vhdl/emz_version_pkg.vhd
+    - ../../../rtl/vhdl/crc32.vhd
+    - ../gmii_cdc/async_fifo_smallmem.vhd
+    - ../../../rtl/vhdl/sync_fifo.vhd
+    - ../../../rtl/vhdl/mii_if.vhd
+    - ../../../rtl/vhdl/mii_tx_saf.vhd
+    - ../../../rtl/vhdl/csum_calc.vhd
+    - ../../../rtl/vhdl/eth_mac_rx.vhd
+    - ../../../rtl/vhdl/eth_mac_tx.vhd
+    - ../../../rtl/vhdl/mdio_master.vhd
+    - ../../../rtl/vhdl/eth_stats.vhd
+    - ../../../rtl/vhdl/eth_pause.vhd
+    - ../../../rtl/vhdl/axilite_regs.vhd
+    - ../stubs/ddr_standin.vhd
+    - ../../../rtl/vhdl/rgmii_if.vhd
+    - ../../../rtl/vhdl/gmii_if.vhd
+    - ../../../rtl/vhdl/gmii_cdc.vhd
+    - ../../../rtl/vhdl/tx_csum_off.vhd
+    - ../../../rtl/vhdl/eth_mac_sys.vhd
+
+interface:
+  top: eth_mac_sys
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  modules:
+    - name: eth_mac_sys
+      param_sets:
+        - {PHY_INTERFACE: "GMII",  MAX_FRAME: 1518, RX_AXIS_ADDR_WIDTH: 3, CLK_FREQ_HZ: 125000000}
+        - {PHY_INTERFACE: "RGMII", MAX_FRAME: 1518, RX_AXIS_ADDR_WIDTH: 3, CLK_FREQ_HZ: 125000000}
+
+synth:
+  enabled: true
+  tolerance_pct: 15.0
+  param_sets:
+    - {PHY_INTERFACE: "RGMII", MAX_FRAME: 1518, CLK_FREQ_HZ: 125000000}
