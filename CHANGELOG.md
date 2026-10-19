@@ -16,6 +16,9 @@ This project does not yet maintain long-lived release branches.
 - `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
   The phase is skipped when GHDL is not installed.
+- `sim/cocotb/run.py --hdl vhdl` runs the cocotb suites against the VHDL port
+  under GHDL (phase 2b of `build_and_test.py`, skipped without GHDL and
+  cocotb). All 8 suites pass on both languages.
 
 ### Fixed
 

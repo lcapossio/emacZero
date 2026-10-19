@@ -36,7 +36,7 @@ sim/cocotb/
     test_eth_mac_rx_robust.py FIFO-overflow framing, runt, preamble rx_er, byte_cnt wrap
     test_eth_mac_rx_mcast.py multicast hash filter (MCAST_HASH_FILTER=1 build)
     test_gmii_cdc.py         TX+RX CDC across 1G/100M/10M + committed-counter burst probes
-  run.py          build + run entry point (SUITES table; Icarus today)
+  run.py          build + run entry point (SUITES table; Icarus or GHDL)
   smoke/          toolchain smoke (cocotb + Icarus VPI sanity)
 ```
 
@@ -54,10 +54,15 @@ python sim/cocotb/run.py --seed 2506875794
 
 # a single testcase, with waves
 python sim/cocotb/run.py --test random_heavy_bubble --waves
+
+# the same suites against the VHDL port (rtl/vhdl/) under GHDL
+python sim/cocotb/run.py --hdl vhdl
 ```
 
 Requires `cocotb>=2.0` and Icarus Verilog on `PATH` (both already present on the
-dev bench). It is also wired into `build_and_test.py` as its own phase.
+dev bench). `--hdl vhdl` needs GHDL instead (tested: GHDL 4.1 in WSL, gcc
+backend). Both are wired into `build_and_test.py` as their own phases (2 and
+2b); phase 2b runs in WSL when GHDL is not on the Windows `PATH`.
 
 ## Modules covered
 

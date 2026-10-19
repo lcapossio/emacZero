@@ -73,7 +73,7 @@ sets.
   clock, edge or reset is a divergence.
 - **Small parameter sets.** The RAMs are mapped to flops for the solver, so
   FIFOs are proven at depths of 4 to 8 words. The RTL is parametric in width
-  and depth, and production depths are covered by simulation.
+  and depth. Production sizes are covered by simulation only (see below).
 - **Uninitialised state** (RAM contents, unreset output registers) is assumed
   equal on both sides. It is paired by name after `rename -unescape`.
 - **String parameters** (`PHY_INTERFACE`, `RGMII_SPEEDS`) are set directly in
@@ -101,6 +101,20 @@ sets.
 - **Vendor target.** The golden side reads `sim/parity/defines/<target>.vh`
   before the RTL. The candidate side reads the matching
   `rtl/vhdl/target/emz_target_<target>.vhd`.
+
+## Simulation of the VHDL
+
+The cocotb suites in `sim/cocotb/` run unchanged against the VHDL under GHDL
+(`python sim/cocotb/run.py --hdl vhdl`, phase 2b of `build_and_test.py`). They
+use production sizes, which the proofs do not: `mii_tx_saf` with MAX_FRAME
+1518 and a 4096-entry FIFO, `eth_mac_rx` at MAX_FRAME 1518 with its full RX
+FIFO, `gmii_cdc` with its real 16K-word FIFO, and `tx_csum_off` at MAX_FRAME
+600. All 8 suites (39 tests, directed and seeded random) pass on both
+languages.
+
+Not simulated as VHDL: `mii_if`, `eth_mac`, `eth_mac_sys` and the PHY
+interfaces. Their testbenches are the Verilog benches in `sim/tb/`, which
+need a mixed-language simulator (xsim) to drive the VHDL.
 
 ## Translation conventions
 

@@ -1192,6 +1192,48 @@ def run_cocotb():
     return False
 
 
+def run_cocotb_vhdl():
+    """The same cocotb suites against the VHDL port (rtl/vhdl/) on GHDL.
+    Uses native GHDL + cocotb if both are present, else WSL; skipped (not
+    failed) when neither has them."""
+    header("PHASE 2b: cocotb on the VHDL port (GHDL)")
+    probe = "import cocotb_tools.runner"
+    native = bool(os.environ.get("GHDL") or shutil.which("ghdl"))
+    if native:
+        rc, _, _ = run_cmd(f'"{sys.executable}" -c "{probe}"', cwd=PROJECT_DIR, timeout=60)
+        native = rc == 0
+    wsl = None if native else _find_wsl()
+    if wsl:
+        rc, _, _ = _wsl_run(wsl, f"command -v ghdl && python3 -c '{probe}'")
+        if rc != 0:
+            wsl = None
+    if not native and not wsl:
+        print(f"  {C.YELLOW}SKIP{C.END} GHDL + cocotb not found (native or WSL) - "
+              "the VHDL port is NOT simulated by this run")
+        return True
+
+    if native:
+        runner = os.path.join(PROJECT_DIR, "sim", "cocotb", "run.py")
+        rc, stdout, stderr = run_cmd(f'"{sys.executable}" "{runner}" --hdl vhdl',
+                                     cwd=PROJECT_DIR, timeout=3600)
+    else:
+        rc, stdout, stderr = _wsl_run(wsl, "python3 sim/cocotb/run.py --hdl vhdl", 3600)
+    combined = stdout + stderr
+    for line in combined.splitlines():
+        if re.search(r"TESTS=\d", line):
+            print(f"    {line.strip()}")
+
+    if rc == 0:
+        ok("cocotb suites on the VHDL port (GHDL)")
+        return True
+
+    fail(f"cocotb suites on the VHDL port (GHDL) rc={rc}")
+    for line in combined.splitlines():
+        if "failed" in line.lower() or "random seed =" in line.lower():
+            print(f"    {line.strip()[:160]}")
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="emacZero — Build & Test")
     parser.add_argument("--sim-only", action="store_true", help="Run simulation only")
@@ -1214,10 +1256,11 @@ def main():
     sim_ok = run_simulation()
     vendor_ok = run_vendor_ddr_sims()
     cocotb_ok = run_cocotb()
+    cocotb_vhdl_ok = run_cocotb_vhdl()
     impl_ok = run_rgmii_impl() if args.impl else True
 
     if (version_ok and lint_ok and verilator_ok and elab_ok and ghdl_ok
-            and sim_ok and vendor_ok and cocotb_ok and impl_ok):
+            and sim_ok and vendor_ok and cocotb_ok and cocotb_vhdl_ok and impl_ok):
         print(f"\n{C.GREEN}{C.BOLD}All tests passed.{C.END}")
         sys.exit(0)
     else:
