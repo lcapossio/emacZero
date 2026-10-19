@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/mdio_master.v (golden) vs rtl/vhdl/mdio_master.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/mdio_master/parity.yml --strict
+# Proven at the instantiated clock rates (100 MHz default, 125 MHz on the
+# 1G/2.5G boards) and at 1 MHz, which exercises the MDC_DIV < 4 clamp.
+version: 1
+name: mdio_master_parity
+description: mdio_master Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: mdio_master
+  sources: [../../../rtl/mdio_master.v]
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: mdio_master
+  sources: [../../../rtl/vhdl/mdio_master.vhd]
+
+interface:
+  top: mdio_master
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: mdio_master
+      param_sets:
+        - {}
+        - {CLK_FREQ_HZ: 125000000}
+        - {CLK_FREQ_HZ: 1000000}
+
+# L4 tolerance is wider than the 10% default: GHDL lowers the 12-way state
+# `case` to a one-hot decode of `state` plus a $pmux keyed on that one-hot
+# vector, so the coarse $eq count doubles (14 -> 28). Flip-flop counts match
+# exactly (90 flops on both sides after synth); L2 is the equivalence proof.
+synth:
+  enabled: true
+  tolerance_pct: 25.0
+  param_sets:
+    - {}

@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/ddr_output.v (golden) vs rtl/vhdl/ddr_output.vhd.
+# XILINX_ULTRASCALE_PLUS target (`define XILINX_ULTRASCALE_PLUS / emz_target_xilinx_ultrascale_plus.vhd).
+# ODDRE1 is a behavioural stub, the same model on both sides (sim/parity/stubs/
+# xilinx_ddr_prims.{v,vhd}), so the proof checks the generic values and port
+# connections of the primitive instance, not the vendor model itself.
+# The VHDL branch sits in generate gen_xilinx_ultrascale_plus, so GHDL names the instance
+# gen_xilinx_ultrascale_plus_u_oddr; the golden `ifdef has no scope. The pass-through golden
+# wrapper ddr_output_gen_xilinx_ultrascale_plus.v names its ddr_output instance gen_xilinx_ultrascale_plus,
+# so the stub state pairs by name after rename -unescape.
+# L4 is off: synth_compare.py reads the first module of 'stat -json', not the
+# top, so with a submodule it compares unrelated modules (translateHDL bug).
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/ddr_output/parity_xilinx_ultrascale_plus.yml --strict
+version: 1
+name: ddr_output_parity_xilinx_ultrascale_plus
+description: ddr_output Verilog golden vs VHDL port, XILINX_ULTRASCALE_PLUS branch (ODDRE1 behavioural stub)
+
+golden:
+  language: verilog
+  top: ddr_output
+  sources: [../defines/xilinx_ultrascale_plus.vh, ../stubs/xilinx_ddr_prims.v, ../../../rtl/ddr_output.v]
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: ddr_output
+  sources: [../../../rtl/vhdl/target/emz_target_xilinx_ultrascale_plus.vhd, ../stubs/xilinx_ddr_prims.vhd, ../../../rtl/vhdl/ddr_output.vhd]
+
+interface:
+  top: ddr_output
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 8
+  modules:
+    - name: ddr_output
+      golden_top: ddr_output_gen_xilinx_ultrascale_plus
+      candidate_top: ddr_output
+      wrapper: ddr_output_gen_xilinx_ultrascale_plus.v
+
+synth:
+  enabled: false

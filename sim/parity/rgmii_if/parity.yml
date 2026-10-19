@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/rgmii_if.v (golden) vs rtl/vhdl/rgmii_if.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/rgmii_if/parity.yml --strict
+#
+# rgmii_if has no target-dependent logic of its own, so no target package or
+# define is read: its 11 DDR cells are the stateless stand-ins in
+# sim/parity/stubs/ddr_standin.{v,vhd}, the same on both sides. The cells sit
+# in for-generates, which Yosys names gen_txd[0].u_txd and GHDL names
+# gen_txd_n1_u_txd, so any state inside them could not pair by name and would
+# start from independent values on each side. The stand-ins hold no state, and
+# each output depends on each input, so the proof still checks every cell's
+# clock and data connections. ddr_output / ddr_input are proven per target in
+# their own directories.
+#
+# This manifest proves RGMII_SPEEDS = "ALL" (the default). "1G_ONLY" and
+# "10_100" are proven by prove_rgmii_if.py, which runs translateHDL's own L2
+# flow with the string generic passed directly: translateHDL passes integer
+# parameters only, and its one-instance-wrapper route makes Yosys 0.63
+# `rename -unescape` assert (GHDL's `<inst>_<port>` nets and the flattened
+# `<inst>.<port>` wires unescape to the same name one level down).
+#   python3 sim/parity/rgmii_if/prove_rgmii_if.py <translateHDL>/skills/translate-hdl/scripts
+# With --ddr <target> the same script also proves rgmii_if with the real DDR
+# cells of that target, after a label-only rename of the generate instances.
+#
+# L4 compares the top module's own cells (submodules are not counted). GHDL
+# builds the if/elsif chains as more $mux/$and/$or cells than Yosys' proc
+# (115 vs 101), hence the 15% tolerance.
+version: 1
+name: rgmii_if_parity
+description: rgmii_if Verilog golden vs VHDL port, RGMII_SPEEDS="ALL", stateless DDR stand-ins
+
+golden:
+  language: verilog
+  top: rgmii_if
+  sources: [../stubs/ddr_standin.v, ../../../rtl/rgmii_if.v]
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: rgmii_if
+  sources: [../stubs/ddr_standin.vhd, ../../../rtl/vhdl/rgmii_if.vhd]
+
+interface:
+  top: rgmii_if
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  modules:
+    - name: rgmii_if
+
+synth:
+  enabled: true
+  tolerance_pct: 15.0

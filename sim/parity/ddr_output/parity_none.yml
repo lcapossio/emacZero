@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/ddr_output.v (golden) vs rtl/vhdl/ddr_output.vhd.
+# No target (no define / emz_target_none.vhd): q is deliberately left undriven
+# on both sides, so there is no logic to prove. L2 is off because it cannot
+# run: the golden module is then port-only, which Yosys treats as a black box
+# ("Can't find gold module gold"). GHDL synthesizes the undriven VHDL port as
+# 1'bZ, the value an undriven Verilog wire has. L0 (ports), L1 (both sides
+# analyse) and L4 (0 cells on both sides) still run.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/ddr_output/parity_none.yml --strict
+version: 1
+name: ddr_output_parity_none
+description: ddr_output Verilog golden vs VHDL port, no target (output deliberately undriven)
+
+golden:
+  language: verilog
+  top: ddr_output
+  sources: [../../../rtl/ddr_output.v]
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: ddr_output
+  sources: [../../../rtl/vhdl/target/emz_target_none.vhd, ../../../rtl/vhdl/ddr_output.vhd]
+
+interface:
+  top: ddr_output
+
+formal:
+  enabled: false
+  engine: yosys
+  induct_depth: 8
+  modules:
+    - name: ddr_output
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
