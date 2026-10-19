@@ -54,10 +54,14 @@ one-hot decode, roughly doubling the `$eq` cells. Flop counts match.
 ## Reproducing the proofs
 
 Needs GHDL, Python 3 with `pyyaml`, and a Yosys with `rename -unescape`
-(tested: GHDL 4.1, yowasp-yosys 0.63). translateHDL must be at f919ad5 or
-later, which adds string parameters, a flattened L4, and name-collision and
-generate-scope pairing. Point `YOSYS`/`GHDL` at the binaries if they are not
+(tested: GHDL 4.1, yowasp-yosys 0.63). translateHDL must be at be0ba18 or
+later, which adds string parameters, a flattened L4, name-collision and
+generate-scope pairing, and checks the base case of every induction proof
+from the initial state. Point `YOSYS`/`GHDL` at the binaries if they are not
 on `PATH` under those names.
+
+With GHDL 6.0.0 on Windows, `eth_mac` leaves 22 `$equiv` cells unproven (the
+same with older translateHDL); it proves with GHDL 4.1.
 
 ```sh
 python <translateHDL>/skills/translate-hdl/scripts/parity.py sim/parity/<module>/parity.yml --strict
