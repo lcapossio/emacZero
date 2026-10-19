@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/eth_mac.v (golden) vs rtl/vhdl/eth_mac.vhd,
+# flattened with mii_if, eth_mac_rx and eth_mac_tx.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/eth_mac/parity.yml --strict
+#
+# Every submodule is proven on its own in its sim/parity/<module>/ directory.
+# This proof covers eth_mac's own glue (port plumbing, rx_csum_en tied low,
+# MAX_FRAME_JUMBO) in composition, with these stand-ins, identical on both sides:
+#   - async_fifo -> sim/parity/gmii_cdc/async_fifo_smallmem.{v,vhd}: the real
+#     FIFO with only the memory array clamped to 8 words (see that manifest).
+#   - mii_if -> sim/parity/mii_if/mii_if_smallram.{v,vhd}: generated from the
+#     real files with the 4096x9 RX frame RAM cut to 8 words (gen_smallram.py).
+#     The real RAM does not finish under yowasp-yosys.
+# L4 counts these models too, so it compares reduced designs.
+# Target: SIM on both sides (defines/sim.vh, emz_target_sim.vhd). Only mii_if
+# depends on the target; its XILINX_7SERIES branch is in
+# sim/parity/mii_if/parity_xilinx_7series.yml.
+#
+# Config: MAX_FRAME 1518, MII_DEBUG 0 (MII_DEBUG=1 is not proven, see
+# sim/parity/mii_if/parity.yml). RX_AXIS_ADDR_WIDTH is cut from 11 to 3 as in
+# sim/parity/eth_mac_sys.
+version: 1
+name: eth_mac_parity
+description: eth_mac Verilog golden vs VHDL port (flattened, MII)
+
+golden:
+  language: verilog
+  top: eth_mac
+  sources:
+    - ../defines/sim.vh
+    - ../../../rtl/crc32.v
+    - ../gmii_cdc/async_fifo_smallmem.v
+    - ../../../rtl/sync_fifo.v
+    - ../mii_if/mii_if_smallram.v
+    - ../../../rtl/net/csum_calc.v
+    - ../../../rtl/eth_mac_rx.v
+    - ../../../rtl/eth_mac_tx.v
+    - ../../../rtl/eth_mac.v
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: eth_mac
+  sources:
+    - ../../../rtl/vhdl/target/emz_target_sim.vhd
+    - ../../../rtl/vhdl/emz_util_pkg.vhd
+    - ../../../rtl/vhdl/crc32.vhd
+    - ../gmii_cdc/async_fifo_smallmem.vhd
+    - ../../../rtl/vhdl/sync_fifo.vhd
+    - ../mii_if/mii_if_smallram.vhd
+    - ../../../rtl/vhdl/csum_calc.vhd
+    - ../../../rtl/vhdl/eth_mac_rx.vhd
+    - ../../../rtl/vhdl/eth_mac_tx.vhd
+    - ../../../rtl/vhdl/eth_mac.vhd
+
+interface:
+  top: eth_mac
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 4
+  modules:
+    - name: eth_mac
+      param_sets:
+        - {MAX_FRAME: 1518, RX_AXIS_ADDR_WIDTH: 3, MII_DEBUG: 0}
+
+synth:
+  enabled: true
+  tolerance_pct: 15.0
+  param_sets:
+    - {MAX_FRAME: 1518, MII_DEBUG: 0}
