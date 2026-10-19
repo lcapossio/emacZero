@@ -38,7 +38,12 @@ module eth_mac_sys #(
     // standard frames. Override smaller to save BRAM when the downstream sink
     // never stalls for a full frame.
     parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
-    parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize IPv4/UDP TX checksum patcher
+    // Checksum offload (IPv4 header, TCP, UDP, ICMP, ICMPv6; IPv4 and IPv6;
+    // one optional VLAN tag). 1 = synthesize the TX inserter (tx_csum_off,
+    // CTRL[7] turns insertion on) / the RX checker (in eth_mac_rx, CTRL[9]
+    // turns dropping on).
+    parameter TX_CSUM_OFFLOAD   = 0,
+    parameter RX_CSUM_OFFLOAD   = 0,
     // GMII/RGMII CDC FIFO storage: "BLOCK" (block RAM) or "DISTRIBUTED"
     // (LUTRAM). Jumbo depths need "BLOCK" to fit and close timing.
     parameter CDC_RAM_STYLE     = "BLOCK",
@@ -146,6 +151,7 @@ module eth_mac_sys #(
     wire        cfg_jumbo_en;
     wire        cfg_tx_csum_off;
     wire        cfg_passthrough;
+    wire        cfg_rx_csum_off;
     wire [47:0] cfg_mac_addr;
     wire [63:0] cfg_mcast_hash_table;
 
@@ -191,6 +197,8 @@ module eth_mac_sys #(
     wire [31:0] stat_rx_size_512_1023_cnt;
     wire [31:0] stat_rx_size_1024_1518_cnt;
     wire [31:0] stat_rx_size_jumbo_cnt;
+    wire [31:0] stat_rx_drop_cnt;
+    wire [31:0] stat_rx_err_csum_cnt;
 
     // RX classification bus (from eth_mac_rx)
     wire        rx_stat_done;
@@ -199,8 +207,10 @@ module eth_mac_sys #(
     wire        rx_stat_err_align;
     wire        rx_stat_err_overflow;
     wire        rx_stat_err_oversize;
+    wire        rx_stat_err_csum;
     wire        rx_stat_is_bcast;
     wire        rx_stat_is_mcast;
+    wire        rx_stat_drop;
 
     wire        stat_clr_tx;
     wire        stat_clr_rx;
@@ -240,9 +250,12 @@ module eth_mac_sys #(
 
     // =========================================================================
     // Optional TX checksum offload.
-    // TX_CSUM_OFFLOAD=0 removes the frame-buffering checksum patcher from
+    // TX_CSUM_OFFLOAD=0 removes the frame-buffering checksum inserter from
     // synthesis; CTRL[7] then reads/writes normally but has no datapath effect.
-    // TX_CSUM_OFFLOAD=1 lets CTRL[7] select the patcher at runtime.
+    // TX_CSUM_OFFLOAD=1 sends every frame through the inserter, which stores
+    // each frame whole (one MAX_FRAME of buffer) and fills in its checksums
+    // when CTRL[7] was set at the frame's first byte. The path never switches
+    // while a frame is in flight, so CTRL[7] may change at any time.
     // =========================================================================
     wire [7:0] user_tx_tdata;
     wire       user_tx_tvalid;
@@ -251,30 +264,23 @@ module eth_mac_sys #(
 
     generate
         if (TX_CSUM_OFFLOAD != 0) begin : gen_tx_csum
-            wire [7:0] csum_m_tdata;
-            wire       csum_m_tvalid;
-            wire       csum_m_tlast;
-            wire       csum_s_tready;
+            wire csum_s_tready;
 
             tx_csum_off #(.MAX_FRAME(MAX_FRAME)) u_tx_csum (
                 .clk           (clk),
                 .rst_n         (rst_n),
                 .enable        (cfg_tx_csum_off),
                 .s_axis_tdata  (s_axis_tdata),
-                .s_axis_tvalid (s_axis_tvalid_gated & cfg_tx_csum_off),
+                .s_axis_tvalid (s_axis_tvalid_gated),
                 .s_axis_tready (csum_s_tready),
                 .s_axis_tlast  (s_axis_tlast),
-                .m_axis_tdata  (csum_m_tdata),
-                .m_axis_tvalid (csum_m_tvalid),
-                .m_axis_tready (s_axis_tready_mac & cfg_tx_csum_off),
-                .m_axis_tlast  (csum_m_tlast)
+                .m_axis_tdata  (user_tx_tdata),
+                .m_axis_tvalid (user_tx_tvalid),
+                .m_axis_tready (user_tx_tready),
+                .m_axis_tlast  (user_tx_tlast)
             );
 
-            assign user_tx_tdata  = cfg_tx_csum_off ? csum_m_tdata  : s_axis_tdata;
-            assign user_tx_tvalid = cfg_tx_csum_off ? csum_m_tvalid : s_axis_tvalid_gated;
-            assign user_tx_tlast  = cfg_tx_csum_off ? csum_m_tlast  : s_axis_tlast;
-            assign s_axis_tready  = cfg_tx_csum_off ? (csum_s_tready & cfg_tx_en)
-                                                    : (user_tx_tready & cfg_tx_en);
+            assign s_axis_tready = csum_s_tready & cfg_tx_en;
         end else begin : gen_no_tx_csum
             assign user_tx_tdata  = s_axis_tdata;
             assign user_tx_tvalid = s_axis_tvalid_gated;
@@ -283,14 +289,25 @@ module eth_mac_sys #(
         end
     endgenerate
 
-    // PAUSE-priority mux: while a pause frame is being emitted, route
-    // pause_* into eth_mac_tx and stall user_*. Pause frames are short and
-    // rare, so simple priority-on-tvalid is acceptable here.
-    wire [7:0] mac_tx_in_tdata  = pause_tvalid ? pause_tdata  : user_tx_tdata;
-    wire       mac_tx_in_tvalid = pause_tvalid ? pause_tvalid : user_tx_tvalid;
-    wire       mac_tx_in_tlast  = pause_tvalid ? pause_tlast  : user_tx_tlast;
-    assign     pause_tready     = pause_tvalid &  s_axis_tready_mac;
-    assign     user_tx_tready   = ~pause_tvalid & s_axis_tready_mac;
+    // PAUSE-priority mux, switched only between user frames. A PAUSE frame
+    // requested while a user frame is part-way through waits (eth_pause holds
+    // in TX_RUN until pause_tready) for that frame's tlast; switching on
+    // pause_tvalid alone spliced the PAUSE bytes into the user frame. Once
+    // the PAUSE frame has the bus, user_tx_tready is low, so user_mid stays
+    // clear and the PAUSE frame keeps the bus until its own tlast.
+    reg        user_mid;           // a user frame is part-way accepted
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            user_mid <= 1'b0;
+        else if (user_tx_tvalid && user_tx_tready)
+            user_mid <= !user_tx_tlast;
+    end
+    wire       pause_sel        = pause_tvalid & ~user_mid;
+    wire [7:0] mac_tx_in_tdata  = pause_sel ? pause_tdata  : user_tx_tdata;
+    wire       mac_tx_in_tvalid = pause_sel ? pause_tvalid : user_tx_tvalid;
+    wire       mac_tx_in_tlast  = pause_sel ? pause_tlast  : user_tx_tlast;
+    assign     pause_tready     = pause_sel &  s_axis_tready_mac;
+    assign     user_tx_tready   = ~pause_sel & s_axis_tready_mac;
 
     // RX gating: mask tvalid when rx disabled
     wire [7:0] m_axis_tdata_mac;
@@ -318,9 +335,13 @@ module eth_mac_sys #(
     // =========================================================================
     // MAC RX - strips preamble/SFD, validates CRC
     // =========================================================================
+    // With jumbo_en, RX accepts up to MAX_FRAME wire bytes (FCS included),
+    // the size the RX FIFOs here are built for.
     eth_mac_rx #(
         .MCAST_HASH_FILTER   (MCAST_HASH_FILTER),
-        .AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH)
+        .AXIS_FIFO_ADDR_WIDTH(RX_AXIS_ADDR_WIDTH),
+        .MAX_FRAME_JUMBO     (MAX_FRAME),
+        .RX_CSUM_OFFLOAD     (RX_CSUM_OFFLOAD)
     ) u_mac_rx (
         .clk              (clk),
         .rst_n            (rst_n),
@@ -331,6 +352,7 @@ module eth_mac_sys #(
         .promisc          (cfg_promisc),
         .passthrough      (cfg_passthrough),
         .jumbo_en         (cfg_jumbo_en),
+        .rx_csum_en       (cfg_rx_csum_off),
         .mcast_hash_table (cfg_mcast_hash_table),
         .m_axis_tdata     (m_axis_tdata_mac),
         .m_axis_tvalid    (m_axis_tvalid_mac),
@@ -344,8 +366,10 @@ module eth_mac_sys #(
         .stat_err_align    (rx_stat_err_align),
         .stat_err_overflow (rx_stat_err_overflow),
         .stat_err_oversize (rx_stat_err_oversize),
+        .stat_err_csum     (rx_stat_err_csum),
         .stat_is_bcast     (rx_stat_is_bcast),
-        .stat_is_mcast     (rx_stat_is_mcast)
+        .stat_is_mcast     (rx_stat_is_mcast),
+        .stat_drop         (rx_stat_drop)
     );
 
     // =========================================================================
@@ -402,11 +426,13 @@ module eth_mac_sys #(
         .cfg_pause_tx_quanta (cfg_pause_tx_quanta),
         .gmii_rxd            (gmii_rxd),
         .gmii_rx_dv          (gmii_rx_dv),
+        .gmii_rx_er          (gmii_rx_er),
         .tx_paused           (tx_paused),
         .pause_tdata         (pause_tdata),
         .pause_tvalid        (pause_tvalid),
         .pause_tready        (pause_tready),
         .pause_tlast         (pause_tlast),
+        .stat_clr            (stat_clr_pause),
         .pause_rx_cnt        (stat_pause_rx_cnt),
         .pause_tx_cnt        (stat_pause_tx_cnt)
     );
@@ -768,9 +794,11 @@ module eth_mac_sys #(
     // TX byte / frame-done events come from the active PHY's TX framer
     // (tx_byte_ev / tx_frame_done_ev), muxed in the generate branches above.
 
-    // RX frame done pulses
-    wire rx_frame_good = m_axis_tvalid_mac & m_axis_tlast_mac & ~m_axis_terror_mac;
-    wire rx_frame_bad  = m_axis_tvalid_mac & m_axis_tlast_mac &  m_axis_terror_mac;
+    // RX frame done pulses: one per TLAST handshake. Without tready, a TLAST
+    // word held at the FIFO head by a stalled sink would count once per cycle.
+    wire rx_tlast_hs   = m_axis_tvalid_mac & m_axis_tready_mac & m_axis_tlast_mac;
+    wire rx_frame_good = rx_tlast_hs & ~m_axis_terror_mac;
+    wire rx_frame_bad  = rx_tlast_hs &  m_axis_terror_mac;
 
     eth_stats u_stats (
         .clk            (clk),
@@ -786,8 +814,10 @@ module eth_mac_sys #(
         .rx_stat_err_align    (rx_stat_err_align),
         .rx_stat_err_overflow (rx_stat_err_overflow),
         .rx_stat_err_oversize (rx_stat_err_oversize),
+        .rx_stat_err_csum     (rx_stat_err_csum),
         .rx_stat_is_bcast     (rx_stat_is_bcast),
         .rx_stat_is_mcast     (rx_stat_is_mcast),
+        .rx_stat_drop         (rx_stat_drop),
         .tx_frame_cnt   (stat_tx_frame_cnt),
         .tx_byte_cnt    (stat_tx_byte_cnt),
         .rx_frame_cnt   (stat_rx_frame_cnt),
@@ -796,6 +826,7 @@ module eth_mac_sys #(
         .rx_err_align_cnt      (stat_rx_err_align_cnt),
         .rx_err_overflow_cnt   (stat_rx_err_overflow_cnt),
         .rx_err_oversize_cnt   (stat_rx_err_oversize_cnt),
+        .rx_err_csum_cnt       (stat_rx_err_csum_cnt),
         .rx_bcast_cnt          (stat_rx_bcast_cnt),
         .rx_mcast_cnt          (stat_rx_mcast_cnt),
         .rx_size_64_cnt        (stat_rx_size_64_cnt),
@@ -805,6 +836,7 @@ module eth_mac_sys #(
         .rx_size_512_1023_cnt  (stat_rx_size_512_1023_cnt),
         .rx_size_1024_1518_cnt (stat_rx_size_1024_1518_cnt),
         .rx_size_jumbo_cnt     (stat_rx_size_jumbo_cnt),
+        .rx_drop_cnt           (stat_rx_drop_cnt),
         .clr_tx         (stat_clr_tx),
         .clr_rx         (stat_clr_rx)
     );
@@ -851,6 +883,7 @@ module eth_mac_sys #(
         .cfg_jumbo_en          (cfg_jumbo_en),
         .cfg_tx_csum_off       (cfg_tx_csum_off),
         .cfg_passthrough       (cfg_passthrough),
+        .cfg_rx_csum_off       (cfg_rx_csum_off),
         .cfg_mac_addr          (cfg_mac_addr),
         .cfg_ip_addr           (cfg_ip_addr),
         .dbg_saf               (dbg_mii_tx_saf),
@@ -881,7 +914,9 @@ module eth_mac_sys #(
         .stat_rx_size_256_511_cnt   (stat_rx_size_256_511_cnt),
         .stat_rx_size_512_1023_cnt  (stat_rx_size_512_1023_cnt),
         .stat_rx_size_1024_1518_cnt (stat_rx_size_1024_1518_cnt),
+        .stat_rx_err_csum_cnt     (stat_rx_err_csum_cnt),
         .stat_rx_size_jumbo_cnt     (stat_rx_size_jumbo_cnt),
+        .stat_rx_drop_cnt           (stat_rx_drop_cnt),
         .cfg_pause_rx_en      (cfg_pause_rx_en),
         .cfg_pause_tx_send    (cfg_pause_tx_send),
         .cfg_pause_tx_quanta  (cfg_pause_tx_quanta),

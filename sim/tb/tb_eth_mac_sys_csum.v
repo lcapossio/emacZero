@@ -9,7 +9,8 @@
 // MAC actually emits. Strips preamble/SFD and the trailing CRC, then
 // verifies:
 //   - The IP header checksum is recomputed (and not still 0xDEAD)
-//   - The UDP checksum field is zeroed (per RFC 768 §3, valid for IPv4)
+//   - The UDP checksum is computed and inserted (0x4EF6, from the Python
+//     reference in sim/cocotb/lib/csum.py)
 //   - All other frame bytes are unchanged
 //
 // Tapping the GMII bus bypasses the mii_if MII clock-domain crossing so the
@@ -138,7 +139,7 @@ module tb_eth_mac_sys_csum;
     //   [6..11]  src MAC
     //   [12..13] ethertype 0x0800
     //   [14..33] IP header (IHL=5, proto=UDP, csum=0xDEAD)
-    //   [34..41] UDP header (csum=0xBEEF — must be zeroed)
+    //   [34..41] UDP header (csum=0xBEEF, must be replaced by 0x4EF6)
     //   [42..]   UDP payload
     localparam FRAME_LEN = 60;
     reg [7:0] frame [0:FRAME_LEN-1];
@@ -322,11 +323,11 @@ module tb_eth_mac_sys_csum;
                 fail_cnt = fail_cnt + 1;
             end
 
-            if (gmii_buf[base+40] === 8'h00 && gmii_buf[base+41] === 8'h00) begin
-                $display("PASS: UDP checksum zeroed");
+            if (gmii_buf[base+40] === 8'h4E && gmii_buf[base+41] === 8'hF6) begin
+                $display("PASS: UDP checksum inserted = 0x4ef6");
                 pass_cnt = pass_cnt + 1;
             end else begin
-                $display("FAIL: UDP checksum = 0x%02x%02x, expected 0x0000",
+                $display("FAIL: UDP checksum = 0x%02x%02x, expected 0x4EF6",
                          gmii_buf[base+40], gmii_buf[base+41]);
                 fail_cnt = fail_cnt + 1;
             end

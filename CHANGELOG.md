@@ -5,8 +5,79 @@ This project does not yet maintain long-lived release branches.
 
 ## Unreleased
 
+Nothing yet.
+
+## v0.2.0 - 2026-10-16
+
+First release published on GitHub (`v0.1.0` was tagged locally only). VERSION
+reads `0x0002454D`. Breaking: 1G-capable builds need `CLK_FREQ_HZ` >= 125 MHz,
+and direct instantiations of `eth_mac_rx`, `gmii_cdc` and the L3 helpers gain
+ports (see Changed and Fixed).
+
+### Security
+
+These fixes change behaviour a peer on the link can trigger. All of them
+affect `v0.1.0` and every earlier commit. No CVE or GitHub advisory has been
+assigned; integrators on `v0.1.0` should update. Details are under Fixed.
+
+- A received frame longer than 16383 bytes wrapped the `eth_mac_rx` byte
+  counter, re-captured the destination MAC and injected a phantom start of
+  frame that corrupted the following frame.
+- With `MCAST_HASH_FILTER=1` the hash filter tested the wrong address bit, so
+  unicast frames for other stations could be admitted when their hash bucket
+  was set, and valid multicast frames could be rejected.
+- A runt (under 64 bytes) was delivered as a clean frame instead of with
+  `terror`.
+- RX FIFO overflow in `eth_mac_rx` could drop a frame's first or last word,
+  merging it into the next frame; RX CDC FIFO overflow in `gmii_cdc` (GMII and
+  RGMII) could drop an EOF marker with the same result.
+- The RX jumbo limit ignored `MAX_FRAME`, so a build with a smaller
+  `MAX_FRAME` and `jumbo_en=1` accepted frames larger than its buffers were
+  sized for; a limit above 16382 was never enforced at all.
+- Optional L3 demo (`with_l3`): `net_rx` answered frames with a bad FCS or a
+  malformed IPv4 header and echoed the 802.3 pad bytes of short requests back
+  as payload; `icmp_echo` overwrote its reply buffer when pings arrived during
+  a reply or were longer than 248 bytes of data.
+
 ### Added
 
+- `RX_DROP` CSR (`0x7C`, RO/WC): frames that passed the MAC filter but were
+  dropped whole because the RX FIFO had no room at their start, which
+  happens while the AXIS sink holds `m_axis_tready` low (e.g. a DMA with no
+  free buffer). These frames produced no AXIS words and no stat pulse, so
+  until now they were in no frame counter (only RX_BYTE saw their bytes). `eth_mac_rx` gains a `stat_drop`
+  output and `eth_stats` an `rx_drop_cnt` counter in the RX clear group.
+  Once the RX FIFO has drained, `RX_FRAME + RX_DROP` accounts for every frame
+  for this station. The
+  VERSION value is unchanged; `0x7C` reads 0 on older cores, so software can
+  add it to its totals unconditionally (`EMZ_REG_RX_DROP` in `emaczero.h`).
+
+- **RX checksum offload** (`RX_CSUM_OFFLOAD=1`, CTRL[9] `rx_csum_off`).
+  `eth_mac_rx` verifies the IPv4 header checksum and the TCP / UDP / ICMP
+  (IPv4) or TCP / UDP / ICMPv6 (IPv6) checksum of each frame, pseudo-header
+  included, with one optional 802.1Q / 802.1ad tag and any IPv4 header length.
+  A frame that fails is still delivered, ends with `terror`, and counts in
+  `RX_ERR` and in the new `RX_ERR_CSUM` CSR at `0x80` (RO, write-any-to-clear
+  with the RX group; frames with another error, such as a bad FCS, are not
+  counted there). The consumer must discard frames that end with `terror`;
+  `eth_mac_sys` does not. The check runs on the GMII bytes as they arrive, so
+  it adds no latency. UDP is summed over its Length field, not the IP
+  payload. The IPv4 header checksum is checked even when the datagram is
+  longer than the frame. Not checked (left to software): the L4 checksum of
+  IPv4 fragments, of IPv4 with a source route option, of UDP whose Length is
+  below 8 or beyond the IP payload, and of a datagram longer than its frame;
+  IPv6 packets with extension headers; tunnels. A UDP checksum of 0 means
+  "none" over IPv4 and is an error over IPv6. `0x80` reads 0 on older
+  cores.
+  `sw/emaczero/emaczero.h`: `EMZ_REG_RX_ERR_CSUM`, `EMZ_CTRL_RX_CSUM_OFF`.
+  LiteX: `rx_csum_offload`.
+- `rtl/net/csum_calc.v`: the checksum engine shared by the TX inserter and
+  the RX checker. New cocotb suites `csum_calc`, `tx_csum_off` and
+  `eth_mac_rx_csum` check it, the inserter and the RX path against a Python
+  reference (`sim/cocotb/lib/csum.py`) on random IPv4 / IPv6 / VLAN /
+  fragmented / padded frames with right and wrong checksums, source bubbles
+  and sink backpressure; `ETH-MAC-SYS-CSUM-LOOP` checks both directions and
+  the CSRs through MII loopback.
 - `ddr_input` / `ddr_output`: an `XILINX_ULTRASCALE_PLUS` branch using
   `IDDRE1` / `ODDRE1`. Without a vendor define both modules are empty, and
   a Vivado block-design build keeps the GMII `gmii_txc` forwarder as a
@@ -170,6 +241,33 @@ This project does not yet maintain long-lived release branches.
 
 ### Changed
 
+- **TX checksum offload is now full** (`TX_CSUM_OFFLOAD=1`, CTRL[7]).
+  `tx_csum_off` used to write only the IPv4 header checksum of a 20-byte
+  header and zero the UDP checksum. It now computes and inserts the IPv4
+  header checksum for any header length and the TCP / UDP / ICMP / ICMPv6
+  checksum over IPv4 or IPv6, with one optional VLAN tag; a UDP checksum that
+  computes to 0 is sent as 0xFFFF. Software that relied on the UDP checksum
+  being zeroed now gets a real one.
+  - UDP is summed over its own Length field, which may be shorter than the IP
+    payload. The L4 checksum is left as software wrote it for IPv4 fragments,
+    IPv4 with a source route option (whose pseudo-header needs the route's
+    final destination), UDP whose Length is below 8 or beyond the IP payload,
+    and IPv6 packets with extension headers.
+  - The stage now stores frames in a circular buffer with a separate queue of
+    per-frame checksums, so the next frame comes in while the previous one
+    goes out: about 1 byte per clock, against half that before.
+  - With `TX_CSUM_OFFLOAD=1`, `eth_mac_sys` sends every frame through the
+    stage and CTRL[7] is sampled at each frame's first byte. Before, CTRL[7]
+    switched the datapath between two paths, which could split a frame if it
+    changed mid-frame.
+  - A frame longer than `MAX_FRAME` is cut at `MAX_FRAME` and sent without
+    checksums, and the rest is discarded up to its TLAST. Before, its bytes
+    were dropped silently.
+- `eth_mac_sys` / `eth_mac_rx` / `eth_stats` / `axilite_regs`: new
+  `RX_CSUM_OFFLOAD` parameter, `rx_csum_en` input, `stat_err_csum` output,
+  `rx_err_csum_cnt` counter and `cfg_rx_csum_off` (CTRL is 10 bits; its reset
+  value is unchanged). Instantiations of `eth_mac_rx` must add `rx_csum_en`
+  and `stat_err_csum`, and source lists need `rtl/net/csum_calc.v`.
 - `eth_mac_sys` no longer uses `clk_25` / `clk_2_5`: the 10/100 RGMII TXC is
   now made from `clk_125`. The ports stay, so existing instantiations still
   elaborate; they can be tied off. `rgmii_if` drops them. `clk_125_90` is
@@ -217,9 +315,6 @@ This project does not yet maintain long-lived release branches.
   next successfully-issued `GO`) so software can detect the dropped command.
 - `async_fifo` exposes an exact write-side `wr_data_count` (`wr_ptr` minus the
   synchronized read Gray pointer); leave it unconnected when not needed.
-
-### Changed
-
 - `gmii_cdc` TX fill level / `tx_busy` now use `async_fifo.wr_data_count`
   instead of a per-byte read toggle synchronizer, which could drop counts when
   `media_clk` (125 MHz) outran `sys_clk` (100 MHz) at 1G.
@@ -251,6 +346,51 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **802.3x PAUSE did not work.** Five faults in `eth_pause` and its TX mux,
+  none covered by a test until now (`tb_eth_mac_sys_pause`):
+  - Received PAUSE frames were never recognized, so `PAUSE_CTRL[1]` (`rx_en`)
+    had no effect and `PAUSE_RX_CNT` stayed 0. The parser expected the
+    destination MAC as the first byte, but the RX bus it watches carries the
+    preamble and SFD. It now waits for the SFD, as `eth_mac_rx` does.
+  - A received PAUSE frame now acts only if it is valid: good FCS, no
+    `rx_er` after the SFD, and at least 64 bytes. A corrupted frame could
+    otherwise stall transmission for up to 65535 quanta.
+  - A PAUSE frame sent with `PAUSE_CTRL[0]` lost `tlast` on its last byte
+    whenever the TX path was ready (the usual case), so the frame ran on into
+    the next user frame instead of ending at 64 bytes.
+  - A PAUSE frame requested while a user frame was part-way into the MAC was
+    spliced into it: the TX mux switched to the PAUSE frame at once. Both
+    frames were corrupted. The PAUSE frame now waits for the user frame's
+    `tlast`.
+  - Writing `PAUSE_RX_CNT` or `PAUSE_TX_CNT` did not clear the counters as
+    documented: the clear strobe was not connected.
+
+  `eth_pause` gains `gmii_rx_er` and `stat_clr` inputs. CSRs and the VERSION
+  value are unchanged. Known limit, still open: on GMII and RGMII a received
+  PAUSE frame stops new frames entering the TX CDC FIFO, but frames already
+  in it (up to about 7 KB) still go out. On MII the hold-off acts at the wire.
+- **`RX_FRAME` and `RX_ERR` overcounted under RX backpressure.** They counted
+  every cycle with `m_axis_tvalid && m_axis_tlast`, without `m_axis_tready`,
+  so a TLAST word held at the RX FIFO head by a stalled sink was counted once
+  per stall cycle. They now count one per TLAST handshake. The stat-pulse
+  counters (`RX_ERR_*`, `RX_BCAST`, `RX_MCAST`, `RX_SIZE_*`) were not
+  affected.
+- RX accepts a full-size VLAN-tagged frame. A frame with an 802.1Q (0x8100)
+  or 802.1ad (0x88A8) tag may be 1522 bytes on the wire with `jumbo_en=0`;
+  RX used to flag it oversize (`terror`, `RX_ERR_OVERSIZE`), so a VLAN trunk
+  lost every max-MTU frame. Untagged frames keep the 1518 limit.
+- RX's jumbo limit now follows `MAX_FRAME`. `eth_mac_sys` and `eth_mac` pass
+  it to `eth_mac_rx`, which used to keep its own 9018-byte limit, so a build
+  with a smaller `MAX_FRAME` and `jumbo_en=1` accepted frames longer than its
+  buffers were sized for. Both limits count the FCS. `jumbo_en` now only
+  raises the limit: with `MAX_FRAME=1518` and `jumbo_en=1` a tagged 1522-byte
+  frame is still accepted. Default builds (`MAX_FRAME=9018`) behave as
+  before. TX still counts `MAX_FRAME` in AXIS bytes, before the FCS, so it
+  can send 4 bytes more than RX accepts; README states both.
+- `eth_mac_rx` rejects a frame limit above 16382 at elaboration (an
+  `EMACZERO_CONFIG_ERROR_...` module), so `MAX_FRAME` must be at most 16382.
+  Its byte counter stops at 16383, so a larger limit could never be exceeded
+  and oversize frames would have passed clean.
 - **RGMII could not be implemented on Xilinx parts.** `rgmii_if` had one set
   of DDR output cells per speed and picked a set with a mux after the cells,
   so a LUT sat between each `ODDR` and its pad. Vivado rejects that
@@ -516,6 +656,16 @@ This project does not yet maintain long-lived release branches.
 - `rgmii_if` synchronizes the system reset into the `rgmii_rxc` domain (async
   assert, 2-FF deassert) instead of using `rst_n` directly, removing a
   metastable reset-release path on the RX nibble-pairing state.
+
+### Evidence
+
+- Release tag: `v0.2.0` (the tag names the commit).
+- Regression: `python build_and_test.py` on a clean checkout of the tagged
+  commit; the full log is attached to the GitHub release, and the `sim`
+  workflow ran on the same commit.
+- Hardware: the Arty A7 and ZCU106 results above were measured on development
+  commits leading up to this release, not re-run on the tagged commit. RGMII
+  has not been tested on hardware.
 
 ## v0.1.0 - 2026-06-10
 

@@ -100,7 +100,8 @@ Key controls for product integrators:
 | `jumbo_en` | Enables frames above standard Ethernet size. Keep disabled unless needed. |
 | `promisc` | Accepts frames outside the configured MAC/filter. Keep disabled by default. |
 | `MCAST_HASH_FILTER` | Adds multicast acceptance surface. Program only required groups. |
-| `TX_CSUM_OFFLOAD` | Lets hardware modify IPv4/UDP checksums. Validate software expectations. |
+| `TX_CSUM_OFFLOAD` | Lets hardware overwrite IPv4 header and TCP / UDP / ICMP / ICMPv6 checksums (CTRL[7]). Validate software expectations. |
+| `RX_CSUM_OFFLOAD` | With CTRL[9], flags frames whose IP / L4 checksum is wrong with `m_axis_terror`; the consumer must discard them, as the core delivers them. It does not check the L4 checksum of fragments, source-routed IPv4, UDP with an out-of-range Length or datagrams longer than their frame, nor IPv6 extension headers or tunnels, so software that trusts it must still verify those. |
 | `MII_DEBUG` | Keeps extra debug capture logic. Keep disabled in production builds. |
 
 ## Evidence Already Present
@@ -131,8 +132,13 @@ run for the exact commit and target.
 Before using emacZero in a product, integrators should close or explicitly
 accept these gaps:
 
-- No machine-readable SBOM is checked in yet.
-- No signed release process exists yet, and no GHSA has been published yet.
+- No machine-readable SBOM is published with releases yet.
+- Releases (from `v0.2.0`) are published on GitHub but not signed, and no GHSA
+  has been published yet.
+- No end-of-support date has been set; only the latest release receives fixes.
+- The MAC leaves reset with TX and RX enabled on a placeholder MAC address
+  (`02:00:00:00:00:01`), and `eth_mac_sys` defaults to `MAX_FRAME=9018`. Set
+  both explicitly in a product.
 - No fuzzing or formal verification harness is currently checked in.
 - Standalone resource/timing matrices are not yet maintained for every target
   FPGA, PHY mode, and parameter set.

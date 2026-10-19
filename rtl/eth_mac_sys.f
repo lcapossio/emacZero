@@ -14,6 +14,7 @@ rtl/async_fifo.v
 rtl/sync_fifo.v
 rtl/mii_if.v
 rtl/mii_tx_saf.v
+rtl/net/csum_calc.v
 rtl/eth_mac_rx.v
 rtl/eth_mac_tx.v
 rtl/eth_mac.v

@@ -62,12 +62,14 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] UDP blast / iperf-style demo helpers
 - [x] UDP stats reply helper
 - [x] TX IPv4 header checksum generation in demo packet generators
-- [x] TX UDP checksum set to zero where IPv4 permits it
-- [x] Optional AXIS TX checksum patcher (`TX_CSUM_OFFLOAD=1`)
+- [x] TX UDP checksum set to zero where IPv4 permits it (demo generators)
+- [x] Optional TX checksum offload: IPv4 header, TCP, UDP, ICMP, ICMPv6
+      (`TX_CSUM_OFFLOAD=1`)
+- [x] Optional RX checksum verification and drop of the same checksums
+      (`RX_CSUM_OFFLOAD=1`, `RX_ERR_CSUM`)
+- [ ] Checksum offload for IPv4 fragments, IPv6 extension headers, tunnels
+- [ ] Per-frame checksum status to software (RX status sideband)
 - [ ] ARP request generation and ARP cache for outbound resolution
-- [ ] IPv4 header checksum validation on RX
-- [ ] UDP checksum validation on RX
-- [ ] ICMP checksum validation on RX
 - [ ] IP fragmentation / reassembly
 - [ ] TCP state machines or TCP offload
 - [ ] DHCP

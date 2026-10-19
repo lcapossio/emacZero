@@ -2,7 +2,9 @@
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
 // tb_tx_csum_off.v - Testbench for tx_csum_off
-// Verifies IP header checksum patching and UDP zero-csum.
+// Verifies IPv4 header and UDP checksum insertion on a known frame. The
+// randomized checks (all protocols, VLAN, IPv6, backpressure) are in
+// sim/cocotb/tests/test_tx_csum_off.py.
 // Verilog 2001
 // =============================================================================
 
@@ -60,7 +62,7 @@ module tb_tx_csum_off;
     //   [34..35] 0x0035 (src port 53)
     //   [36..37] 0x1F90 (dst port 8080)
     //   [38..39] 0x0008 (UDP length 8)
-    //   [40..41] 0xDEAD (UDP csum, to be zeroed)
+    //   [40..41] 0xDEAD (UDP csum, to be replaced)
     //   No payload (just header).
 
     reg [7:0] frame [0:41];
@@ -86,17 +88,9 @@ module tb_tx_csum_off;
         frame[38]=8'h00; frame[39]=8'h08;
         frame[40]=8'hDE; frame[41]=8'hAD;
 
-        // Compute expected IP checksum
-        // Sum (16-bit words): 4500 001C CAFE 4000 4011 0000(skipped) C0A8 8901 C0A8 89C8
-        // = 0x4500+0x001C+0xCAFE+0x4000+0x4011+0xC0A8+0x8901+0xC0A8+0x89C8
-        // = 0x35BCC, fold: 0x5BCC + 3 = 0x5BCF, ones-complement: 0xA430
-        // Actually let's calculate: 4500+001C=451C, +CAFE=10FFA, +4000=14FFA, +4011=1900B
-        // +C0A8=25EB3, +8901=2EFB4, +C0A8=3F05C, +89C8=4 7E24
-        // Hmm actually I'll just check that the output is non-zero and the
-        // recomputed checksum matches what scapy would compute.
-
-        // For verification, we'll re-add the patched checksum field:
-        // recomputed_sum + patched_csum should fold to 0xFFFF.
+        // Expected checksums (Python reference, sim/cocotb/lib/csum.py):
+        //   IPv4 header  0xDBB7
+        //   UDP          0x4BFE (pseudo-header C0A88901 C0A889C8 0011 0008)
         $dumpfile("tb_tx_csum_off.vcd");
         $dumpvars(0, tb_tx_csum_off);
 
@@ -131,21 +125,22 @@ module tb_tx_csum_off;
                 cap[i] = m_tdata;
             end
 
-            // Verify: bytes 24,25 should be the IP header checksum (non-zero)
-            if ((cap[24] != 8'h00) || (cap[25] != 8'h00)) begin
-                $display("PASS: IP checksum patched = 0x%02x%02x", cap[24], cap[25]);
+            // Verify: bytes 24,25 are the IP header checksum
+            if (cap[24] == 8'hDB && cap[25] == 8'hB7) begin
+                $display("PASS: IP checksum inserted = 0x%02x%02x", cap[24], cap[25]);
                 pass_cnt = pass_cnt + 1;
             end else begin
-                $display("FAIL: IP checksum left at 0x0000");
+                $display("FAIL: IP checksum = 0x%02x%02x (expected 0xDBB7)",
+                         cap[24], cap[25]);
                 fail_cnt = fail_cnt + 1;
             end
 
-            // Verify: UDP checksum (bytes 40,41) should be zero
-            if (cap[40] == 8'h00 && cap[41] == 8'h00) begin
-                $display("PASS: UDP checksum zeroed");
+            // Verify: bytes 40,41 are the UDP checksum
+            if (cap[40] == 8'h4B && cap[41] == 8'hFE) begin
+                $display("PASS: UDP checksum inserted = 0x%02x%02x", cap[40], cap[41]);
                 pass_cnt = pass_cnt + 1;
             end else begin
-                $display("FAIL: UDP checksum = 0x%02x%02x (expected 0x0000)",
+                $display("FAIL: UDP checksum = 0x%02x%02x (expected 0x4BFE)",
                          cap[40], cap[41]);
                 fail_cnt = fail_cnt + 1;
             end

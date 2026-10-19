@@ -48,6 +48,8 @@ extern "C" {
 #define EMZ_REG_RX_SIZE_512_1023 0x70u
 #define EMZ_REG_RX_SIZE_1024_1518 0x74u
 #define EMZ_REG_RX_SIZE_JUMBO    0x78u
+#define EMZ_REG_RX_DROP          0x7Cu  /* frames dropped whole; 0 on older cores */
+#define EMZ_REG_RX_ERR_CSUM      0x80u  /* RO/WC; RX_CSUM_OFFLOAD=1 builds */
 #define EMZ_REG_PAUSE_CTRL       0x84u
 #define EMZ_REG_PAUSE_QUANTA     0x88u
 #define EMZ_REG_PAUSE_RX_CNT     0x8Cu
@@ -56,7 +58,7 @@ extern "C" {
 
 /* Mirror of rtl/version.vh. build_and_test.py asserts these match. */
 #define EMZ_VERSION_MAJOR        0u
-#define EMZ_VERSION_MINOR        1u
+#define EMZ_VERSION_MINOR        2u
 #define EMZ_VERSION_ID           0x454Du  /* ASCII "EM" */
 #define EMZ_VERSION_VALUE        ((EMZ_VERSION_MAJOR << 24) | \
                                   (EMZ_VERSION_MINOR << 16) | \
@@ -74,6 +76,7 @@ extern "C" {
 #define EMZ_CTRL_JUMBO_EN     (1u << 6)
 #define EMZ_CTRL_TX_CSUM_OFF  (1u << 7)
 #define EMZ_CTRL_PASSTHROUGH  (1u << 8)
+#define EMZ_CTRL_RX_CSUM_OFF  (1u << 9)
 
 #define EMZ_SPEED_1G          0x0u
 #define EMZ_SPEED_100M        0x1u
@@ -161,7 +164,7 @@ static inline void emz_irq_ack(emz_t *d, uint32_t bits)
     emz_write32(d->base + EMZ_REG_IRQ_STATUS, bits);
 }
 
-/* Read VERSION register. axilite_regs.v reports 0x0001454D for v0.1/"EM". */
+/* Read VERSION register. axilite_regs.v reports 0x0002454D for v0.2/"EM". */
 static inline uint32_t emz_version(emz_t *d)
 {
     return emz_read32(d->base + EMZ_REG_VERSION);

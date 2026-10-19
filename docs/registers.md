@@ -13,7 +13,7 @@ dropped.
 
 | Offset | Name | Access | Reset | Description |
 |-------:|------|:------:|------:|-------------|
-| `0x00` | VERSION | RO | `0x0001454D` | Version and unique ID |
+| `0x00` | VERSION | RO | `0x0002454D` | Version and unique ID |
 | `0x04` | CTRL | RW | `0x00000023` | Master control bits |
 | `0x08` | STATUS | RO | - | Live status |
 | `0x0C` | MAC_LO | RW | `0x00000001` | `our_mac[31:0]` |
@@ -25,15 +25,15 @@ dropped.
 | `0x24` | IRQ_STATUS | W1C | `0x00000000` | Interrupt latched status |
 | `0x28` | TX_FRAME | RO/WC | `0x00000000` | TX frame count |
 | `0x2C` | TX_BYTE | RO/WC | `0x00000000` | TX byte count |
-| `0x30` | RX_FRAME | RO/WC | `0x00000000` | RX frame count |
+| `0x30` | RX_FRAME | RO/WC | `0x00000000` | RX frames delivered to the AXIS sink |
 | `0x34` | RX_BYTE | RO/WC | `0x00000000` | RX byte count |
-| `0x38` | RX_ERR | RO/WC | `0x00000000` | RX error count |
+| `0x38` | RX_ERR | RO/WC | `0x00000000` | RX error count (frames delivered with `terror`) |
 | `0x3C` | SCRATCH | RW | `0x00000000` | Scratch register |
 | `0x40` | IP_ADDR | RW | `0xC0A889C8` | Demo L3 stack IPv4 (`cfg_ip_addr`, default 192.168.137.200) |
 | `0x44` | MCAST_LO | RW* | `0x00000000` | `mcast_hash_table[31:0]` |
 | `0x48` | MCAST_HI | RW* | `0x00000000` | `mcast_hash_table[63:32]` |
 | `0x4C` | RX_ERR_ALIGN | RO/WC | `0x00000000` | RX frames with `rx_er` asserted |
-| `0x50` | RX_ERR_OVERFLOW | RO/WC | `0x00000000` | RX frames lost to FIFO overflow |
+| `0x50` | RX_ERR_OVERFLOW | RO/WC | `0x00000000` | RX frames truncated by FIFO overflow |
 | `0x54` | RX_ERR_OVERSIZE | RO/WC | `0x00000000` | RX frames longer than current MAX |
 | `0x58` | RX_BCAST | RO/WC | `0x00000000` | RX broadcast frames |
 | `0x5C` | RX_MCAST | RO/WC | `0x00000000` | RX multicast frames |
@@ -44,6 +44,8 @@ dropped.
 | `0x70` | RX_SIZE_512_1023 | RO/WC | `0x00000000` | RX frames 512-1023 bytes |
 | `0x74` | RX_SIZE_1024_1518 | RO/WC | `0x00000000` | RX frames 1024-1518 bytes |
 | `0x78` | RX_SIZE_JUMBO | RO/WC | `0x00000000` | RX frames > 1518 bytes |
+| `0x7C` | RX_DROP | RO/WC | `0x00000000` | RX frames dropped whole (no FIFO room at their start) |
+| `0x80` | RX_ERR_CSUM | RO/WC | `0x00000000` | RX frames failed for a wrong IP / L4 checksum (CTRL[9]) |
 | `0x84` | PAUSE_CTRL | RW | `0x00000000` | 802.3x PAUSE control |
 | `0x88` | PAUSE_QUANTA | RW | `0x00000000` | Quanta payload of next emitted PAUSE frame |
 | `0x8C` | PAUSE_RX_CNT | RO/WC | `0x00000000` | Received PAUSE frames |
@@ -55,7 +57,7 @@ hash registers read 0 and writes are ignored.
 
 ## 0x00 - VERSION
 
-Current value: `0x0001_454D`. The constants live in
+Current value: `0x0002_454D`. The constants live in
 [`rtl/version.vh`](../rtl/version.vh) and are mirrored in
 [`sw/emaczero/emaczero.h`](../sw/emaczero/emaczero.h) and
 [`emaczero.core`](../emaczero.core); `build_and_test.py` enforces consistency
@@ -64,7 +66,7 @@ across all three on every run.
 | Bits | Meaning |
 |-----:|---------|
 | `[31:24]` | Major version, currently `0x00`. |
-| `[23:16]` | Minor version, currently `0x01`. |
+| `[23:16]` | Minor version, currently `0x02`. |
 | `[15:0]` | Unique identifier, currently `0x454D` (ASCII `"EM"`). |
 
 ## 0x04 - CTRL
@@ -76,10 +78,35 @@ across all three on every run.
 | `[2]` | `promisc` | `0` | Accept frames regardless of dst-MAC. |
 | `[4:3]` | `speed` | `00` | `00` = 1G, `01` = 100M, `10` = 10M. |
 | `[5]` | `full_duplex` | `1` | Informational only; MAC is full-duplex by construction. |
-| `[6]` | `jumbo_en` | `0` | Accept frames up to `MAX_FRAME` instead of 1518. |
-| `[7]` | `tx_csum_off` | `0` | Runtime select for TX checksum offload when `TX_CSUM_OFFLOAD=1`; no datapath effect when that parameter is 0. |
+| `[6]` | `jumbo_en` | `0` | Accept frames up to `MAX_FRAME` wire bytes instead of 1518 (1522 with an 802.1Q / 802.1ad tag). Both limits count the FCS; jumbo never lowers the limit below the standard one. |
+| `[7]` | `tx_csum_off` | `0` | TX checksum insertion when `TX_CSUM_OFFLOAD=1`: the IPv4 header checksum and the TCP / UDP / ICMP / ICMPv6 checksum are computed and written, whatever software put there, within the scope below (outside it the L4 field is left as software wrote it). Sampled at each frame's first byte, so it may change at any time. No datapath effect when the parameter is 0. |
 | `[8]` | `passthrough` | `0` | Sniffer mode: bypass MAC filter and deliver errored frames tagged via `m_axis_terror`. |
-| `[31:9]` | reserved | `0` | Reads as 0; writes ignored. |
+| `[9]` | `rx_csum_off` | `0` | RX checksum verification when `RX_CSUM_OFFLOAD=1`: a frame whose IPv4 header or TCP / UDP / ICMP / ICMPv6 checksum is wrong ends with `m_axis_terror` and counts in `RX_ERR` and `RX_ERR_CSUM`. The frame is still delivered: the consumer must discard it. Sampled at each frame's SFD. No effect when the parameter is 0. |
+| `[31:10]` | reserved | `0` | Reads as 0; writes ignored. |
+
+Checksum offload scope (both directions): Ethernet II with at most one 802.1Q
+(0x8100) or 802.1ad (0x88A8) tag; IPv4 with any header length, or the IPv6
+fixed header followed directly by TCP (6), UDP (17) or ICMPv6 (58). The sums
+cover the IP datagram as its length field gives it, not padding; UDP covers
+only its own Length field's bytes, which is also the length in its
+pseudo-header. Left to software, passed through with the L4 checksum
+unchanged and unchecked (the IPv4 header checksum is still handled):
+
+- IPv4 fragments;
+- IPv4 with a loose or strict source route option (the pseudo-header would
+  need the route's final destination), or an option with a length below 2;
+- UDP whose Length is below 8 or beyond the IP payload;
+- on RX, a datagram longer than its frame (the IPv4 header is checked as soon
+  as it has arrived).
+
+IPv6 packets with extension headers, and anything inside a tunnel, pass
+through unchanged and unchecked. On RX a UDP checksum of 0 means "no
+checksum" and passes over IPv4, and is an error over IPv6 (RFC 8200); on TX a
+UDP checksum that computes to 0 is sent as 0xFFFF. A driver should therefore claim RX checksum offload only for
+the packets above and verify the rest itself (for Zephyr, report the
+per-protocol capabilities and keep IPv6 extension-header and fragment checks
+in software). RX checksum offload only flags a failing frame with
+`m_axis_terror`; whatever consumes `m_axis` must drop frames that end with it.
 
 Reset value `0x23` = `tx_en | rx_en | full_duplex`.
 
@@ -130,15 +157,30 @@ Both are 16-bit values in bits `[15:0]`; upper bits read as 0.
 `IRQ_EN` is a RW mask. `IRQ_STATUS` is W1C. Top-level `irq` is
 `|(IRQ_STATUS & IRQ_EN)`.
 
-## 0x28 / 0x2C / 0x30 / 0x34 / 0x38 - Statistics
+## 0x28 / 0x2C / 0x30 / 0x34 / 0x38 / 0x50 / 0x7C - Statistics
 
 | Offset | Name | Counts |
 |-------:|------|--------|
 | `0x28` | TX_FRAME | Frames accepted by TX. |
 | `0x2C` | TX_BYTE | Payload + header bytes transmitted. |
-| `0x30` | RX_FRAME | Frames passed to AXIS sink. |
-| `0x34` | RX_BYTE | Bytes accepted by RX FIFO. |
-| `0x38` | RX_ERR | RX frames dropped. |
+| `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. While RX is disabled (CTRL[1]=0) the MAC drains its own FIFO with `m_axis_tvalid` held low, and frames drained that way are counted here too. |
+| `0x34` | RX_BYTE | Bytes with `rx_dv` on the MAC's GMII input, whether or not the frame is delivered. |
+| `0x38` | RX_ERR | Frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, oversize, runt, or with CTRL[9] a wrong checksum), counted on the same handshake as RX_FRAME, including frames drained while RX is disabled. The core does not drop them; the consumer must discard them. |
+| `0x50` | RX_ERR_OVERFLOW | Frames that started with RX FIFO room and ran out mid-frame: truncated and delivered with terror, so also in RX_FRAME and RX_ERR. |
+| `0x7C` | RX_DROP | Frames that passed the MAC filter but found no RX FIFO room at their start, because the sink held `m_axis_tready` low. Dropped whole: no AXIS words, so they are in no other RX frame or classification counter (RX_BYTE does include their bytes). Counted whatever their FCS or length. |
+| `0x80` | RX_ERR_CSUM | RX frames failed only for a wrong IP / L4 checksum (CTRL[9]). A frame that also has a bad FCS or another error is not counted here. |
+
+Every frame that passes the MAC filter ends up in exactly one of RX_FRAME or
+RX_DROP, so once the RX FIFO has drained, `RX_FRAME + RX_DROP` is the number
+of frames for this station and `RX_DROP + RX_ERR` the number not delivered
+clean. A frame still waiting in the FIFO is in neither until the sink takes
+its TLAST, and the totals only hold between clears and below saturation.
+Frames for other addresses and fragments shorter than 6 bytes are in
+neither.
+
+RX_DROP was added after the original map. On a core without it, `0x7C` reads
+0 (unmapped offsets read 0), so software can add it to its totals
+unconditionally.
 
 Writing any value to a TX counter clears both TX counters. Writing any value
 to an RX counter clears all RX counters in the `eth_stats` RX block.
@@ -167,19 +209,33 @@ When `MCAST_HASH_FILTER == 1`, an incoming multicast frame is hashed into a
 
 | Bits | Name | Description |
 |-----:|------|-------------|
-| `[0]` | `tx_send` | W1S: emit one PAUSE frame using `PAUSE_QUANTA`. Reads 0. |
+| `[0]` | `tx_send` | W1S: emit one PAUSE frame using `PAUSE_QUANTA`. Reads 0. A user frame already part-way into the MAC finishes first. |
 | `[1]` | `rx_en` | When `1`, received PAUSE frames load the local TX gate counter. |
 | `[31:2]` | reserved | Reads as 0. |
+
+While the TX gate counter is non-zero, no new frame starts; a frame in
+progress finishes. On MII this acts at the wire. On GMII and RGMII it acts
+ahead of the TX CDC FIFO, so frames already queued there (up to about 7 KB)
+still go out.
 
 ## 0x88 - PAUSE_QUANTA
 
 Bits `[15:0]` are the quanta value loaded into the next PAUSE frame. One
-quantum is 512 bit-times of the current line rate.
+quantum is 512 bit-times of the current line rate. The receive-side pause
+timer takes the line rate from `CTRL[4:3]`, which resets to `00` (1G); on an
+MII build set it to `01` (100M) or `10` (10M) to match the link, or received
+quanta are timed 10x or 100x too short. GMII builds always use 1G.
 
 ## 0x8C / 0x90 - PAUSE_RX_CNT / PAUSE_TX_CNT
 
 Saturating 32-bit counters. Writing any value to either register clears both
 PAUSE counters together.
+
+PAUSE_RX_CNT counts valid PAUSE frames received: destination
+`01:80:C2:00:00:01`, EtherType `0x8808`, opcode `0x0001`, a good FCS, no
+`rx_er` after the SFD, and at least 64 bytes. It counts them whether or not
+`PAUSE_CTRL[1]` is set; only with `rx_en` does a frame's quanta hold off
+transmission. A frame that fails any check is ignored.
 
 ## 0x94 - SAF_DBG
 
