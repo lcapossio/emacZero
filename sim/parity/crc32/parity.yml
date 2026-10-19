@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/crc32.v (golden) vs rtl/vhdl/crc32.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/crc32/parity.yml --strict
+version: 1
+name: crc32_parity
+description: crc32 Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: crc32
+  sources: [../../../rtl/crc32.v]
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: crc32
+  sources: [../../../rtl/vhdl/crc32.vhd]
+
+interface:
+  top: crc32
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 8
+  modules:
+    - name: crc32
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0

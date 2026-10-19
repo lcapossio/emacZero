@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/sync_fifo.v (golden) vs rtl/vhdl/sync_fifo.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/sync_fifo/parity.yml --strict
+# Formal proves small depths: the RTL is width/depth-parametric, and memory_map
+# turns the RAM into flops, so production depths (2^9+) are out of SAT reach.
+version: 1
+name: sync_fifo_parity
+description: sync_fifo Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: sync_fifo
+  sources: [../../../rtl/sync_fifo.v]
+
+candidate:
+  language: vhdl
+  std: "08"
+  top: sync_fifo
+  sources: [../../../rtl/vhdl/sync_fifo.vhd]
+
+interface:
+  top: sync_fifo
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: sync_fifo
+      param_sets:
+        - {DATA_WIDTH: 4, ADDR_WIDTH: 2}
+        - {DATA_WIDTH: 11, ADDR_WIDTH: 3}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {DATA_WIDTH: 11, ADDR_WIDTH: 9}
