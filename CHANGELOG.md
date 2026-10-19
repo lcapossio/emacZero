@@ -19,6 +19,15 @@ This project does not yet maintain long-lived release branches.
 - `sim/cocotb/run.py --hdl vhdl` runs the cocotb suites against the VHDL port
   under GHDL (phase 2b of `build_and_test.py`, skipped without GHDL and
   cocotb). All 8 suites pass on both languages.
+- `build_and_test.py` phase 1c reruns the core Verilog testbenches against
+  the VHDL port in Vivado xsim (skipped without xsim on `PATH`). 43 of 44 pass;
+  `RGMII-LOOPBACK` forces DUT internals and stays Verilog-only.
+
+### Changed
+
+- `tb_gmii_cdc_rx_overflow.v` reads its FIFO-word probe through a wire, and
+  `tb_eth_stats.v` can leave out its force-based saturation test
+  (`TB_NO_HIER_FORCE`), so both also run against a VHDL DUT in xsim.
 
 ### Fixed
 

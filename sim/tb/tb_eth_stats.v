@@ -207,8 +207,12 @@ module tb_eth_stats;
         check("rx_crc_err_cnt after clr_rx", rx_crc_err_cnt, 32'd0);
 
         // -----------------------------------------------------------------
-        // Test 6: Saturation
+        // Test 6: Saturation. Forces the counter through a hierarchical
+        // reference, which Vivado xsim cannot do into a VHDL DUT: the VHDL
+        // run defines TB_NO_HIER_FORCE (saturation of the VHDL is proven
+        // formally in sim/parity/eth_stats, STAT_CNT_W=3).
         // -----------------------------------------------------------------
+`ifndef TB_NO_HIER_FORCE
         force uut.tx_frame_cnt = 32'hFFFFFFFE;
         @(posedge clk); #1;
         release uut.tx_frame_cnt;
@@ -229,6 +233,7 @@ module tb_eth_stats;
         @(posedge clk); #1;
 
         check("tx_frame_cnt saturated", tx_frame_cnt, 32'hFFFFFFFF);
+`endif
 
         // -----------------------------------------------------------------
         // Summary

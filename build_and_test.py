@@ -1039,6 +1039,126 @@ def run_simulation():
     return all_pass
 
 
+# The Phase 1 testbenches rerun on the VHDL port (rtl/vhdl/) in Vivado's mixed-
+# language simulator: the Verilog bench drives the VHDL DUT. xsim reads VHDL
+# internals through hierarchical references (bit-selects excepted: read the
+# whole vector into a wire), but cannot force or write them.
+XSIM_VHDL_SKIP = {
+    "RGMII-LOOPBACK": "forces gmii_cdc internals (uut.gen_rgmii.u_gmii_cdc)",
+}
+# Extra defines for the VHDL run: benches that skip a force-based check.
+XSIM_VHDL_DEFINES = {
+    "ETH-STATS": ["TB_NO_HIER_FORCE"],
+}
+
+
+def _xsim_tool(name):
+    """xvlog/xvhdl/xelab/xsim are .bat files on Windows."""
+    for cand in (name, name + ".bat"):
+        found = shutil.which(cand)
+        if found:
+            return found
+    return None
+
+
+def _xsim_vhdl_plan():
+    """(test, vhdl target, defines, verilog sources) for every Phase 1 bench
+    whose RTL is all in the VHDL port, plus the list of skipped names."""
+    ported = {os.path.splitext(os.path.basename(s))[0]
+              for s in _vhdl_sources("sim") if "/target/" not in s}
+    plan, skipped = [], []
+    for t in TESTS:
+        rtl = [s for s in t["srcs"] if s.startswith("rtl/")]
+        bench = [s for s in t["srcs"] if not s.startswith("rtl/")]
+        if (any(os.path.splitext(os.path.basename(s))[0] not in ported for s in rtl)
+                or any(not s.startswith("sim/tb/") for s in bench)):
+            continue                            # L3 / FPGA benches: not ported
+        if t["name"] in XSIM_VHDL_SKIP:
+            skipped.append(t["name"])
+            continue
+        args = t.get("iverilog_args", "").split()
+        defines = (["SIM"] + [a[2:] for a in args if a.startswith("-D")]
+                   + XSIM_VHDL_DEFINES.get(t["name"], []))
+        target = "xilinx_7series" if "XILINX_7SERIES" in defines else "sim"
+        plan.append((t, target, defines, bench))
+    return plan, skipped
+
+
+def run_vhdl_xsim():
+    """Phase 1 testbenches against the VHDL port, in Vivado xsim. Skipped (not
+    failed) without Vivado's simulator on PATH."""
+    header("PHASE 1c: Simulation of the VHDL port (Vivado xsim, Verilog benches)")
+    tools = {n: _xsim_tool(n) for n in ("xvlog", "xvhdl", "xelab", "xsim")}
+    if not all(tools.values()):
+        print(f"  {C.YELLOW}SKIP{C.END} Vivado xsim not on PATH - "
+              "the VHDL port is NOT simulated by this run")
+        return True
+    q = {n: f'"{p}"' for n, p in tools.items()}
+
+    plan, skipped = _xsim_vhdl_plan()
+    run_root = os.path.join(PROJECT_DIR, "sim", f".xsim_vhdl_{os.getpid()}")
+    incdirs = " ".join(f'-i "{os.path.join(PROJECT_DIR, d)}"' for d in IVERILOG_INCDIRS)
+    compiled = {}
+    all_pass = True
+    try:
+        for t, target, defines, bench in plan:
+            run_dir = os.path.join(run_root, target)
+            if target not in compiled:
+                # The whole port once per target, into this directory's work.
+                os.makedirs(run_dir, exist_ok=True)
+                vhdl = " ".join(f'"{os.path.join(PROJECT_DIR, s)}"'
+                                for s in _vhdl_sources(target))
+                rc, out, err = run_cmd(f"{q['xvhdl']} --2008 {vhdl}", cwd=run_dir, timeout=600)
+                compiled[target] = rc == 0
+                if rc != 0:
+                    fail(f"xvhdl ({target}): VHDL port does not compile")
+                    for line in (out + err).splitlines():
+                        if "ERROR" in line:
+                            print(f"    {line.strip()[:200]}")
+            if not compiled[target]:
+                all_pass = False
+                continue
+
+            name = t["name"]
+            snap = "snap_" + re.sub(r"\W", "_", name.lower())
+            top = os.path.splitext(os.path.basename(bench[-1]))[0]
+            defs = " ".join(f"-d {d}" for d in defines)
+            srcs = " ".join(f'"{os.path.join(PROJECT_DIR, s)}"' for s in bench)
+            steps = [
+                (f"{q['xvlog']} {defs} {incdirs} {srcs}", 300),
+                (f"{q['xelab']} -debug off --relax -timescale 1ns/1ps work.{top} -s {snap}", 600),
+                (f"{q['xsim']} {snap} -R", max(300, 3 * t.get("sim_timeout", 60))),
+            ]
+            rc, out = 0, ""
+            for cmd, timeout in steps:
+                rc, stdout, stderr = run_cmd(cmd, cwd=run_dir, timeout=timeout)
+                out = stdout + stderr
+                if rc != 0:
+                    break
+            if rc != 0 and "ALL TESTS PASSED" not in out:
+                fail(f"{name} (VHDL): rc={rc}")
+                for line in out.splitlines():
+                    if "ERROR" in line or "FAIL" in line:
+                        print(f"    {line.strip()[:200]}")
+                all_pass = False
+                continue
+            label = f"{name} (VHDL" + (", without its force-based check"
+                                       if name in XSIM_VHDL_DEFINES else "") + ")"
+            if not _sim_result(label, rc, out):
+                all_pass = False
+    finally:
+        shutil.rmtree(run_root, ignore_errors=True)
+
+    for name in skipped:
+        print(f"  {C.YELLOW}SKIP{C.END} {name} (VHDL): {XSIM_VHDL_SKIP[name]}")
+    if all_pass:
+        print(f"\n  {C.GREEN}{C.BOLD}All VHDL simulations passed "
+              f"({len(plan)} benches, {len(skipped)} Verilog-only).{C.END}")
+    else:
+        print(f"\n  {C.RED}{C.BOLD}VHDL simulation failures detected.{C.END}")
+    return all_pass
+
+
 # RGMII testbenches rerun on the Xilinx simulation models of the DDR cells
 # (Vivado's unisims) instead of the behavioral SIM model in ddr_input.v /
 # ddr_output.v. That model was once wrong (it sampled d2 on the falling edge)
@@ -1254,13 +1374,15 @@ def main():
     elab_ok = run_vivado_elab()
     ghdl_ok = run_ghdl_lint()
     sim_ok = run_simulation()
+    vhdl_sim_ok = run_vhdl_xsim()
     vendor_ok = run_vendor_ddr_sims()
     cocotb_ok = run_cocotb()
     cocotb_vhdl_ok = run_cocotb_vhdl()
     impl_ok = run_rgmii_impl() if args.impl else True
 
     if (version_ok and lint_ok and verilator_ok and elab_ok and ghdl_ok
-            and sim_ok and vendor_ok and cocotb_ok and cocotb_vhdl_ok and impl_ok):
+            and sim_ok and vhdl_sim_ok and vendor_ok and cocotb_ok and cocotb_vhdl_ok
+            and impl_ok):
         print(f"\n{C.GREEN}{C.BOLD}All tests passed.{C.END}")
         sys.exit(0)
     else:

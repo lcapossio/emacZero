@@ -128,11 +128,14 @@ module tb_gmii_cdc_rx_overflow;
 
     integer j, p, pre;
 
-    // Coverage probe: error-flagged EOF words committed to the FIFO.
+    // Coverage probe: error-flagged EOF words committed to the FIFO. The FIFO
+    // word is read whole into a wire: Vivado xsim returns 0 for a bit-select
+    // taken directly on a hierarchical reference into the VHDL port.
     integer ovf_eofs;
+    wire [9:0] probe_fifo_din = uut.rx_fifo_din;
     initial ovf_eofs = 0;
     always @(posedge media_clk)
-        if (uut.rx_wr_accept && uut.rx_wr_is_eof && uut.rx_fifo_din[8])
+        if (uut.rx_wr_accept && uut.rx_wr_is_eof && probe_fifo_din[8])
             ovf_eofs = ovf_eofs + 1;
     reg     ok;
 

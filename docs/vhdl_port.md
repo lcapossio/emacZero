@@ -104,17 +104,29 @@ sets.
 
 ## Simulation of the VHDL
 
-The cocotb suites in `sim/cocotb/` run unchanged against the VHDL under GHDL
-(`python sim/cocotb/run.py --hdl vhdl`, phase 2b of `build_and_test.py`). They
-use production sizes, which the proofs do not: `mii_tx_saf` with MAX_FRAME
-1518 and a 4096-entry FIFO, `eth_mac_rx` at MAX_FRAME 1518 with its full RX
-FIFO, `gmii_cdc` with its real 16K-word FIFO, and `tx_csum_off` at MAX_FRAME
-600. All 8 suites (39 tests, directed and seeded random) pass on both
-languages.
+Both test suites also run against the VHDL, at production sizes, which the
+proofs do not use (full-depth FIFOs and the 4096x9 `mii_if` RX frame RAM,
+MAX_FRAME up to 9018):
 
-Not simulated as VHDL: `mii_if`, `eth_mac`, `eth_mac_sys` and the PHY
-interfaces. Their testbenches are the Verilog benches in `sim/tb/`, which
-need a mixed-language simulator (xsim) to drive the VHDL.
+- **Verilog testbenches** (`sim/tb/`, phase 1c of `build_and_test.py`): each
+  core bench drives the VHDL DUT in Vivado xsim (mixed language, SIM target;
+  `MII-RX-REPLAY-STRESS` uses XILINX_7SERIES with the bench's XPM models).
+  43 of the 44 core benches pass, covering every module including `mii_if`,
+  `eth_mac` and `eth_mac_sys` in MII, GMII and RGMII. Exceptions:
+  - `RGMII-LOOPBACK` runs on Verilog only: it forces `gmii_cdc` internals,
+    and xsim cannot write to a VHDL object from Verilog.
+  - `ETH-STATS` leaves out its counter-saturation test for the same reason
+    (`TB_NO_HIER_FORCE`). Saturation is proven formally instead.
+
+  xsim reads VHDL internals through hierarchical references, but returns 0
+  for a bit-select taken directly on one (`uut.vec[8]`). Benches read the
+  whole vector into a wire first.
+- **cocotb suites** (`sim/cocotb/`, phase 2b): run unchanged under GHDL
+  (`python sim/cocotb/run.py --hdl vhdl`). All 8 suites (39 tests, directed
+  and seeded random) pass on both languages.
+
+Not covered: the L3 add-ons (not ported), and the vendor DDR reruns on the
+Xilinx unisim models, which run on Verilog only.
 
 ## Translation conventions
 

@@ -434,8 +434,9 @@ iverilog -g2001 -I rtl -f rtl/eth_mac_sys.f your_top.v
 the filelist [rtl/eth_mac_sys_vhdl.f](rtl/eth_mac_sys_vhdl.f). Its first file
 picks the vendor target (one package per target in
 [rtl/vhdl/target/](rtl/vhdl/target/)). Each module is formally proven
-equivalent to its Verilog original. The port has not been run on hardware
-yet. See [docs/vhdl_port.md](docs/vhdl_port.md).
+equivalent to its Verilog original, and the Verilog testbenches and cocotb
+suites also run against it (Vivado xsim and GHDL). The port has not been run
+on hardware yet. See [docs/vhdl_port.md](docs/vhdl_port.md).
 
 **LiteX** — `litex_emaczero/emaczero.py` ships an `EmacZero` `LiteXModule` that wraps
 `eth_mac_sys` with LiteX-native AXI-Lite + AXI-Stream interfaces:
