@@ -371,7 +371,7 @@ begin
     din_i <= axi_rst & m_axi_awready & m_axi_wready & m_axi_bresp & m_axi_bvalid &
              m_axi_arready & m_axi_rdata & m_axi_rresp & m_axi_rvalid & m_axi_rlast;
     din   <= (WS-1 downto IN_N => '0') & din_i;
-    fp_w  <= (WS-1 downto 300 => '0') & FP;
+    fp_w  <= FP & (W-1 downto 0 => '0');     -- above every input bit
     process (axi_clk)
     begin
         if rising_edge(axi_clk) then

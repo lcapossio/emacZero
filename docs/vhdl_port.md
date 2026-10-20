@@ -133,8 +133,8 @@ generic its own full-width field (a real as round(value * 1000) in 32 bits, a
 string as one bit per legal value), so two different legal settings never
 give the same fingerprint, and since the inputs sit above it, a wrong generic
 cannot be cancelled by an inverted input either. The limits: reals are
-compared to 0.001 (the resolution the MMCM attributes are given to in UG953),
-an illegal string value sets no bit, and the fcapz EIO stand-in, which has no
+compared only to 0.001 (two MMCM settings that round to the same thousandth
+look the same), an illegal string value sets no bit, and the fcapz EIO stand-in, which has no
 clock, folds its 96-bit fingerprint onto `probe_in` and is injective only for
 IN_W of 96 or more (`zcu106_top` uses 256 and 608). The clocks a stand-in puts out (MMCM outputs, the
 `BUFGCE_DIV` output) are bits of that register, not wires from its input

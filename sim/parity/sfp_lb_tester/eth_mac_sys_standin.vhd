@@ -111,24 +111,24 @@ architecture standin of eth_mac_sys is
     -- Generic fingerprint
     constant FP_MAX : std_logic_vector(31 downto 0) := std_logic_vector(to_unsigned(MAX_FRAME, 32));
     constant FP_CLK : std_logic_vector(31 downto 0) := std_logic_vector(to_unsigned(CLK_FREQ_HZ, 32));
-    constant FP_AW  : std_logic_vector(7 downto 0)  := std_logic_vector(to_unsigned(RX_AXIS_AW, 8));
-    constant FP_MCF : std_logic_vector(7 downto 0)  := std_logic_vector(to_unsigned(MCAST_HASH_FILTER, 8));
-    constant FP_TXC : std_logic_vector(7 downto 0)  := std_logic_vector(to_unsigned(TX_CSUM_OFFLOAD, 8));
-    constant FP_RXC : std_logic_vector(7 downto 0)  := std_logic_vector(to_unsigned(RX_CSUM_OFFLOAD, 8));
-    constant FP_DBG : std_logic_vector(7 downto 0)  := std_logic_vector(to_unsigned(MII_DEBUG, 8));
+    constant FP_AW  : std_logic_vector(31 downto 0) := std_logic_vector(to_unsigned(RX_AXIS_AW, 32));
+    constant FP_MCF : std_logic_vector(31 downto 0) := std_logic_vector(to_unsigned(MCAST_HASH_FILTER, 32));
+    constant FP_TXC : std_logic_vector(31 downto 0) := std_logic_vector(to_unsigned(TX_CSUM_OFFLOAD, 32));
+    constant FP_RXC : std_logic_vector(31 downto 0) := std_logic_vector(to_unsigned(RX_CSUM_OFFLOAD, 32));
+    constant FP_DBG : std_logic_vector(31 downto 0) := std_logic_vector(to_unsigned(MII_DEBUG, 32));
     constant FP_STR : std_logic_vector(7 downto 0)  :=
         b2sl(PHY_INTERFACE = "MII") & b2sl(PHY_INTERFACE = "GMII") &
         b2sl(PHY_INTERFACE = "RGMII") &
         b2sl(CDC_RAM_STYLE = "BLOCK") & b2sl(CDC_RAM_STYLE = "DISTRIBUTED") &
         b2sl(RGMII_SPEEDS = "ALL") & b2sl(RGMII_SPEEDS = "1G_ONLY") &
         b2sl(RGMII_SPEEDS = "10_100");
-    constant GEN_FP : std_logic_vector(127 downto 0) :=
-        x"0000" & FP_STR & FP_DBG & FP_RXC & FP_TXC & FP_MCF & FP_AW & FP_CLK & FP_MAX;
+    constant GEN_FP : std_logic_vector(231 downto 0) :=
+        FP_STR & FP_DBG & FP_RXC & FP_TXC & FP_MCF & FP_AW & FP_CLK & FP_MAX;
 
     -- Every input but clk / rst_n, in port order (100 bits)
     signal in_bits : std_logic_vector(99 downto 0);
 
-    signal bb_q : std_logic_vector(227 downto 0);
+    signal bb_q : std_logic_vector(331 downto 0);
 
 begin
 
@@ -146,7 +146,7 @@ begin
         if rst_n = '0' then
             bb_q <= (others => '0');
         elsif rising_edge(clk) then
-            bb_q <= (bb_q(226 downto 0) & bb_q(227)) xor (in_bits & GEN_FP);
+            bb_q <= (bb_q(330 downto 0) & bb_q(331)) xor (in_bits & GEN_FP);
         end if;
     end process;
 

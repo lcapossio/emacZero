@@ -14,14 +14,14 @@
 // turns undriven nets into x, and everything downstream of the box then
 // "proves" equivalent whatever it computes (checked: `q + y` vs `q - y`
 // passes). Instead:
-//   - every output bit is its own bit of the 228-bit register bb_q, so in the
+//   - every output bit is its own bit of the 332-bit register bb_q, so in the
 //     induction step (arbitrary paired state) the outputs take any value;
 //   - bb_q rotates by one and XORs in every input bit (clocks other than clk
-//     included) at bits 227:128 and a fingerprint of every parameter at
-//     127:0 (disjoint, so an input never cancels a parameter), so a miswired
-//     input or a
-//     wrong parameter value changes bb_q, a state point paired by name
-//     (u_mac.bb_q), and the proof fails;
+//     included) at bits 331:232 and a fingerprint of every parameter at
+//     231:0 (each integer in its own 32-bit field, each string one bit per
+//     legal value; disjoint from the inputs, so an input never cancels a
+//     parameter), so a miswired input or a wrong parameter value changes
+//     bb_q, a state point paired by name (u_mac.bb_q), and the proof fails;
 //   - outputs are registered only, so a loopback from outputs to inputs
 //     (gmii_lb_selftest) makes no combinational loop.
 // RX_AXIS_ADDR_WIDTH enters the fingerprint as its resolved value, so the
@@ -107,17 +107,17 @@ module eth_mac_sys #(
     // Parameter fingerprint
     localparam [31:0] FP_MAX  = MAX_FRAME;
     localparam [31:0] FP_CLK  = CLK_FREQ_HZ;
-    localparam [7:0]  FP_AW   = RX_AXIS_ADDR_WIDTH;
-    localparam [7:0]  FP_MCF  = MCAST_HASH_FILTER;
-    localparam [7:0]  FP_TXC  = TX_CSUM_OFFLOAD;
-    localparam [7:0]  FP_RXC  = RX_CSUM_OFFLOAD;
-    localparam [7:0]  FP_DBG  = MII_DEBUG;
+    localparam [31:0] FP_AW   = RX_AXIS_ADDR_WIDTH;
+    localparam [31:0] FP_MCF  = MCAST_HASH_FILTER;
+    localparam [31:0] FP_TXC  = TX_CSUM_OFFLOAD;
+    localparam [31:0] FP_RXC  = RX_CSUM_OFFLOAD;
+    localparam [31:0] FP_DBG  = MII_DEBUG;
     localparam [7:0]  FP_STR  = {PHY_INTERFACE == "MII", PHY_INTERFACE == "GMII",
                                  PHY_INTERFACE == "RGMII",
                                  CDC_RAM_STYLE == "BLOCK", CDC_RAM_STYLE == "DISTRIBUTED",
                                  RGMII_SPEEDS == "ALL", RGMII_SPEEDS == "1G_ONLY",
                                  RGMII_SPEEDS == "10_100"};
-    localparam [127:0] GEN_FP = {16'h0000, FP_STR, FP_DBG, FP_RXC, FP_TXC, FP_MCF,
+    localparam [231:0] GEN_FP = {FP_STR, FP_DBG, FP_RXC, FP_TXC, FP_MCF,
                                  FP_AW, FP_CLK, FP_MAX};
 
     // Every input but clk / rst_n, in port order (100 bits)
@@ -130,10 +130,10 @@ module eth_mac_sys #(
                            phy_gmii_rx_clk, phy_gmii_rxd, phy_gmii_rx_dv,
                            phy_gmii_rx_er, mdio_i};
 
-    reg [227:0] bb_q;
+    reg [331:0] bb_q;
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) bb_q <= 228'd0;
-        else        bb_q <= {bb_q[226:0], bb_q[227]} ^ {in_bits, GEN_FP};
+        if (!rst_n) bb_q <= 332'd0;
+        else        bb_q <= {bb_q[330:0], bb_q[331]} ^ {in_bits, GEN_FP};
     end
 
     // Every output bit from its own register bit, in port order (112 bits)

@@ -12,10 +12,10 @@
 -- parameter. In the fingerprint: each real parameter as round(value * 1000)
 -- in its own 32-bit field, each integer in its own 32-bit field, BANDWIDTH and
 -- the two booleans as one bit per value. Distinct legal values give distinct
--- fingerprints (UG953 gives the real attributes to 0.001; two reals that round
--- to the same thousandth share a field, and an illegal string sets no bit),
--- so a wrong value on either side diverges (`st` is a
--- paired state point). Every output is its own bit of `st`; CLKOUT0 also XORs
+-- fingerprints, with two limits: reals are compared only to 0.001 (two values
+-- that round to the same thousandth share a field), and an illegal string sets
+-- no bit. A wrong value on either side diverges (`st` is a paired state
+-- point). Every output is its own bit of `st`; CLKOUT0 also XORs
 -- CLKFBIN, so the feedback connection is checked. The output clocks are
 -- therefore state, not the input clock: a process clocked from CLKOUT0 has
 -- different edges from one clocked from CLKIN1, and moving logic between the

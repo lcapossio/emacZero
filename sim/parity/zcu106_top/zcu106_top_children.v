@@ -304,7 +304,7 @@ module fcapz_ejtagaxi_xilinxus #(
     wire [IN_N-1:0] din_i = {axi_rst, m_axi_awready, m_axi_wready, m_axi_bresp, m_axi_bvalid,
                              m_axi_arready, m_axi_rdata, m_axi_rresp, m_axi_rvalid, m_axi_rlast};
     wire [WS-1:0] din = {{(WS-IN_N){1'b0}}, din_i};
-    wire [WS-1:0] fp  = {{W{1'b0}}, FP};
+    wire [WS-1:0] fp  = {FP, {W{1'b0}}};       // above every input bit
     always @(posedge axi_clk) st <= {st[WS-2:0], st[WS-1]} ^ din ^ fp;
 
     assign m_axi_rready  = st[P_RREADY];
