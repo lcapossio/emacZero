@@ -17,9 +17,15 @@ This project does not yet maintain long-lived release branches.
 - `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
   The phase is skipped when GHDL is not installed.
-- `sim/cocotb/run.py --hdl vhdl` runs the cocotb suites against the VHDL port
-  under GHDL (phase 2b of `build_and_test.py`, skipped without GHDL and
-  cocotb). All 8 suites pass on both languages.
+- cocotb ports of all 44 core Verilog testbenches (`sim/cocotb/tests/`), with
+  the same DUT, parameters, timing and checks. Every cocotb suite runs on both
+  the Verilog (Icarus) and the VHDL port (GHDL): `sim/cocotb/run.py --hdl both
+  -j N`, phases 2 and 2b of `build_and_test.py`. All 53 suites pass on both
+  languages. Multi-instance benches use wiring harnesses in `sim/cocotb/hdl/`,
+  each proven equivalent across the languages (`sim/parity/harness_*`). The
+  `sim/tb/` benches are unchanged and still run.
+- Each test module declares its suites in a `SUITES` dict that `run.py` reads;
+  `run.py` runs suites in parallel (`-j`) and on both languages (`--hdl both`).
 - `build_and_test.py` phase 1c reruns the core Verilog testbenches against
   the VHDL port in Vivado xsim (skipped without xsim on `PATH`). 43 of 44 pass;
   `RGMII-LOOPBACK` forces DUT internals and stays Verilog-only.

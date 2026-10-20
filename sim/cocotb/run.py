@@ -54,29 +54,43 @@ BUILD = HERE / "sim_build"
 SPEC_KEYS = {"toplevel", "sources", "params", "target", "vhdl_sources", "env",
              "skip_vhdl"}
 VHDL_UTIL = "rtl/vhdl/emz_util_pkg.vhd"
-# VHDL entity instantiation needs the entity analysed even inside a generate
-# that is off; Verilog does not. eth_mac_rx instantiates csum_calc only when
-# RX_CSUM_OFFLOAD=1, so its Verilog source lists may leave it out.
-VHDL_EXTRA_DEPS = {"eth_mac_rx": ["rtl/vhdl/csum_calc.vhd"]}
+# VHDL files a module needs that its Verilog source list does not show:
+# - eth_mac_rx instantiates csum_calc only when RX_CSUM_OFFLOAD=1, so Verilog
+#   source lists may leave it out, but VHDL analyses the entity regardless.
+# - axilite_regs `includes rtl/version.vh; the VHDL uses a package instead.
+VHDL_EXTRA_DEPS = {
+    "eth_mac_rx": ["rtl/vhdl/csum_calc.vhd"],
+    "axilite_regs": ["rtl/vhdl/emz_version_pkg.vhd"],
+}
 
 
-def discover() -> dict:
-    """{suite name: spec}, each spec with its "test_module" filled in."""
-    suites = {}
+def discover() -> tuple[dict, list]:
+    """({suite name: spec}, [error]). Each spec gets its "test_module". A test
+    module whose SUITES cannot be read is reported and skipped, so one broken
+    file does not stop every other suite; main() still fails the run."""
+    suites, errors = {}, []
     for path in sorted(TESTS.glob("test_*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
-        for node in tree.body:
-            if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                    and isinstance(node.targets[0], ast.Name)
-                    and node.targets[0].id == "SUITES"):
-                for name, spec in ast.literal_eval(node.value).items():
-                    if name in suites:
-                        sys.exit(f"suite {name!r} declared twice ({path.name})")
-                    unknown = set(spec) - SPEC_KEYS
-                    if unknown:
-                        sys.exit(f"suite {name!r}: unknown keys {sorted(unknown)}")
-                    suites[name] = {**spec, "test_module": path.stem}
-    return suites
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+            found = {}
+            for node in tree.body:
+                if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                        and isinstance(node.targets[0], ast.Name)
+                        and node.targets[0].id == "SUITES"):
+                    found.update(ast.literal_eval(node.value))
+            for name, spec in found.items():
+                if name in suites:
+                    raise ValueError(f"suite {name!r} already declared in "
+                                     f"{suites[name]['test_module']}.py")
+                unknown = set(spec) - SPEC_KEYS
+                if unknown:
+                    raise ValueError(f"suite {name!r}: unknown keys {sorted(unknown)}")
+        except (SyntaxError, ValueError) as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        for name, spec in found.items():
+            suites[name] = {**spec, "test_module": path.stem}
+    return suites, errors
 
 
 def vhdl_sources(spec) -> list:
@@ -183,7 +197,9 @@ def _child(name, hdl, args):
 
 
 def main() -> int:
-    suites = discover()
+    suites, broken = discover()
+    for err in broken:
+        print(f"[cocotb] skipped {err}", file=sys.stderr)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--suite", action="append", choices=sorted(suites),
                     help="suite to run (repeatable; default: all)")
@@ -196,6 +212,8 @@ def main() -> int:
     ap.add_argument("--test", default=None)
     ap.add_argument("--waves", action="store_true")
     args = ap.parse_args()
+    # Named suites run on their own; a full run fails if a test module was skipped.
+    broken_fails = bool(broken) and not args.suite
 
     if args.list:
         for name in sorted(suites):
@@ -215,7 +233,7 @@ def main() -> int:
     if len(jobs) == 1 and args.jobs <= 1:
         name, hdl = jobs[0]
         failed = run_one(name, suites[name], hdl, args)
-        return 1 if failed else 0
+        return 1 if failed or broken_fails else 0
 
     gha = os.environ.get("GITHUB_ACTIONS") == "true"
     results = []
@@ -236,6 +254,10 @@ def main() -> int:
             failed.append(f"{name} [{hdl}]")
     for name, why in skipped:
         print(f"  {name:<32} {'vhdl':<8} {'':>9}  SKIP ({why})")
+    for err in broken:
+        print(f"  not run: {err}")
+        if gha and broken_fails:
+            print(f"::error::cocotb {err}")
     if failed:
         print(f"\n[cocotb] {len(failed)} suite run(s) failed: {', '.join(failed)}")
         if gha:
@@ -243,7 +265,7 @@ def main() -> int:
                 print(f"::error::cocotb {f} failed")
         return 1
     print(f"\n[cocotb] all {len(results)} suite run(s) passed")
-    return 0
+    return 1 if broken_fails else 0
 
 
 if __name__ == "__main__":

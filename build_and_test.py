@@ -1279,13 +1279,29 @@ def run_rgmii_impl():
     return all_pass
 
 
+# Suites run in parallel, each in its own simulator process.
+COCOTB_JOBS = max(1, os.cpu_count() or 1)
+
+
+def _cocotb_report(combined):
+    """Print run.py's per-suite summary (and the failure lines after it)."""
+    lines = combined.splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("[cocotb] Summary")),
+                 None)
+    for line in lines[start + 1:] if start is not None else lines[-20:]:
+        if line.strip():
+            print(f"    {line.strip()[:160]}")
+
+
 def run_cocotb():
-    header("PHASE 2: cocotb (directed + randomized)")
+    """Every cocotb suite (sim/cocotb/tests/) against the Verilog RTL on Icarus:
+    the ports of the sim/tb/ benches plus the randomized suites."""
+    header("PHASE 2: cocotb on the Verilog RTL (Icarus)")
     try:
         import cocotb  # noqa: F401
     except Exception:
         print(f"  {C.YELLOW}SKIP{C.END} cocotb not installed "
-              "(pip install 'cocotb>=2.0') - randomized suite not run")
+              "(pip install 'cocotb>=2.0') - cocotb suites not run")
         return True
 
     runner = os.path.join(PROJECT_DIR, "sim", "cocotb", "run.py")
@@ -1294,21 +1310,14 @@ def run_cocotb():
         return False
 
     rc, stdout, stderr = run_cmd(
-        f'"{sys.executable}" "{runner}"', cwd=PROJECT_DIR, timeout=1800
+        f'"{sys.executable}" "{runner}" --hdl verilog -j {COCOTB_JOBS}',
+        cwd=PROJECT_DIR, timeout=3600
     )
-    combined = stdout + stderr
-    for line in combined.splitlines():
-        if re.search(r"TESTS=\d", line):
-            print(f"    {line.strip()}")
-
+    _cocotb_report(stdout + stderr)
     if rc == 0:
-        ok("cocotb suite (mii_tx_saf: directed + randomized)")
+        ok("cocotb suites on the Verilog RTL (Icarus)")
         return True
-
-    fail(f"cocotb suite (mii_tx_saf) rc={rc}")
-    for line in combined.splitlines():
-        if "failed" in line.lower() or "random seed =" in line.lower():
-            print(f"    {line.strip()[:160]}")  # seeds shown for deterministic replay
+    fail(f"cocotb suites on the Verilog RTL (Icarus) rc={rc}")
     return False
 
 
@@ -1334,23 +1343,17 @@ def run_cocotb_vhdl():
 
     if native:
         runner = os.path.join(PROJECT_DIR, "sim", "cocotb", "run.py")
-        rc, stdout, stderr = run_cmd(f'"{sys.executable}" "{runner}" --hdl vhdl',
-                                     cwd=PROJECT_DIR, timeout=3600)
+        rc, stdout, stderr = run_cmd(
+            f'"{sys.executable}" "{runner}" --hdl vhdl -j {COCOTB_JOBS}',
+            cwd=PROJECT_DIR, timeout=3600)
     else:
-        rc, stdout, stderr = _wsl_run(wsl, "python3 sim/cocotb/run.py --hdl vhdl", 3600)
-    combined = stdout + stderr
-    for line in combined.splitlines():
-        if re.search(r"TESTS=\d", line):
-            print(f"    {line.strip()}")
-
+        rc, stdout, stderr = _wsl_run(
+            wsl, f"python3 sim/cocotb/run.py --hdl vhdl -j {COCOTB_JOBS}", 3600)
+    _cocotb_report(stdout + stderr)
     if rc == 0:
         ok("cocotb suites on the VHDL port (GHDL)")
         return True
-
     fail(f"cocotb suites on the VHDL port (GHDL) rc={rc}")
-    for line in combined.splitlines():
-        if "failed" in line.lower() or "random seed =" in line.lower():
-            print(f"    {line.strip()[:160]}")
     return False
 
 

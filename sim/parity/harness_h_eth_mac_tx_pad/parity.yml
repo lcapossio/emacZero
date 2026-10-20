@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: cocotb harness sim/cocotb/hdl/h_eth_mac_tx_pad.v
+# (golden) vs h_eth_mac_tx_pad.vhd, flattened with eth_mac_tx, mii_tx_saf and
+# async_fifo.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/harness_h_eth_mac_tx_pad/parity.yml --strict
+#
+# The harness is the DUT wiring of sim/tb/tb_eth_mac_tx_pad.v (cocotb suite
+# eth_mac_tx_pad). eth_mac_tx, mii_tx_saf and async_fifo are proven on their
+# own in sim/parity/<module>/; this proof covers the harness's own wiring
+# (s_tvalid gated by sel_gmii into each framer, the s_tready mux, tx_start_ok
+# and s_axis_tkeep tied high, generic pass-through) in composition. Two clock
+# domains (clk, mclk) are independent solver inputs under clk2fflogic.
+# Config: the suite uses the RTL defaults (MAC_MAX_FRAME 9018, SAF_MAX_FRAME
+# 1518, SAF_FIFO_ADDR_WIDTH 12). The proof keeps MAC_MAX_FRAME 9018 and cuts
+# mii_tx_saf to MAX_FRAME 31 / FIFO_ADDR_WIDTH 5, the smallest set of
+# sim/parity/mii_tx_saf (the 4096-byte FIFO RAM becomes flops).
+version: 1
+name: harness_h_eth_mac_tx_pad_parity
+description: h_eth_mac_tx_pad cocotb harness, Verilog golden vs VHDL (flattened)
+
+golden:
+  language: verilog
+  top: h_eth_mac_tx_pad
+  sources:
+    - ../../../rtl/async_fifo.v
+    - ../../../rtl/eth_mac_tx.v
+    - ../../../rtl/mii_tx_saf.v
+    - ../../cocotb/hdl/h_eth_mac_tx_pad.v
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: h_eth_mac_tx_pad
+  sources:
+    - ../../../rtl/vhdl/async_fifo.vhd
+    - ../../../rtl/vhdl/eth_mac_tx.vhd
+    - ../../../rtl/vhdl/mii_tx_saf.vhd
+    - ../../cocotb/hdl/h_eth_mac_tx_pad.vhd
+
+interface:
+  top: h_eth_mac_tx_pad
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: h_eth_mac_tx_pad
+      param_sets:
+        - {MAC_MAX_FRAME: 9018, SAF_MAX_FRAME: 31, SAF_FIFO_ADDR_WIDTH: 5}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {MAC_MAX_FRAME: 9018, SAF_MAX_FRAME: 31, SAF_FIFO_ADDR_WIDTH: 5}

@@ -311,13 +311,18 @@ output cell must drive only its output buffer, place and route must complete,
 and the internal paths must meet timing. No board build uses RGMII, so run it
 after changing `rgmii_if.v` or the DDR wrappers.
 
+`PHASE 2` runs the cocotb suites ([sim/cocotb/](sim/cocotb/)) on the Verilog
+under Icarus. They include a port of every core testbench in `sim/tb/`, with
+the same checks, plus directed and randomized suites with reference models.
+
 The VHDL port ([rtl/vhdl/](rtl/vhdl/)) is checked by three more phases, each
 skipped, not failed, when its tool is missing:
 
 - `PHASE 0d` analyses and elaborates it with GHDL, as VHDL-93, for every vendor
   target.
 - `PHASE 1c` reruns the core testbenches against it in Vivado xsim.
-- `PHASE 2b` runs the cocotb suites against it under GHDL.
+- `PHASE 2b` runs the same cocotb suites against it under GHDL, so both
+  languages pass exactly the same tests.
 
 GHDL is used from `PATH`, or from WSL on Windows. The formal equivalence
 proofs run separately (use GHDL 4.1 for them; with GHDL 6.0.0 four of them do
@@ -452,8 +457,9 @@ iverilog -g2001 -I rtl -f rtl/eth_mac_sys.f your_top.v
 the filelist [rtl/eth_mac_sys_vhdl.f](rtl/eth_mac_sys_vhdl.f). Its first file
 picks the vendor target (one package per target in
 [rtl/vhdl/target/](rtl/vhdl/target/)). Each module is formally proven
-equivalent to its Verilog original, and the Verilog testbenches and cocotb
-suites also run against it (Vivado xsim and GHDL). Entity, generic and port
+equivalent to its Verilog original, and every cocotb suite, including a port
+of each core Verilog testbench, runs on both languages (Icarus and GHDL). The
+Verilog testbenches also run against it in Vivado xsim. Entity, generic and port
 names match the Verilog. One difference: the generics whose Verilog default is
 computed from `MAX_FRAME` (`RX_AXIS_ADDR_WIDTH` of `eth_mac` and `eth_mac_sys`,
 `RX_FIFO_ADDR_WIDTH` of `gmii_cdc`, `BUF_ADDR_WIDTH` of `tx_csum_off`) default

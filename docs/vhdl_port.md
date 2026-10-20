@@ -51,6 +51,10 @@ Not proven:
 The higher L4 tolerances are for state machines: GHDL lowers a `case` to a
 one-hot decode, roughly doubling the `$eq` cells. Flop counts match.
 
+`sim/parity/harness_*` hold proofs for the simulation side: the wiring
+harnesses of the cocotb suites (`sim/cocotb/hdl/`) and the VHDL twins of the
+XPM simulation models, each against its Verilog original.
+
 ## Reproducing the proofs
 
 Needs GHDL, Python 3 with `pyyaml`, and a Yosys with `rename -unescape`
@@ -121,29 +125,38 @@ that workflow. Bump them there, and rerun everything when you do.
 
 ## Simulation of the VHDL
 
-Both test suites also run against the VHDL, at production sizes, which the
-proofs do not use (full-depth FIFOs and the 4096x9 `mii_if` RX frame RAM,
-MAX_FRAME up to 9018):
+The VHDL is also simulated at production sizes, which the proofs do not use
+(full-depth FIFOs and the 4096x9 `mii_if` RX frame RAM, MAX_FRAME up to 9018):
 
-- **Verilog testbenches** (`sim/tb/`, phase 1c of `build_and_test.py`): each
+- **cocotb** (`sim/cocotb/`, phases 2 and 2b of `build_and_test.py`): every
+  suite runs on both languages, the Verilog under Icarus and the VHDL under
+  GHDL (`python sim/cocotb/run.py --hdl both`). The 53 suites include a port of
+  each of the 44 core Verilog testbenches, with the same DUT, parameters,
+  timing and checks, so both languages pass exactly the same tests. All 106
+  runs pass. Benches with several DUT instances use small wiring harnesses
+  (`sim/cocotb/hdl/`), each proven equivalent across the two languages
+  (`sim/parity/harness_*`). The ports never write a signal inside the design:
+  GHDL keeps a value written through its VPI for good. The two benches that
+  force internals are ported without the force:
+  - `ETH-STATS` forces a counter to test saturation. Its port builds
+    `eth_stats` with `STAT_CNT_W=3` and counts up to the maximum.
+  - `RGMII-LOOPBACK` forces `gmii_cdc`'s RX inputs. Its port loops the TX
+    stream back through the RGMII RX pins instead, which also covers
+    `rgmii_if`'s receive path.
+
+  See [sim/cocotb/README.md](../sim/cocotb/README.md).
+- **Verilog testbenches in xsim** (`sim/tb/`, phase 1c, needs Vivado): each
   core bench drives the VHDL DUT in Vivado xsim (mixed language, SIM target;
   `MII-RX-REPLAY-STRESS` uses XILINX_7SERIES with the bench's XPM models).
-  43 of the 44 core benches pass, covering every module including `mii_if`,
-  `eth_mac` and `eth_mac_sys` in MII, GMII and RGMII. Exceptions:
-  - `RGMII-LOOPBACK` runs on Verilog only: it forces `gmii_cdc` internals,
-    and xsim cannot write to a VHDL object from Verilog.
-  - `ETH-STATS` leaves out its counter-saturation test for the same reason
-    (`TB_NO_HIER_FORCE`). Saturation is proven formally instead.
+  43 of the 44 pass. `RGMII-LOOPBACK` runs on Verilog only, because xsim cannot
+  write to a VHDL object from Verilog, and `ETH-STATS` leaves out its
+  saturation test for the same reason (`TB_NO_HIER_FORCE`). xsim reads VHDL
+  internals through hierarchical references, but returns 0 for a bit-select
+  taken directly on one (`uut.vec[8]`); the benches read the whole vector into
+  a wire first.
 
-  xsim reads VHDL internals through hierarchical references, but returns 0
-  for a bit-select taken directly on one (`uut.vec[8]`). Benches read the
-  whole vector into a wire first.
-- **cocotb suites** (`sim/cocotb/`, phase 2b): run unchanged under GHDL
-  (`python sim/cocotb/run.py --hdl vhdl`). All 8 suites (39 tests, directed
-  and seeded random) pass on both languages.
-
-Not covered: the L3 add-ons (not ported), and the vendor DDR reruns on the
-Xilinx unisim models, which run on Verilog only.
+Not covered: the vendor DDR reruns on the Xilinx unisim models, which run on
+Verilog only.
 
 ## Translation conventions
 

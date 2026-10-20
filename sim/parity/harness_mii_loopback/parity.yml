@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: cocotb harness sim/cocotb/hdl/h_mii_loopback.v
+# (golden) vs sim/cocotb/hdl/h_mii_loopback.vhd, flattened with mii_if,
+# eth_mac_tx and eth_mac_rx.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/harness_mii_loopback/parity.yml --strict
+#
+# The harness is the DUT wiring of sim/tb/tb_mii_loopback.v (cocotb suite
+# mii_loopback). Every submodule is proven on its own in its
+# sim/parity/<module>/ directory; this proof covers the harness's own wiring
+# (the MII TX -> RX loop, the GMII nets, tie-offs) in composition, with the
+# stand-ins of sim/parity/eth_mac/parity.yml, identical on both sides:
+#   - async_fifo -> sim/parity/gmii_cdc/async_fifo_smallmem.{v,vhd}: the real
+#     FIFO with only the memory array clamped to 8 words.
+#   - mii_if -> sim/parity/mii_if/mii_if_smallram.{v,vhd}: the real files with
+#     the 4096x9 RX frame RAM cut to 8 words (the real RAM does not finish
+#     under yowasp-yosys).
+# Target: SIM on both sides.
+#
+# Config: the cocotb suite uses the defaults (TX_MAX_FRAME 9018,
+# AXIS_FIFO_ADDR_WIDTH 11); the proof runs TX_MAX_FRAME 1518 and the RX AXIS
+# FIFO cut from 11 to 3 address bits, as in sim/parity/eth_mac.
+version: 1
+name: harness_mii_loopback_parity
+description: h_mii_loopback cocotb harness, Verilog vs VHDL (flattened, MII loopback)
+
+golden:
+  language: verilog
+  top: h_mii_loopback
+  sources:
+    - ../defines/sim.vh
+    - ../../../rtl/crc32.v
+    - ../gmii_cdc/async_fifo_smallmem.v
+    - ../../../rtl/sync_fifo.v
+    - ../mii_if/mii_if_smallram.v
+    - ../../../rtl/net/csum_calc.v
+    - ../../../rtl/eth_mac_rx.v
+    - ../../../rtl/eth_mac_tx.v
+    - ../../cocotb/hdl/h_mii_loopback.v
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: h_mii_loopback
+  sources:
+    - ../../../rtl/vhdl/target/emz_target_sim.vhd
+    - ../../../rtl/vhdl/emz_util_pkg.vhd
+    - ../../../rtl/vhdl/crc32.vhd
+    - ../gmii_cdc/async_fifo_smallmem.vhd
+    - ../../../rtl/vhdl/sync_fifo.vhd
+    - ../mii_if/mii_if_smallram.vhd
+    - ../../../rtl/vhdl/csum_calc.vhd
+    - ../../../rtl/vhdl/eth_mac_rx.vhd
+    - ../../../rtl/vhdl/eth_mac_tx.vhd
+    - ../../cocotb/hdl/h_mii_loopback.vhd
+
+interface:
+  top: h_mii_loopback
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 4
+  modules:
+    - name: h_mii_loopback
+      param_sets:
+        - {TX_MAX_FRAME: 1518, AXIS_FIFO_ADDR_WIDTH: 3}
+
+synth:
+  enabled: true
+  tolerance_pct: 15.0
+  param_sets:
+    - {TX_MAX_FRAME: 1518, AXIS_FIFO_ADDR_WIDTH: 3}

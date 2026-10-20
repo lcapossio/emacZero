@@ -1,71 +1,161 @@
 # cocotb verification suite
 
-A directed **+** constrained-random verification layer for emacZero, written in
-Python with [cocotb](https://www.cocotb.org/). It runs **alongside** the existing
-hand-written Icarus testbenches in `sim/tb/` — it does not replace them.
+The emacZero simulation in Python with [cocotb](https://www.cocotb.org/). Every
+suite runs on both languages: on the Verilog RTL in `rtl/` under Icarus, and on
+the VHDL port in `rtl/vhdl/` under GHDL. The two get exactly the same tests;
+only the simulator and the source list change.
 
-## Why cocotb here
+There are two kinds of suite:
 
-The suite is deliberately **backend-agnostic**: testbenches drive the DUT through
-cocotb's language-neutral interface and sources are passed via `sources=`, so the
-*same* Python re-runs against a VHDL port under GHDL — only the simulator name and
-the RTL source files change. That is the point: the verification carries over to
-the VHDL port in `rtl/vhdl/`.
+- **Ports of the Verilog testbenches.** Each core bench in `sim/tb/` (the 44
+  core entries of `build_and_test.py`) has a cocotb twin that drives the same
+  DUT with the same parameters, clocks, stimulus timing and checks. The
+  Verilog benches stay and keep running on Icarus (phase 1) and, against the
+  VHDL, in Vivado xsim (phase 1c).
+- **Directed + constrained-random suites** with reference models
+  (`mii_tx_saf`, `eth_mac_rx*`, `gmii_cdc`, `csum_calc`, `tx_csum_off`),
+  described under [Randomized suites](#randomized-suites).
 
 ## Layout
 
 ```
 sim/cocotb/
-  lib/            reusable, DUT-independent building blocks
-    eth.py           Ethernet framing + FCS (matches the RTL conventions)
-    frame_gen.py     constrained-random frames (boundary-weighted) + merge/oversize
-    axis_driver.py   AXIS master with randomized tvalid bubbles + dropped-tlast
-    mii_monitor.py   MII nibble->byte, preamble/SFD strip, FCS check
-    model.py         mii_tx_saf commit/truncate/drop reference model + scoreboard
-    gmii_rx_driver.py  GMII input driver (preamble/SFD/FCS, FCS-corrupt, rx_er)
-    axis_sink.py     AXIS slave with backpressure; reassembles frames + terror
-    rx_model.py      eth_mac_rx filter/error/stats reference model + scoreboard
-    gmii_tx_driver.py  contiguous GMII byte frames on the sys-clock TX input
-    gmii_tx_monitor.py paced media-side monitor (byte-exact 1G; span->len 100M/10M)
-    gmii_rx_cdc_driver.py  raw-GMII media-side RX driver (rx_dv-delimited frames)
-    gmii_rx_cdc_monitor.py sys-side RX monitor (byte-exact; per-byte rx_er)
-    gmii_cdc_model.py  identity CDC reference model + scoreboard
-  tests/
-    test_mii_tx_saf.py       directed boundaries + seed-logged random (TX store-and-forward)
-    test_eth_mac_rx.py       filter/error/backpressure + seed-logged random (RX datapath)
-    test_eth_mac_rx_robust.py FIFO-overflow framing, runt, preamble rx_er, byte_cnt wrap
-    test_eth_mac_rx_mcast.py multicast hash filter (MCAST_HASH_FILTER=1 build)
-    test_gmii_cdc.py         TX+RX CDC across 1G/100M/10M + committed-counter burst probes
-  run.py          build + run entry point (SUITES table; Icarus or GHDL)
+  run.py          build + run entry point (finds the SUITES of every test module)
+  tests/          one test_<name>.py per bench or suite, each with its SUITES
+  hdl/            wiring harnesses, one .v + .vhd pair each (see below)
+  lib/            shared Python
+    bench.py         Checks (the benches' pass/fail counters) and VERSION
+    axil_master.py   AXI4-Lite master with the benches' axi_write/axi_read timing
+    hier.py          internal-signal lookup across Verilog and VHDL spellings
+    mac_sys_a.py, mac_sys_b.py, rgmii_tb.py, rx_loop.py, txpath_bench.py,
+    mii_bench.py     clocks, drivers and captures shared by a group of bench ports
+    eth.py, frame_gen.py, axis_*.py, gmii_*.py, mii_monitor.py, csum.py,
+    model.py, rx_model.py, gmii_cdc_model.py
+                     drivers, monitors and reference models of the random suites
   smoke/          toolchain smoke (cocotb + Icarus VPI sanity)
 ```
 
 ## Running
 
 ```bash
-# all suites
-python sim/cocotb/run.py
-
-# one suite
-python sim/cocotb/run.py --suite eth_mac_rx
-
-# reproduce a specific failure (seed is logged by every random test)
-python sim/cocotb/run.py --seed 2506875794
-
-# a single testcase, with waves
-python sim/cocotb/run.py --test random_heavy_bubble --waves
-
-# the same suites against the VHDL port (rtl/vhdl/) under GHDL
-python sim/cocotb/run.py --hdl vhdl
+python sim/cocotb/run.py --list                   # suite names
+python sim/cocotb/run.py                          # every suite, Verilog (Icarus)
+python sim/cocotb/run.py --hdl vhdl               # every suite, VHDL port (GHDL)
+python sim/cocotb/run.py --hdl both -j 8          # both, 8 simulations at a time
+python sim/cocotb/run.py --suite eth_mac_sys --hdl both
+python sim/cocotb/run.py --seed 2506875794        # replay a logged random seed
+python sim/cocotb/run.py --suite mii_tx_saf --test random_heavy_bubble --waves
 ```
 
-Requires `cocotb>=2.0` and Icarus Verilog on `PATH` (both already present on the
-dev bench). `--hdl vhdl` needs GHDL instead (tested: GHDL 4.1 in WSL, gcc
-backend). Both are wired into `build_and_test.py` as their own phases (2 and
-2b); phase 2b runs in WSL when GHDL is not on the Windows `PATH`. CI
-(`.github/workflows/sim.yml`) runs both.
+Requires `cocotb>=2.0` with Icarus Verilog for `--hdl verilog`, and GHDL
+(tested: 4.1) for `--hdl vhdl`. `build_and_test.py` runs every suite on both
+languages (phases 2 and 2b, all CPUs in parallel); phase 2b runs in WSL when
+GHDL is not on the Windows `PATH`. CI (`.github/workflows/sim.yml`) runs both.
+A full run of the 53 suites on both languages takes about 9 minutes at
+`-j 6`. `gmii_loopback` is the slowest: about 8 minutes on Icarus and 4 on
+GHDL, because a Python coroutine models its PHY on each of about 3 million
+clock edges.
 
-## Modules covered
+## Declaring a suite
+
+Each test module declares the suites it backs in a literal dict, which
+`run.py` reads without importing the module:
+
+```python
+SUITES = {
+    "eth_mac_sys_csum": {
+        "toplevel": "eth_mac_sys",
+        "sources": ["rtl/crc32.v", ..., "rtl/eth_mac_sys.v"],   # Verilog, in order
+        "params": {"PHY_INTERFACE": "MII", "TX_CSUM_OFFLOAD": 1},
+        "env": {"TB_TX_CSUM_OFFLOAD": "1"},                       # test-side variant
+    },
+}
+```
+
+The VHDL source list is derived: `rtl/**/<n>.v` maps to `rtl/vhdl/<n>.vhd`,
+any other `<dir>/<n>.v` to `<dir>/<n>.vhd`, and the target and utility packages
+come first. `"vhdl_sources"` overrides it, `"target"` picks the vendor target
+(default `SIM`), and `"skip_vhdl": "<reason>"` keeps a suite on Verilog only
+(no suite needs it today). The full format is in `run.py`'s docstring.
+
+## Ports of the Verilog testbenches
+
+Every port names its bench and `build_and_test.py` entry in its docstring and
+lists the checks in the bench's order. Rules the ports follow:
+
+- **Same DUT, parameters and timing.** Clock periods and phases are the
+  bench's, inputs are driven at the same point relative to the clock, and a
+  `-D` variant of a bench is its own suite (a parameter, a target or an `env`
+  switch). Outputs are read settled (`ReadOnly`) at the point the bench samples
+  them. Where the benches print a time or a count, the port reproduces it.
+- **No writes to internal signals.** GHDL's VPI keeps a value written to an
+  internal signal for good (a release has no effect), so the ports reach every
+  corner by stimulus or by a smaller parameter. Internal signals are only read,
+  through `lib/hier.py`.
+- **Harnesses only wire.** A bench with several DUT instances gets a harness in
+  `hdl/` in both languages that holds only the instances, the bench's nets and
+  its tie-offs. Each harness pair is formally proven equivalent with
+  translateHDL (`sim/parity/harness_*`). `hdl/xpm_*_model.vhd` are VHDL twins
+  of the bench's XPM simulation models, proven against them the same way
+  (`sim/parity/harness_xpm_models`).
+
+| `build_and_test.py` bench | Suite(s) | Top |
+| --- | --- | --- |
+| CRC32 | `crc32` | `crc32` |
+| ASYNC-FIFO, -BLOCK | `async_fifo`, `async_fifo_block` | `async_fifo` |
+| AXILITE-REGS | `axilite_regs` | `axilite_regs` |
+| MDIO-MASTER | `mdio_master` | `mdio_master` |
+| ETH-STATS | `eth_stats`, `eth_stats_sat` | `eth_stats` |
+| ETH-MAC-FCS | `eth_mac_fcs` | `eth_mac_tx` |
+| ETH-MAC-TX-PAD | `eth_mac_tx_pad` | `h_eth_mac_tx_pad` |
+| MII-TX-BRIDGE | `mii_tx_bridge` | `h_mii_tx_bridge` |
+| MII-TX-BURST-BACKPRESSURE | `mii_tx_burst_backpressure` | `h_mii_tx_bridge` |
+| MII-TX-SAF, -BURST-STALL, -OVERSIZE | `mii_tx_saf_tb`, `mii_tx_saf_burst_stall`, `mii_tx_saf_oversize` | `mii_tx_saf` |
+| TX-CSUM-OFF | `tx_csum_off_tb` | `tx_csum_off` |
+| MCAST-FILTER | `mcast_filter` | `h_eth_mac_rx_loop` |
+| ETH-MAC-RX-BACKPRESSURE | `eth_mac_rx_backpressure` | `h_eth_mac_rx_loop` |
+| ETH-MAC-RX-BYTE0 | `eth_mac_rx_byte0` | `h_eth_mac_rx_loop` |
+| ETH-MAC-RX-JUMBO-GATE | `eth_mac_rx_jumbo_gate` | `h_eth_mac_rx_jumbo_gate` |
+| ETH-MAC-SYS-JUMBO | `eth_mac_sys_jumbo` | `h_eth_mac_rx_loop` |
+| GMII-CDC | `gmii_cdc_loopback` | `gmii_cdc` |
+| GMII-CDC-RX-OVERFLOW, -DIST | `gmii_cdc_rx_overflow`, `gmii_cdc_rx_overflow_dist` | `gmii_cdc` |
+| GMII-CDC-100M, -10M | `gmii_cdc_100m`, `gmii_cdc_10m` | `gmii_cdc` |
+| RGMII-IF | `rgmii_if` | `h_rgmii_if` |
+| RGMII-IF-100M | `rgmii_if_100m` | `h_rgmii_if_100m` |
+| RGMII-IF-SPEED-SWITCH | `rgmii_if_speed_switch` | `h_rgmii_if_100m` |
+| RGMII-IF-VARIANTS | `rgmii_if_variants` | `h_rgmii_if_variants` |
+| ETH-MAC-MULTIFRAME | `eth_mac_multiframe` | `eth_mac` |
+| ETH-MAC-JUMBO | `eth_mac_jumbo` | `eth_mac` |
+| MII-STORE-FORWARD | `mii_store_forward` | `eth_mac` |
+| MII-LOOPBACK | `mii_loopback` | `h_mii_loopback` |
+| MII-RX-REPLAY-STRESS | `mii_rx_replay_stress` | `mii_if` (XILINX_7SERIES, XPM models) |
+| ETH-MAC-SYS | `eth_mac_sys` | `eth_mac_sys` |
+| ETH-MAC-SYS-CSUM, -BYPASS | `eth_mac_sys_csum`, `eth_mac_sys_csum_bypass` | `eth_mac_sys` |
+| ETH-MAC-SYS-CSUM-LOOP | `eth_mac_sys_csum_loop` | `eth_mac_sys` |
+| ETH-MAC-SYS-MAX-FRAME | `eth_mac_sys_max_frame` | `eth_mac_sys` |
+| ETH-MAC-SYS-PAUSE | `eth_mac_sys_pause` | `eth_mac_sys` |
+| RGMII-LOOPBACK | `rgmii_loopback` | `eth_mac_sys` |
+| RGMII-100M-LOOPBACK, -10M | `rgmii_10_100_loopback_100m`, `_10m` | `eth_mac_sys` |
+| GMII-LOOPBACK | `gmii_loopback` | `eth_mac_sys` |
+| GMII-RX-LINE-RATE | `gmii_rx_line_rate` | `eth_mac_sys` |
+
+Where a port differs from its bench, its docstring says so. The differences
+that change what is covered:
+
+- `eth_stats_sat`: the bench forces a counter to `0xFFFFFFFE` to test
+  saturation. The port builds `eth_stats` with `STAT_CNT_W=3` and counts up to
+  the maximum instead, so saturation is simulated on the VHDL too.
+- `rgmii_loopback`: the bench forces `gmii_cdc`'s RX inputs from its TX
+  outputs, bypassing `rgmii_if`'s receive path. The port loops the TX stream
+  back DDR-encoded on the RGMII RX pins, so the receive path is exercised as
+  well and the frames arrive two cycles later (the bench does not check
+  latency).
+- The benches use no `$random`, so no seeds differ.
+- `gmii_rx_line_rate` has a `GMII_RX_SLOW_SYS` variant that is expected to
+  fail (as in the bench, which has no `build_and_test.py` entry for it).
+  Run it by hand with `GMII_RX_SLOW_SYS=1` in the environment.
+
+## Randomized suites
 
 ### `eth_mac_rx` (RX datapath)
 
@@ -151,7 +241,11 @@ frame after the first; hard-wiring `gmii_tx_er_out` to 0 fails the error
 passthrough; closing out the paced frame one cycle early shortens the last
 byte's span from `len*period` to `(len-1)*period+1`.
 
-## Adding a module
+## Adding a suite
 
-Reuse `lib/` and add `tests/test_<module>.py` plus a build target in `run.py`
-(or a second runner). Keep DUT-specific reference models in `lib/model.py`.
+Add `tests/test_<name>.py` with a `SUITES` dict and the tests; `run.py` finds
+it. Reuse `lib/` (`bench.Checks`, `axil_master`, the drivers and monitors), keep
+DUT-specific reference models in `lib/`, and read internals only through
+`lib/hier.py`. Run it on both languages (`--hdl both`) before committing.
+A new harness in `hdl/` needs both languages and a proof in
+`sim/parity/harness_<name>/`.
