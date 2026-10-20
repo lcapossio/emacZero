@@ -23,6 +23,16 @@ from lib.csum import (Packet, random_packet, pad60, force_zero_l4_csum,
                       UDP, TCP, ICMP, ICMPV6, TPID_8021Q, LSRR)
 from lib.gmii_rx_driver import GmiiRxDriver
 
+
+# Suites this module backs (read by run.py; see its docstring).
+SUITES = {
+    "eth_mac_rx_csum": {
+        "toplevel": "eth_mac_rx",
+        "sources": ["rtl/crc32.v", "rtl/sync_fifo.v", "rtl/net/csum_calc.v", "rtl/eth_mac_rx.v"],
+        "params": {"MAX_FRAME_STD": 1518, "RX_CSUM_OFFLOAD": 1},
+    },
+}
+
 N_RANDOM = int(os.environ.get("CSUM_N_RANDOM", "300"))
 OUR_MAC = 0x020000000001          # lib/csum.py frames are sent to this address
 

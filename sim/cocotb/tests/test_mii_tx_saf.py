@@ -18,6 +18,17 @@ from lib.mii_monitor import MiiMonitor
 from lib.model import saf_expected, Scoreboard
 from lib import frame_gen
 
+
+# Suites this module backs (read by run.py; see its docstring).
+SUITES = {
+    "mii_tx_saf": {
+        "toplevel": "mii_tx_saf",
+        "sources": ["rtl/async_fifo.v", "rtl/mii_tx_saf.v"],
+        "params": {"MAX_FRAME": 1518, "FIFO_ADDR_WIDTH": 12},
+        "env": {"SAF_MAX_FRAME": "1518", "SAF_FIFO_ADDR_WIDTH": "12"},
+    },
+}
+
 MAX_FRAME = int(os.environ.get("SAF_MAX_FRAME", "1518"))
 FIFO_BYTES = 1 << int(os.environ.get("SAF_FIFO_ADDR_WIDTH", "12"))
 SYS_PERIOD_NS = 10     # 100 MHz AXIS/write clock

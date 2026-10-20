@@ -20,6 +20,16 @@ from lib.axis_driver import AxisMaster
 from lib.csum import (Packet, random_packet, force_zero_l4_csum, csum, ones_sum,
                       UDP, TCP, ICMP, ICMPV6, TPID_8021AD, LSRR)
 
+
+# Suites this module backs (read by run.py; see its docstring).
+SUITES = {
+    "tx_csum_off": {
+        "toplevel": "tx_csum_off",
+        "sources": ["rtl/sync_fifo.v", "rtl/net/csum_calc.v", "rtl/net/tx_csum_off.v"],
+        "params": {"MAX_FRAME": 600},
+    },
+}
+
 N_RANDOM = int(os.environ.get("CSUM_N_RANDOM", "300"))
 MAX_FRAME = 600          # matches the run.py parameter
 

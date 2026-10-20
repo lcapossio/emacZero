@@ -18,6 +18,17 @@ from lib.gmii_rx_driver import GmiiRxDriver
 from lib.axis_sink import AxisSink
 import random
 
+
+# Suites this module backs (read by run.py; see its docstring).
+SUITES = {
+    "eth_mac_rx_mcast": {
+        "toplevel": "eth_mac_rx",
+        "sources": ["rtl/crc32.v", "rtl/sync_fifo.v", "rtl/eth_mac_rx.v"],
+        "params": {"MAX_FRAME_STD": 1518, "MCAST_HASH_FILTER": 1},
+        "env": {"RX_MAX_FRAME_STD": "1518"},
+    },
+}
+
 CLK_NS = 10
 OUR_MAC = 0x020000000001
 SRC = 0x0A0B0C0D0E0F

@@ -20,6 +20,17 @@ from lib.gmii_rx_driver import GmiiRxDriver
 from lib.rx_model import StatsMonitor
 from lib.eth import PREAMBLE_LEN
 
+
+# Suites this module backs (read by run.py; see its docstring).
+SUITES = {
+    "eth_mac_rx_robust": {
+        "toplevel": "eth_mac_rx",
+        "sources": ["rtl/crc32.v", "rtl/sync_fifo.v", "rtl/eth_mac_rx.v"],
+        "params": {"MAX_FRAME_STD": 1518},
+        "env": {"RX_MAX_FRAME_STD": "1518"},
+    },
+}
+
 CLK_NS = 10
 OUR_MAC = 0x020000000001
 
