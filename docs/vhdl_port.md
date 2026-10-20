@@ -60,8 +60,9 @@ generate-scope pairing, and checks the base case of every induction proof
 from the initial state. Point `YOSYS`/`GHDL` at the binaries if they are not
 on `PATH` under those names.
 
-With GHDL 6.0.0 on Windows, `eth_mac` leaves 22 `$equiv` cells unproven (the
-same with older translateHDL); it proves with GHDL 4.1.
+With GHDL 6.0.0 on Windows, `eth_mac`, `eth_mac_rx`, `eth_mac_sys` and
+`tx_csum_off` leave `$equiv` cells unproven (the
+same with older translateHDL); they prove with GHDL 4.1.
 
 ```sh
 python <translateHDL>/skills/translate-hdl/scripts/parity.py sim/parity/<module>/parity.yml --strict
