@@ -54,7 +54,9 @@ def main() -> int:
 
     if not args.translatehdl:
         ap.error("give --translatehdl or set $TRANSLATEHDL")
-    parity = Path(args.translatehdl) / "skills" / "translate-hdl" / "scripts" / "parity.py"
+    # Resolved here: each manifest runs from its own directory.
+    parity = (Path(args.translatehdl).resolve() / "skills" / "translate-hdl" / "scripts"
+              / "parity.py")
     if not parity.is_file():
         ap.error(f"{parity} not found")
     names = args.module or modules()
