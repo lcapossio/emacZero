@@ -58,11 +58,13 @@ jobs:
           ref: ${{ env.TRANSLATEHDL_REF }}
           path: .translatehdl
 
-      - name: Install GHDL
+      - name: Install GHDL and Icarus
+        # Icarus lints the Verilog side (L1); --strict fails a skipped layer.
         run: |
           sudo apt-get update
-          sudo apt-get install -y ghdl
+          sudo apt-get install -y ghdl iverilog
           ghdl --version | head -1
+          iverilog -V 2>&1 | head -1
 
       - uses: actions/setup-python@v5
         with:
