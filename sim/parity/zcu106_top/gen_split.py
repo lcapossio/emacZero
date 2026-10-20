@@ -16,17 +16,26 @@ split into plain ports:
 Why: translateHDL's L2 does not model inout ports (it SKIPs), and a 'Z'
 driven output is no evidence either, since the solver folds 'Z' to a
 constant on both sides (`c ? 'Z' : '0'` "proves" equal to `d ? 'Z' : '0'`).
+
+The models also bring the fcapz EIO's probe_in vector out on an extra output,
+PARITY_PROBE_IN (256 bits, 608 in the ZCU106_SFP1_LB build), so L2 compares
+every probe bit directly. The EIO has no clock, so its stand-in can only fold
+the probe onto its 8 or 16 outputs, where two wrong probe bits can cancel;
+through this port they cannot. In the Verilog the probe is an inline
+concatenation, which is moved into `assign PARITY_PROBE_IN = {...};`.
+
 Everything else is copied verbatim, so L2 on these models covers all of the
 top except the two tri-state drivers, which this script checks are the same
 expression on both sides (each edit must match exactly once, so a change to
-the I2C pin code in any source stops this script instead of producing a
-stale model). L0, L1 and L4 run on the real tops.
+the edited code in any source stops this script instead of producing a stale
+model). L0, L1 and L4 run on the real tops.
 
     python sim/parity/zcu106_top/gen_split.py           # write the models
     python sim/parity/zcu106_top/gen_split.py --check   # exit 1 if out of date
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -39,7 +48,12 @@ V_EDITS = [
      "    inout  wire       IIC_SDA,\n",
      "    output wire       IIC_SCL_t,          // parity split: scl_t\n"
      "    output wire       IIC_SDA_t,          // parity split: sda_t\n"
-     "    input  wire       IIC_SDA_i,          // parity split: the pin as read\n"),
+     "    input  wire       IIC_SDA_i,          // parity split: the pin as read\n"
+     "`ifdef ZCU106_SFP1_LB\n"
+     "    output wire [607:0] PARITY_PROBE_IN,  // parity split: EIO probe_in\n"
+     "`else\n"
+     "    output wire [255:0] PARITY_PROBE_IN,  // parity split: EIO probe_in\n"
+     "`endif\n"),
     ("    assign IIC_SCL = scl_t ? 1'bz : 1'b0;\n"
      "    assign IIC_SDA = sda_t ? 1'bz : 1'b0;\n",
      "    assign IIC_SCL_t = scl_t;\n"
@@ -47,29 +61,56 @@ V_EDITS = [
     ("        .sda_i      (IIC_SDA),", "        .sda_i      (IIC_SDA_i),"),
 ]
 
-VHDL_EDITS = [
-    ("entity zcu106_top is", "entity zcu106_top_split is"),
-    ("end entity zcu106_top;", "end entity zcu106_top_split;"),
-    ("architecture rtl of zcu106_top is", "architecture rtl of zcu106_top_split is"),
-    ("        IIC_SCL             : out   std_logic;  -- open drain (no clock stretching)\n"
-     "        IIC_SDA             : inout std_logic;\n",
-     "        IIC_SCL_t           : out   std_logic;  -- parity split: scl_t\n"
-     "        IIC_SDA_t           : out   std_logic;  -- parity split: sda_t\n"
-     "        IIC_SDA_i           : in    std_logic;  -- parity split: the pin as read\n"),
-    ("    IIC_SCL <= 'Z' when scl_t = '1' else '0';\n"
-     "    IIC_SDA <= 'Z' when sda_t = '1' else '0';\n",
-     "    IIC_SCL_t <= scl_t;\n"
-     "    IIC_SDA_t <= sda_t;\n"),
-    ("                sda_i      => IIC_SDA,", "                sda_i      => IIC_SDA_i,"),
-]
+
+def vhdl_edits(probe_w: int, probe: str, inst: str) -> list:
+    """The I2C split and the EIO probe port, for one VHDL top."""
+    return [
+        ("entity zcu106_top is", "entity zcu106_top_split is"),
+        ("end entity zcu106_top;", "end entity zcu106_top_split;"),
+        ("architecture rtl of zcu106_top is", "architecture rtl of zcu106_top_split is"),
+        ("        IIC_SCL             : out   std_logic;  -- open drain (no clock stretching)\n"
+         "        IIC_SDA             : inout std_logic;\n",
+         "        IIC_SCL_t           : out   std_logic;  -- parity split: scl_t\n"
+         "        IIC_SDA_t           : out   std_logic;  -- parity split: sda_t\n"
+         "        IIC_SDA_i           : in    std_logic;  -- parity split: the pin as read\n"
+         f"        PARITY_PROBE_IN     : out   std_logic_vector({probe_w - 1} downto 0);"
+         "  -- parity split: EIO probe_in\n"),
+        ("    IIC_SCL <= 'Z' when scl_t = '1' else '0';\n"
+         "    IIC_SDA <= 'Z' when sda_t = '1' else '0';\n",
+         "    IIC_SCL_t <= scl_t;\n"
+         "    IIC_SDA_t <= sda_t;\n"),
+        ("                sda_i      => IIC_SDA,", "                sda_i      => IIC_SDA_i,"),
+        (f"    {inst} : fcapz_eio_xilinxus\n",
+         f"    PARITY_PROBE_IN <= {probe};\n    {inst} : fcapz_eio_xilinxus\n"),
+    ]
+
+
+PROBE_V = re.compile(r"\.probe_in  \((\{[^;]*?\})\),")
+
+
+def lift_probes_v(src: str) -> str:
+    """Move each inline EIO probe concatenation into an assign to PARITY_PROBE_IN."""
+    found = list(PROBE_V.finditer(src))
+    if len(found) != 2:
+        raise SystemExit("fpga/zcu106/rtl/zcu106_top.v: expected two EIO probe_in "
+                         f"concatenations, found {len(found)}; update gen_split.py")
+    for m in reversed(found):
+        inst = src.rfind("    fcapz_eio_xilinxus #(", 0, m.start())
+        if inst < 0:
+            raise SystemExit("fpga/zcu106/rtl/zcu106_top.v: probe_in outside an EIO instance")
+        expr = " ".join(m.group(1).split())
+        src = (src[:inst] + f"    assign PARITY_PROBE_IN = {expr};\n" + src[inst:m.start()]
+               + ".probe_in  (PARITY_PROBE_IN)," + src[m.end():])
+    return src
+
 
 MODELS = [
     {"src": "fpga/zcu106/rtl/zcu106_top.v", "dst": "zcu106_top_split.v",
-     "comment": "//", "edits": V_EDITS},
+     "comment": "//", "edits": V_EDITS, "post": lift_probes_v},
     {"src": "fpga/zcu106/rtl/zcu106_top.vhd", "dst": "zcu106_top_split.vhd",
-     "comment": "--", "edits": VHDL_EDITS},
+     "comment": "--", "edits": vhdl_edits(256, "cnt_probe_in", "u_cnt_eio")},
     {"src": "fpga/zcu106/rtl/zcu106_top_lb.vhd", "dst": "zcu106_top_lb_split.vhd",
-     "comment": "--", "edits": VHDL_EDITS},
+     "comment": "--", "edits": vhdl_edits(608, "lb_probe_in", "u_eio")},
 ]
 
 
@@ -81,12 +122,15 @@ def render(model: dict) -> str:
             raise SystemExit(f"{model['src']}: expected one '{old.strip()}', found {n}; "
                              "update the edits in gen_split.py")
         src = src.replace(old, new)
+    if "post" in model:
+        src = model["post"](src)
     c = model["comment"]
     header = [
         f"{c} PARITY MODEL ONLY - not for synthesis. GENERATED from",
         f"{c} {model['src']} by sim/parity/zcu106_top/gen_split.py; do not edit.",
         f"{c} Renamed to zcu106_top_split, with the open-drain I2C pins split into",
-        f"{c} IIC_SCL_t, IIC_SDA_t and IIC_SDA_i. Everything else is the source verbatim.",
+        f"{c} IIC_SCL_t, IIC_SDA_t and IIC_SDA_i, and the EIO probe_in brought out on",
+        f"{c} PARITY_PROBE_IN. Everything else is the source verbatim.",
     ]
     lines = src.splitlines(keepends=True)
     # Keep the SPDX and copyright lines first.

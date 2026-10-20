@@ -7,11 +7,26 @@
 // Vivado XPM library; xpm_macros.vhd is the line-for-line VHDL twin read on
 // the candidate side (same state names, so the proof pairs it). Parameters and
 // ports match Vivado's xpm_VCOMP.vhd, so the proof checks every connection the
-// design makes and every parameter value listed as "modelled" below.
+// design makes and every parameter value it passes.
 //
 // NOT the vendor models, and NOT cycle-accurate to them. The proof that uses
 // them shows the Verilog and VHDL designs are equivalent *given the same
 // macro behaviour*; it says nothing about the real macro.
+//
+// Every parameter is checked by value, modelled or not: each macro builds a
+// constant fingerprint GEN_FP of all its parameters, one field each (an
+// integer as 32 bits, a string as the 8-bit codes of its last FP_SN = 24
+// characters), zero-padded to a power of two. A free-running counter fp_idx
+// on the read clock selects one fingerprint bit per edge, XORed into dout[0] /
+// doutb[0]. If a parameter differs between the two sides, the two outputs
+// differ at the fp_idx of a differing bit, so the proof fails. The one limit:
+// two strings that end in the same 24 characters alias. fp_idx has no reset,
+// so it pairs by name and starts free, and the data seen downstream has
+// bit 0 scrambled by the fingerprint (the same scrambling on both sides).
+//
+// Behaviour is modelled only for the parameters listed below. For the rest,
+// any value behaves the same here, so the proof checks that the two sides
+// pass the same value and says nothing about what that value does.
 //
 // xpm_fifo_async - modelled: FIFO_WRITE_DEPTH (occupancy width, full),
 //   READ_MODE ("fwft" with the one-cycle data_valid bubble after each pop of
@@ -21,17 +36,18 @@
 //   occupancy) and USE_ADV_FEATURES (each optional output is 0 unless its
 //   feature bit is set). Storage is only 4 words (addressed by the low two
 //   pointer bits, so data aliases past 4 words) to keep the proof small.
-//   Occupancy is one combinational count across both clocks. Not modelled:
-//   FIFO_READ_LATENCY, FIFO_MEMORY_TYPE, CASCADE_HEIGHT, RELATED_CLOCKS,
-//   ECC (inject*/sbiterr/dbiterr are 0), SIM_ASSERT_CHK, EN_SIM_ASSERT_ERR,
-//   WAKEUP_TIME / sleep.
+//   Occupancy is one combinational count across both clocks. Value checked
+//   only (no behaviour): FIFO_READ_LATENCY, FIFO_MEMORY_TYPE, CASCADE_HEIGHT,
+//   RELATED_CLOCKS, ECC_MODE (inject*/sbiterr/dbiterr are 0), SIM_ASSERT_CHK,
+//   EN_SIM_ASSERT_ERR, WAKEUP_TIME (sleep is ignored).
 // xpm_memory_sdpram - modelled: MEMORY_SIZE / WRITE_DATA_WIDTH_A (depth:
 //   writes at or past it are dropped; storage itself is only 8 words, indexed
 //   by the low three address bits, so data aliases past 8 words),
 //   port widths, CLOCKING_MODE (read port on clka for "common_clock"),
-//   READ_LATENCY_B (1, or 2 with regceb on the second stage), READ_RESET_VALUE_B
-//   (rstb), WRITE_MODE_B ("read_first", "write_first", else no_change), wea
-//   bit 0 as the write enable. Not modelled: everything else (ECC, init,
+//   READ_LATENCY_B (1, or 2 with regceb on the second stage; 0 behaves as 1
+//   and 3 or more as 2), READ_RESET_VALUE_B (rstb), WRITE_MODE_B
+//   ("read_first", "write_first", else no_change), wea bit 0 as the write
+//   enable. Value checked only (no behaviour): everything else (ECC, init,
 //   sleep, primitive and optimisation hints, RST_MODE_*).
 // Verilog 2001
 // =============================================================================
@@ -118,6 +134,7 @@ module xpm_fifo_async #(
     localparam [15:0]  ADV  = hex16(USE_ADV_FEATURES);
     localparam         FWFT = (READ_MODE == "fwft") || (READ_MODE == "FWFT");
     localparam [READ_DATA_WIDTH-1:0] DOUT_RST = hex16(DOUT_RESET_VALUE);
+    localparam integer FP_SN = 24;   // string characters fingerprinted
 
     reg  [CW-1:0]               wr_cnt;        // words written (wr_clk)
     reg  [CW-1:0]               rd_cnt;        // words popped (rd_clk)
@@ -207,7 +224,59 @@ module xpm_fifo_async #(
         end
     end
 
-    assign dout          = dout_r;
+    // Parameter fingerprint (see the header): every parameter in its own field,
+    // first parameter in the low bits, zero-padded to 2**11 bits and read out
+    // one bit per rd_clk edge by the free-running fp_idx into dout[0].
+    localparam [8*FP_SN-1:0]  S_FIFO_MEMORY_TYPE = FIFO_MEMORY_TYPE;
+    localparam [31:0]         I_FIFO_WRITE_DEPTH = FIFO_WRITE_DEPTH;
+    localparam [31:0]         I_CASCADE_HEIGHT = CASCADE_HEIGHT;
+    localparam [31:0]         I_RELATED_CLOCKS = RELATED_CLOCKS;
+    localparam [31:0]         I_WRITE_DATA_WIDTH = WRITE_DATA_WIDTH;
+    localparam [8*FP_SN-1:0]  S_READ_MODE = READ_MODE;
+    localparam [31:0]         I_FIFO_READ_LATENCY = FIFO_READ_LATENCY;
+    localparam [31:0]         I_FULL_RESET_VALUE = FULL_RESET_VALUE;
+    localparam [8*FP_SN-1:0]  S_USE_ADV_FEATURES = USE_ADV_FEATURES;
+    localparam [31:0]         I_READ_DATA_WIDTH = READ_DATA_WIDTH;
+    localparam [31:0]         I_CDC_SYNC_STAGES = CDC_SYNC_STAGES;
+    localparam [31:0]         I_WR_DATA_COUNT_WIDTH = WR_DATA_COUNT_WIDTH;
+    localparam [31:0]         I_PROG_FULL_THRESH = PROG_FULL_THRESH;
+    localparam [31:0]         I_RD_DATA_COUNT_WIDTH = RD_DATA_COUNT_WIDTH;
+    localparam [31:0]         I_PROG_EMPTY_THRESH = PROG_EMPTY_THRESH;
+    localparam [8*FP_SN-1:0]  S_DOUT_RESET_VALUE = DOUT_RESET_VALUE;
+    localparam [8*FP_SN-1:0]  S_ECC_MODE = ECC_MODE;
+    localparam [31:0]         I_SIM_ASSERT_CHK = SIM_ASSERT_CHK;
+    localparam [8*FP_SN-1:0]  S_EN_SIM_ASSERT_ERR = EN_SIM_ASSERT_ERR;
+    localparam [31:0]         I_WAKEUP_TIME = WAKEUP_TIME;
+    localparam [2047:0] GEN_FP = {
+        I_WAKEUP_TIME,
+        S_EN_SIM_ASSERT_ERR,
+        I_SIM_ASSERT_CHK,
+        S_ECC_MODE,
+        S_DOUT_RESET_VALUE,
+        I_PROG_EMPTY_THRESH,
+        I_RD_DATA_COUNT_WIDTH,
+        I_PROG_FULL_THRESH,
+        I_WR_DATA_COUNT_WIDTH,
+        I_CDC_SYNC_STAGES,
+        I_READ_DATA_WIDTH,
+        S_USE_ADV_FEATURES,
+        I_FULL_RESET_VALUE,
+        I_FIFO_READ_LATENCY,
+        S_READ_MODE,
+        I_WRITE_DATA_WIDTH,
+        I_RELATED_CLOCKS,
+        I_CASCADE_HEIGHT,
+        I_FIFO_WRITE_DEPTH,
+        S_FIFO_MEMORY_TYPE};
+
+    reg  [10:0] fp_idx;
+    wire [2047:0] fp_sh = GEN_FP >> fp_idx;
+    always @(posedge rd_clk)
+        fp_idx <= fp_idx + 11'd1;
+    wire        fp_bit = fp_sh[0];
+    wire [READ_DATA_WIDTH-1:0] fp_mask = fp_bit;
+
+    assign dout          = dout_r ^ fp_mask;
     assign wr_rst_busy   = wr_busy;
     assign rd_rst_busy   = rd_busy;
     assign overflow      = ADV[0]  & ovf_r;
@@ -301,6 +370,7 @@ module xpm_memory_sdpram #(
     localparam RD_FIRST = (WRITE_MODE_B == "read_first");
     localparam WR_FIRST = (WRITE_MODE_B == "write_first");
     localparam NO_CHG   = !RD_FIRST && !WR_FIRST;
+    localparam integer FP_SN = 24;   // string characters fingerprinted
 
     reg [WRITE_DATA_WIDTH_A-1:0] mem [0:(1<<SAW)-1];
     reg [READ_DATA_WIDTH_B-1:0]  doutb_r;
@@ -334,7 +404,80 @@ module xpm_memory_sdpram #(
             doutb_r2 <= doutb_r;
     end
 
-    assign doutb    = (READ_LATENCY_B >= 2) ? doutb_r2 : doutb_r;
+    // Parameter fingerprint (see the header): every parameter in its own field,
+    // first parameter in the low bits, zero-padded to 2**12 bits and read out
+    // one bit per rd_clk edge by the free-running fp_idx into doutb[0].
+    localparam [31:0]         I_MEMORY_SIZE = MEMORY_SIZE;
+    localparam [8*FP_SN-1:0]  S_MEMORY_PRIMITIVE = MEMORY_PRIMITIVE;
+    localparam [8*FP_SN-1:0]  S_CLOCKING_MODE = CLOCKING_MODE;
+    localparam [8*FP_SN-1:0]  S_ECC_MODE = ECC_MODE;
+    localparam [8*FP_SN-1:0]  S_ECC_TYPE = ECC_TYPE;
+    localparam [8*FP_SN-1:0]  S_ECC_BIT_RANGE = ECC_BIT_RANGE;
+    localparam [8*FP_SN-1:0]  S_MEMORY_INIT_FILE = MEMORY_INIT_FILE;
+    localparam [8*FP_SN-1:0]  S_MEMORY_INIT_PARAM = MEMORY_INIT_PARAM;
+    localparam [31:0]         I_USE_MEM_INIT = USE_MEM_INIT;
+    localparam [31:0]         I_USE_MEM_INIT_MMI = USE_MEM_INIT_MMI;
+    localparam [8*FP_SN-1:0]  S_WAKEUP_TIME = WAKEUP_TIME;
+    localparam [31:0]         I_AUTO_SLEEP_TIME = AUTO_SLEEP_TIME;
+    localparam [31:0]         I_MESSAGE_CONTROL = MESSAGE_CONTROL;
+    localparam [31:0]         I_USE_EMBEDDED_CONSTRAINT = USE_EMBEDDED_CONSTRAINT;
+    localparam [8*FP_SN-1:0]  S_MEMORY_OPTIMIZATION = MEMORY_OPTIMIZATION;
+    localparam [31:0]         I_CASCADE_HEIGHT = CASCADE_HEIGHT;
+    localparam [31:0]         I_SIM_ASSERT_CHK = SIM_ASSERT_CHK;
+    localparam [31:0]         I_WRITE_PROTECT = WRITE_PROTECT;
+    localparam [8*FP_SN-1:0]  S_RAM_DECOMP = RAM_DECOMP;
+    localparam [31:0]         I_IGNORE_INIT_SYNTH = IGNORE_INIT_SYNTH;
+    localparam [31:0]         I_WRITE_DATA_WIDTH_A = WRITE_DATA_WIDTH_A;
+    localparam [31:0]         I_BYTE_WRITE_WIDTH_A = BYTE_WRITE_WIDTH_A;
+    localparam [31:0]         I_ADDR_WIDTH_A = ADDR_WIDTH_A;
+    localparam [8*FP_SN-1:0]  S_RST_MODE_A = RST_MODE_A;
+    localparam [31:0]         I_READ_DATA_WIDTH_B = READ_DATA_WIDTH_B;
+    localparam [31:0]         I_ADDR_WIDTH_B = ADDR_WIDTH_B;
+    localparam [8*FP_SN-1:0]  S_READ_RESET_VALUE_B = READ_RESET_VALUE_B;
+    localparam [31:0]         I_READ_LATENCY_B = READ_LATENCY_B;
+    localparam [8*FP_SN-1:0]  S_WRITE_MODE_B = WRITE_MODE_B;
+    localparam [8*FP_SN-1:0]  S_RST_MODE_B = RST_MODE_B;
+    localparam [4095:0] GEN_FP = {
+        S_RST_MODE_B,
+        S_WRITE_MODE_B,
+        I_READ_LATENCY_B,
+        S_READ_RESET_VALUE_B,
+        I_ADDR_WIDTH_B,
+        I_READ_DATA_WIDTH_B,
+        S_RST_MODE_A,
+        I_ADDR_WIDTH_A,
+        I_BYTE_WRITE_WIDTH_A,
+        I_WRITE_DATA_WIDTH_A,
+        I_IGNORE_INIT_SYNTH,
+        S_RAM_DECOMP,
+        I_WRITE_PROTECT,
+        I_SIM_ASSERT_CHK,
+        I_CASCADE_HEIGHT,
+        S_MEMORY_OPTIMIZATION,
+        I_USE_EMBEDDED_CONSTRAINT,
+        I_MESSAGE_CONTROL,
+        I_AUTO_SLEEP_TIME,
+        S_WAKEUP_TIME,
+        I_USE_MEM_INIT_MMI,
+        I_USE_MEM_INIT,
+        S_MEMORY_INIT_PARAM,
+        S_MEMORY_INIT_FILE,
+        S_ECC_BIT_RANGE,
+        S_ECC_TYPE,
+        S_ECC_MODE,
+        S_CLOCKING_MODE,
+        S_MEMORY_PRIMITIVE,
+        I_MEMORY_SIZE};
+
+    reg  [11:0] fp_idx;
+    wire [4095:0] fp_sh = GEN_FP >> fp_idx;
+    always @(posedge rd_clk)
+        fp_idx <= fp_idx + 12'd1;
+    wire        fp_bit = fp_sh[0];
+    wire [READ_DATA_WIDTH_B-1:0] fp_mask = fp_bit;
+
+    wire [READ_DATA_WIDTH_B-1:0] doutb_sel = (READ_LATENCY_B >= 2) ? doutb_r2 : doutb_r;
+    assign doutb    = doutb_sel ^ fp_mask;
     assign sbiterrb = 1'b0;
     assign dbiterrb = 1'b0;
 

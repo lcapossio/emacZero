@@ -26,12 +26,13 @@
 // The fingerprint gives every generic its own full-width field (strings one
 // bit per legal value), and the inputs are XORed in at bit positions above it,
 // so two generic values never cancel, neither against each other nor against
-// an input (a wrong generic plus an inverted control pin). Clock outputs of the
-// PCS/PMA cores are distinct combinational functions of the GT reference
-// clock pins; BUFGCE_DIV's output is a register bit clocked by its input, so
-// the divided clock is a different clock from the one it divides and logic
-// moved between the two domains diverges. The fcapz EIO has no clock port:
-// its stand-in is combinational, see its comment.
+// an input (a wrong generic plus an inverted control pin). Every clock a
+// stand-in puts out (the PCS/PMA cores' five, BUFGCE_DIV's) is a register bit
+// clocked by its input clock, so it is a different clock from that input and
+// from any function of the pins, and logic moved between domains diverges.
+// The fcapz EIO has no clock port: its stand-in is combinational and lossy
+// (see its comment), so the split tops also bring its probe_in out on
+// PARITY_PROBE_IN (gen_split.py), where every probe bit is compared.
 // =============================================================================
 
 // ---- unisim -----------------------------------------------------------------
@@ -127,11 +128,16 @@ module pcs_pma_1000basex (
     output wire        gtpowergood,
     input  wire        signal_detect
 );
-    assign gtrefclk_out   = gtrefclk_p & gtrefclk_n;
-    assign userclk_out    = gtrefclk_p | gtrefclk_n;
-    assign userclk2_out   = gtrefclk_p ^ gtrefclk_n;
-    assign rxuserclk_out  = gtrefclk_p & ~gtrefclk_n;
-    assign rxuserclk2_out = ~gtrefclk_p & gtrefclk_n;
+    // The five output clocks are bits of a register on the reference clock
+    // (gtrefclk_n XORed in above them), not functions of the pins, so the top
+    // cannot rebuild one of them from the pins and get the same clock.
+    reg  [5:0] ck;
+    always @(posedge gtrefclk_p) ck <= {ck[4:0], ck[5]} ^ {gtrefclk_n, 5'd0};
+    assign gtrefclk_out   = ck[0];
+    assign userclk_out    = ck[1];
+    assign userclk2_out   = ck[2];
+    assign rxuserclk_out  = ck[3];
+    assign rxuserclk2_out = ck[4];
 
     reg  [35:0] st;
     wire [35:0] din = {rxp, rxn, gmii_txd, gmii_tx_en, gmii_tx_er, configuration_vector,

@@ -3,7 +3,8 @@
 // PARITY MODEL ONLY - not for synthesis. GENERATED from
 // fpga/zcu106/rtl/zcu106_top.v by sim/parity/zcu106_top/gen_split.py; do not edit.
 // Renamed to zcu106_top_split, with the open-drain I2C pins split into
-// IIC_SCL_t, IIC_SDA_t and IIC_SDA_i. Everything else is the source verbatim.
+// IIC_SCL_t, IIC_SDA_t and IIC_SDA_i, and the EIO probe_in brought out on
+// PARITY_PROBE_IN. Everything else is the source verbatim.
 // =============================================================================
 // zcu106_top.v - emacZero over SFP (1000BASE-X) on the AMD ZCU106
 //
@@ -78,6 +79,11 @@ module zcu106_top_split #(
     output wire       IIC_SCL_t,          // parity split: scl_t
     output wire       IIC_SDA_t,          // parity split: sda_t
     input  wire       IIC_SDA_i,          // parity split: the pin as read
+`ifdef ZCU106_SFP1_LB
+    output wire [607:0] PARITY_PROBE_IN,  // parity split: EIO probe_in
+`else
+    output wire [255:0] PARITY_PROBE_IN,  // parity split: EIO probe_in
+`endif
 
     input  wire       DIP_AN_DISABLE,
     output wire [7:0] LED
@@ -436,14 +442,13 @@ module zcu106_top_split #(
         end
     end
 
+    assign PARITY_PROBE_IN = {12'h107, 4'd1, demo_blast_frames, rx_er_events, notintable_cycles, disperr_cycles, rudi_inv_events, sync_losses, link_downs, pcs_status};
     fcapz_eio_xilinxus #(
         .IN_W  (256),
         .OUT_W (8),
         .CHAIN (3)
     ) u_cnt_eio (
-        .probe_in  ({12'h107, 4'd1, demo_blast_frames, rx_er_events,
-                     notintable_cycles, disperr_cycles, rudi_inv_events,
-                     sync_losses, link_downs, pcs_status}),
+        .probe_in  (PARITY_PROBE_IN),
         .probe_out (cnt_ctrl)
     );
 `else
@@ -614,17 +619,13 @@ module zcu106_top_split #(
     //   [581] MAC out of reset, [595:592] layout version 2,
     //   [607:596] marker 12'h106.
     wire refclk_sel = (REFCLK_SI5328 != 0);
+    assign PARITY_PROBE_IN = {12'h106, 4'd2, 10'd0, rst_n, refclk_sel, an_disable, refclk_ready, lb_gt_resetdone, gt_resetdone, 8'd0, fm_meas, tst_rx_errs, demo_rx_errs, tst_rx_frames, tst_tx_frames, demo_tx_frames, demo_rx_frames, link1_downs, link0_downs, lb_pcs_status, pcs_status, lb_status};
     fcapz_eio_xilinxus #(
         .IN_W  (608),
         .OUT_W (16),
         .CHAIN (3)
     ) u_eio (
-        .probe_in  ({12'h106, 4'd2, 10'd0, rst_n, refclk_sel, an_disable,
-                     refclk_ready, lb_gt_resetdone, gt_resetdone,
-                     8'd0, fm_meas, tst_rx_errs, demo_rx_errs,
-                     tst_rx_frames, tst_tx_frames, demo_tx_frames, demo_rx_frames,
-                     link1_downs, link0_downs,
-                     lb_pcs_status, pcs_status, lb_status}),
+        .probe_in  (PARITY_PROBE_IN),
         .probe_out (lb_ctrl)
     );
 `endif

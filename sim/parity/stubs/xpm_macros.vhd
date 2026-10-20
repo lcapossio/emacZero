@@ -4,7 +4,8 @@
 -- xpm_macros.vhd - Parity-only behavioural stubs of the Xilinx XPM macros
 -- xpm_fifo_async and xpm_memory_sdpram.
 -- Line-for-line VHDL twin of xpm_macros.v (read that file's header for what is
--- and is not modelled). Read on the candidate side of a translateHDL proof;
+-- and is not modelled, and for the parameter fingerprint GEN_FP that checks
+-- every generic by value). Read on the candidate side of a translateHDL proof;
 -- generics and ports match Vivado's xpm_VCOMP.vhd component declarations, so
 -- a design's local component declaration binds to these entities by default.
 -- NOT the vendor models.
@@ -20,6 +21,11 @@ package xpm_stub_pkg is
     function hex16(s : string) return unsigned;
     function to_sl(b : boolean) return std_logic;
     function min_int(a, b : integer) return integer;
+    -- Parameter fingerprint fields: an integer as 32 bits; a string as the
+    -- 8-bit codes of its last FP_SN characters, zero-padded on the left.
+    constant FP_SN : integer := 24;
+    function fp_i32(x : integer) return std_logic_vector;
+    function fp_str(s : string) return std_logic_vector;
 end package xpm_stub_pkg;
 
 package body xpm_stub_pkg is
@@ -75,6 +81,22 @@ package body xpm_stub_pkg is
         end if;
         return b;
     end function min_int;
+
+    function fp_i32(x : integer) return std_logic_vector is
+    begin
+        return std_logic_vector(to_signed(x, 32));
+    end function fp_i32;
+
+    function fp_str(s : string) return std_logic_vector is
+        variable r : std_logic_vector(8*FP_SN-1 downto 0) := (others => '0');
+    begin
+        for i in 0 to FP_SN-1 loop
+            if i < s'length then
+                r(8*i+7 downto 8*i) := std_logic_vector(to_unsigned(character'pos(s(s'right - i)), 8));
+            end if;
+        end loop;
+        return r;
+    end function fp_str;
 end package body xpm_stub_pkg;
 
 library ieee;
@@ -141,6 +163,30 @@ architecture stub of xpm_fifo_async is
     constant FWFT     : boolean := (READ_MODE = "fwft") or (READ_MODE = "FWFT");
     constant DOUT_RST : std_logic_vector(READ_DATA_WIDTH-1 downto 0) :=
         std_logic_vector(resize(hex16(DOUT_RESET_VALUE), READ_DATA_WIDTH));
+    -- Parameter fingerprint (see the header): every parameter in its own field,
+    -- first parameter in the low bits, zero-padded to 2**11 bits and read out
+    -- one bit per rd_clk edge by the free-running fp_idx into dout[0].
+    constant GEN_FP : std_logic_vector(2047 downto 0) := std_logic_vector(resize(unsigned(std_logic_vector'(
+        fp_i32(WAKEUP_TIME) &
+        fp_str(EN_SIM_ASSERT_ERR) &
+        fp_i32(SIM_ASSERT_CHK) &
+        fp_str(ECC_MODE) &
+        fp_str(DOUT_RESET_VALUE) &
+        fp_i32(PROG_EMPTY_THRESH) &
+        fp_i32(RD_DATA_COUNT_WIDTH) &
+        fp_i32(PROG_FULL_THRESH) &
+        fp_i32(WR_DATA_COUNT_WIDTH) &
+        fp_i32(CDC_SYNC_STAGES) &
+        fp_i32(READ_DATA_WIDTH) &
+        fp_str(USE_ADV_FEATURES) &
+        fp_i32(FULL_RESET_VALUE) &
+        fp_i32(FIFO_READ_LATENCY) &
+        fp_str(READ_MODE) &
+        fp_i32(WRITE_DATA_WIDTH) &
+        fp_i32(RELATED_CLOCKS) &
+        fp_i32(CASCADE_HEIGHT) &
+        fp_i32(FIFO_WRITE_DEPTH) &
+        fp_str(FIFO_MEMORY_TYPE))), 2048));
 
     signal wr_cnt      : unsigned(CW-1 downto 0);   -- words written (wr_clk)
     signal rd_cnt      : unsigned(CW-1 downto 0);   -- words popped (rd_clk)
@@ -164,6 +210,10 @@ architecture stub of xpm_fifo_async is
     signal empty_i   : std_logic;
     signal can_write : std_logic;
     signal can_read  : std_logic;
+    signal fp_idx    : unsigned(10 downto 0);
+    signal fp_sh     : unsigned(2047 downto 0);
+    signal fp_bit    : std_logic;
+    signal fp_mask   : std_logic_vector(READ_DATA_WIDTH-1 downto 0);
 begin
     count     <= wr_cnt - rd_cnt;
     cnt_empty <= '1' when count = 0 else '0';
@@ -256,7 +306,17 @@ begin
         end if;
     end process;
 
-    dout          <= dout_r;
+    process (rd_clk)
+    begin
+        if rising_edge(rd_clk) then
+            fp_idx <= fp_idx + 1;
+        end if;
+    end process;
+    fp_sh  <= shift_right(unsigned(GEN_FP), to_integer(fp_idx));
+    fp_bit <= fp_sh(0);
+    fp_mask <= (0 => fp_bit, others => '0');
+
+    dout          <= dout_r xor fp_mask;
     wr_rst_busy   <= wr_busy;
     rd_rst_busy   <= rd_busy;
     overflow      <= ADV(0) and ovf_r;
@@ -344,6 +404,40 @@ architecture stub of xpm_memory_sdpram is
     constant RD_FIRST : boolean := WRITE_MODE_B = "read_first";
     constant WR_FIRST : boolean := WRITE_MODE_B = "write_first";
     constant NO_CHG   : boolean := (not RD_FIRST) and (not WR_FIRST);
+    -- Parameter fingerprint (see the header): every parameter in its own field,
+    -- first parameter in the low bits, zero-padded to 2**12 bits and read out
+    -- one bit per rd_clk edge by the free-running fp_idx into doutb[0].
+    constant GEN_FP : std_logic_vector(4095 downto 0) := std_logic_vector(resize(unsigned(std_logic_vector'(
+        fp_str(RST_MODE_B) &
+        fp_str(WRITE_MODE_B) &
+        fp_i32(READ_LATENCY_B) &
+        fp_str(READ_RESET_VALUE_B) &
+        fp_i32(ADDR_WIDTH_B) &
+        fp_i32(READ_DATA_WIDTH_B) &
+        fp_str(RST_MODE_A) &
+        fp_i32(ADDR_WIDTH_A) &
+        fp_i32(BYTE_WRITE_WIDTH_A) &
+        fp_i32(WRITE_DATA_WIDTH_A) &
+        fp_i32(IGNORE_INIT_SYNTH) &
+        fp_str(RAM_DECOMP) &
+        fp_i32(WRITE_PROTECT) &
+        fp_i32(SIM_ASSERT_CHK) &
+        fp_i32(CASCADE_HEIGHT) &
+        fp_str(MEMORY_OPTIMIZATION) &
+        fp_i32(USE_EMBEDDED_CONSTRAINT) &
+        fp_i32(MESSAGE_CONTROL) &
+        fp_i32(AUTO_SLEEP_TIME) &
+        fp_str(WAKEUP_TIME) &
+        fp_i32(USE_MEM_INIT_MMI) &
+        fp_i32(USE_MEM_INIT) &
+        fp_str(MEMORY_INIT_PARAM) &
+        fp_str(MEMORY_INIT_FILE) &
+        fp_str(ECC_BIT_RANGE) &
+        fp_str(ECC_TYPE) &
+        fp_str(ECC_MODE) &
+        fp_str(CLOCKING_MODE) &
+        fp_str(MEMORY_PRIMITIVE) &
+        fp_i32(MEMORY_SIZE))), 4096));
 
     type mem_t is array (integer range 0 to 2**SAW-1) of std_logic_vector(WRITE_DATA_WIDTH_A-1 downto 0);
     signal mem       : mem_t;
@@ -354,6 +448,11 @@ architecture stub of xpm_memory_sdpram is
     signal wr_now    : std_logic;
     signal wr_in_rng : std_logic;
     signal collision : std_logic;
+    signal fp_idx    : unsigned(11 downto 0);
+    signal fp_sh     : unsigned(4095 downto 0);
+    signal fp_bit    : std_logic;
+    signal fp_mask   : std_logic_vector(READ_DATA_WIDTH_B-1 downto 0);
+    signal doutb_sel : std_logic_vector(READ_DATA_WIDTH_B-1 downto 0);
 begin
     rd_clk    <= clka when COMMON else clkb;
     wr_now    <= ena and wea(0);
@@ -395,7 +494,18 @@ begin
         end if;
     end process;
 
-    doutb    <= doutb_r2 when READ_LATENCY_B >= 2 else doutb_r;
+    process (rd_clk)
+    begin
+        if rising_edge(rd_clk) then
+            fp_idx <= fp_idx + 1;
+        end if;
+    end process;
+    fp_sh  <= shift_right(unsigned(GEN_FP), to_integer(fp_idx));
+    fp_bit <= fp_sh(0);
+    fp_mask <= (0 => fp_bit, others => '0');
+
+    doutb_sel <= doutb_r2 when READ_LATENCY_B >= 2 else doutb_r;
+    doutb     <= doutb_sel xor fp_mask;
     sbiterrb <= '0';
     dbiterrb <= '0';
 end architecture stub;

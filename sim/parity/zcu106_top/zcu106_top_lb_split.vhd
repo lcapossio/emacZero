@@ -3,7 +3,8 @@
 -- PARITY MODEL ONLY - not for synthesis. GENERATED from
 -- fpga/zcu106/rtl/zcu106_top_lb.vhd by sim/parity/zcu106_top/gen_split.py; do not edit.
 -- Renamed to zcu106_top_split, with the open-drain I2C pins split into
--- IIC_SCL_t, IIC_SDA_t and IIC_SDA_i. Everything else is the source verbatim.
+-- IIC_SCL_t, IIC_SDA_t and IIC_SDA_i, and the EIO probe_in brought out on
+-- PARITY_PROBE_IN. Everything else is the source verbatim.
 -- =============================================================================
 -- zcu106_top_lb.vhd - emacZero over SFP (1000BASE-X) on the AMD ZCU106,
 -- SFP0 <-> SFP1 loopback build
@@ -91,6 +92,7 @@ entity zcu106_top_split is
         IIC_SCL_t           : out   std_logic;  -- parity split: scl_t
         IIC_SDA_t           : out   std_logic;  -- parity split: sda_t
         IIC_SDA_i           : in    std_logic;  -- parity split: the pin as read
+        PARITY_PROBE_IN     : out   std_logic_vector(607 downto 0);  -- parity split: EIO probe_in
 
         DIP_AN_DISABLE      : in    std_logic;
         LED                 : out   std_logic_vector(7 downto 0)
@@ -943,6 +945,7 @@ begin
                    std_logic_vector(link1_downs) & std_logic_vector(link0_downs) &
                    lb_pcs_status & pcs_status & lb_status;
 
+    PARITY_PROBE_IN <= lb_probe_in;
     u_eio : fcapz_eio_xilinxus
         generic map (
             IN_W  => 608,

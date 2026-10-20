@@ -151,12 +151,20 @@ end entity pcs_pma_1000basex;
 architecture standin of pcs_pma_1000basex is
     signal st  : std_logic_vector(35 downto 0);
     signal din : std_logic_vector(35 downto 0);
+    signal ck  : std_logic_vector(5 downto 0);
 begin
-    gtrefclk_out   <= gtrefclk_p and gtrefclk_n;
-    userclk_out    <= gtrefclk_p or gtrefclk_n;
-    userclk2_out   <= gtrefclk_p xor gtrefclk_n;
-    rxuserclk_out  <= gtrefclk_p and not gtrefclk_n;
-    rxuserclk2_out <= not gtrefclk_p and gtrefclk_n;
+    -- Output clocks: see zcu106_top_children.v.
+    process (gtrefclk_p)
+    begin
+        if rising_edge(gtrefclk_p) then
+            ck <= (ck(4 downto 0) & ck(5)) xor (gtrefclk_n & "00000");
+        end if;
+    end process;
+    gtrefclk_out   <= ck(0);
+    userclk_out    <= ck(1);
+    userclk2_out   <= ck(2);
+    rxuserclk_out  <= ck(3);
+    rxuserclk2_out <= ck(4);
 
     din <= rxp & rxn & gmii_txd & gmii_tx_en & gmii_tx_er & configuration_vector &
            an_adv_config_vector & an_restart_config & reset & signal_detect;
