@@ -425,7 +425,7 @@ def run_ghdl_lint():
         rel = f"sim/.ghdl_{os.getpid()}_{target}"
         workdir = os.path.join(PROJECT_DIR, rel)
         os.makedirs(workdir, exist_ok=True)
-        flags = f"--std=08 --workdir={rel}"
+        flags = f"--std=93 --workdir={rel}"
         script = (f"{{q}} -a {flags} {' '.join(_vhdl_sources(target))} && "
                   f"{{q}} -e {flags} eth_mac_sys")
         try:
@@ -1108,7 +1108,7 @@ def run_vhdl_xsim():
                 os.makedirs(run_dir, exist_ok=True)
                 vhdl = " ".join(f'"{os.path.join(PROJECT_DIR, s)}"'
                                 for s in _vhdl_sources(target))
-                rc, out, err = run_cmd(f"{q['xvhdl']} --2008 {vhdl}", cwd=run_dir, timeout=600)
+                rc, out, err = run_cmd(f"{q['xvhdl']} {vhdl}", cwd=run_dir, timeout=600)
                 compiled[target] = rc == 0
                 if rc != 0:
                     fail(f"xvhdl ({target}): VHDL port does not compile")

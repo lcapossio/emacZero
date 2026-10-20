@@ -20,6 +20,11 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 use work.emz_target_pkg.all;
+-- VHDL-93 binds a component instance by default only to a directly visible
+-- entity of the same name. This makes simulation models of the vendor
+-- primitives compiled into work (sim/parity/stubs/) bind; Vivado binds the
+-- real primitives by name either way.
+use work.all;
 
 entity mii_if is
     generic (
@@ -697,9 +702,11 @@ begin
     rx_frame_wr_count_sys <= gray4_to_bin(rx_frame_wr_count_s3);
     rx_frame_pending_sys  <= '1' when rx_frame_wr_count_sys /= rx_frame_rd_count_bin else '0';
 
-    -- RX FIFO. The labels `u` / `rx_fifo` give the instance the flattened name
-    -- u_rx_fifo, the same as the Verilog's module-level u_rx_fifo, so the
-    -- equivalence proof pairs the FIFO state by name (see sim/parity/mii_if).
+    -- RX FIFO. The labels `u` / `rx_fifo` (and `u_rx` / `fifo` on the other
+    -- target) give the instance the flattened name u_rx_fifo, the same as the
+    -- Verilog's module-level u_rx_fifo, so the equivalence proof pairs the FIFO
+    -- state by name (see sim/parity/mii_if). VHDL-93 has no `else generate`,
+    -- so the two targets are two generates with different labels.
     u : if EMZ_TARGET = "XILINX_7SERIES" generate
         xpm_rx_rd_en <= rx_rd_en and (not rx_rd_rst_busy);
         xpm_rx_rst   <= not rx_rst_n_s2;
@@ -749,7 +756,9 @@ begin
                 data_valid    => rx_rd_valid,
                 wr_ack        => open
             );
-    else generate
+    end generate u;
+
+    u_rx : if EMZ_TARGET /= "XILINX_7SERIES" generate
         rx_prog_empty    <= '1';
         rx_wr_rst_busy   <= '0';
         rx_rd_rst_busy   <= '0';
@@ -758,7 +767,7 @@ begin
         rx_rd_data_count <= (others => '0') when rx_rd_empty = '1' else (others => '1');
         rx_rd_valid      <= not rx_rd_empty;
 
-        rx_fifo : entity work.async_fifo
+        fifo : entity work.async_fifo
             generic map (DATA_WIDTH => 10, ADDR_WIDTH => 11)
             port map (
                 wr_clk        => mii_rx_clk,
@@ -773,7 +782,7 @@ begin
                 rd_empty      => rx_rd_empty,
                 wr_data_count => open
             );
-    end generate u;
+    end generate u_rx;
 
     -- In FWFT mode, empty can remain deasserted while the previous word is
     -- still present after rd_en. Use data_valid so replay only consumes a word
@@ -872,7 +881,9 @@ begin
                 sbiterrb       => open,
                 dbiterrb       => open
             );
-    else generate
+    end generate u_rx_frame;
+
+    u_rx_frame_inferred : if EMZ_TARGET /= "XILINX_7SERIES" generate
         rx_frame_mem_dout <= rx_frame_mem_dout_r;
 
         process (clk)
@@ -886,7 +897,7 @@ begin
                 end if;
             end if;
         end process;
-    end generate u_rx_frame;
+    end generate u_rx_frame_inferred;
 
     process (clk, rst_n)
     begin
@@ -1210,11 +1221,13 @@ begin
         tx_fifo_level <= tx_wr_data_count;
         tx_busy       <= '1' when (tx_frames_pending_r >= 2) or
                                   (unsigned(tx_wr_data_count) > TX_START_LIMIT) else '0';
-    else generate
+    end generate gen_tx_level;
+
+    gen_tx_level_cnt : if EMZ_TARGET /= "XILINX_7SERIES" generate
         tx_fifo_level <= std_logic_vector(tx_fifo_count);
         tx_busy       <= '1' when (tx_frames_pending_r >= 2) or
                                   (tx_fifo_count > TX_START_LIMIT) else '0';
-    end generate gen_tx_level;
+    end generate gen_tx_level_cnt;
 
     -- Debug output assigns
     dbg_tx_wr_en           <= (tx_wr_en and (not tx_wr_full)) when MII_DEBUG /= 0 else '0';
@@ -1295,9 +1308,10 @@ begin
     -- instance is guarded - the framer, IOB stage and debug taps below stay at
     -- module level and self-drive to idle when the FIFO is tied empty, so no
     -- module output ports go undriven and no hierarchical names shift.
-    -- One generate with three alternatives (the Verilog's gen_tx_fifo with the
-    -- vendor `ifdef inside, plus gen_no_tx_fifo), so the FIFO instance is
-    -- gen_tx_fifo.u_tx_fifo on either target, as in the Verilog.
+    -- Three generates (the Verilog's gen_tx_fifo with the vendor `ifdef
+    -- inside, plus gen_no_tx_fifo). The labels gen_tx_fifo / u_tx_fifo and
+    -- gen_tx_fifo_u / tx_fifo both flatten to gen_tx_fifo_u_tx_fifo, the
+    -- Verilog's gen_tx_fifo.u_tx_fifo, on either target.
     gen_tx_fifo : if (TX_ENABLE /= 0) and (EMZ_TARGET = "XILINX_7SERIES") generate
         xpm_tx_rd_en <= tx_rd_en and (not tx_rd_rst_busy);
         xpm_tx_rst   <= not rst_n;
@@ -1348,13 +1362,15 @@ begin
                 wr_ack        => open
             );
         tx_rd_word_valid <= (not tx_rd_empty) and (not tx_rd_rst_busy);
-    elsif TX_ENABLE /= 0 generate
+    end generate gen_tx_fifo;
+
+    gen_tx_fifo_u : if (TX_ENABLE /= 0) and (EMZ_TARGET /= "XILINX_7SERIES") generate
         tx_wr_rst_busy   <= '0';
         tx_rd_rst_busy   <= '0';
         tx_wr_data_count <= std_logic_vector(tx_fifo_count);
         tx_rd_valid      <= not tx_rd_empty;
         tx_rd_word_valid <= not tx_rd_empty;
-        u_tx_fifo : entity work.async_fifo
+        tx_fifo : entity work.async_fifo
             generic map (DATA_WIDTH => 9, ADDR_WIDTH => 12)
             port map (
                 wr_clk        => clk,
@@ -1369,7 +1385,9 @@ begin
                 rd_empty      => tx_rd_empty,
                 wr_data_count => open
             );
-    else generate
+    end generate gen_tx_fifo_u;
+
+    gen_no_tx_fifo : if TX_ENABLE = 0 generate
         -- TX disabled (Verilog: gen_no_tx_fifo): present a permanently-empty
         -- FIFO so no RAMB is inferred. gmii_tx_en is expected tied low
         -- upstream, so nothing is ever written; the framer below reads
@@ -1382,7 +1400,7 @@ begin
         tx_wr_data_count <= (others => '0');
         tx_rd_valid      <= '0';
         tx_rd_word_valid <= '0';
-    end generate gen_tx_fifo;
+    end generate gen_no_tx_fifo;
 
     mii_txd               <= mii_txd_iob;
     mii_tx_en             <= mii_tx_en_iob;

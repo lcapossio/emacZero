@@ -13,7 +13,7 @@ golden:
 
 candidate:
   language: vhdl
-  std: "08"
+  std: "93"
   top: crc32
   sources: [../../../rtl/vhdl/crc32.vhd]
 

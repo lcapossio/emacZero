@@ -108,7 +108,7 @@ def main() -> int:
         tmp = Path(tmpname)
         for speeds in args.speeds:
             net = tmp / f"rgmii_if_{speeds}.v"
-            ghdl = [tool("ghdl"), "--std=08", "-fsynopsys", f"--workdir={tmp}"]
+            ghdl = [tool("ghdl"), "--std=93", f"--workdir={tmp}"]
             subprocess.run([ghdl[0], "-a", *ghdl[1:], *map(str, gate_src)], cwd=tmp, check=True)
             text = subprocess.run([ghdl[0], "--synth", *ghdl[1:], "--out=verilog",
                                    f"-gRGMII_SPEEDS={speeds}", "rgmii_if"],

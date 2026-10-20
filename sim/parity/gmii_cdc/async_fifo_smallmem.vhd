@@ -49,7 +49,14 @@ architecture rtl of async_fifo is
 
     constant DEPTH : integer := 2 ** ADDR_WIDTH;
     -- PARITY MODEL: memory clamped to 2**MEM_AW words (see header).
-    constant MEM_AW    : integer := minimum(ADDR_WIDTH, 3);
+    function min_int(a, b : integer) return integer is
+    begin
+        if a < b then
+            return a;
+        end if;
+        return b;
+    end function min_int;
+    constant MEM_AW    : integer := min_int(ADDR_WIDTH, 3);
     constant MEM_DEPTH : integer := 2 ** MEM_AW;
 
     type mem_t is array (0 to MEM_DEPTH-1) of std_logic_vector(DATA_WIDTH-1 downto 0);
@@ -86,7 +93,7 @@ architecture rtl of async_fifo is
     begin
         g := unsigned(gray);
         b := g;
-        for i in 1 to gray'length-1 loop
+        for i in integer range 1 to gray'length-1 loop
             b := b xor shift_right(g, i);
         end loop;
         return b;

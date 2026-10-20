@@ -15,6 +15,11 @@ library ieee;
 use ieee.std_logic_1164.all;
 
 use work.emz_target_pkg.all;
+-- VHDL-93 binds a component instance by default only to a directly visible
+-- entity of the same name. This makes simulation models of the vendor
+-- primitives compiled into work (sim/parity/stubs/) bind; Vivado binds the
+-- real primitives by name either way.
+use work.all;
 
 entity ddr_input is
     port (

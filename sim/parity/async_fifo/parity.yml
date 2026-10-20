@@ -17,7 +17,7 @@ golden:
 
 candidate:
   language: vhdl
-  std: "08"
+  std: "93"
   top: async_fifo
   sources: [../../../rtl/vhdl/async_fifo.vhd, async_fifo_block.vhd]
 

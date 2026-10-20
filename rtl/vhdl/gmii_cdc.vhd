@@ -21,7 +21,7 @@ entity gmii_cdc is
         -- slots held back for that EOF. 4096-word floor keeps standard-MTU builds
         -- at their previous depth for small-frame bursts.
         MAX_FRAME          : integer := 9018;
-        RX_FIFO_ADDR_WIDTH : integer := maximum(clog2(MAX_FRAME + 10), 12);
+        RX_FIFO_ADDR_WIDTH : integer := 0;   -- 0 = max(clog2(MAX_FRAME + 10), 12), as the Verilog default
         -- Storage for both CDC FIFOs (async_fifo RAM_STYLE). "BLOCK" maps them to
         -- block RAM; "DISTRIBUTED" to LUTRAM, which at the 16K-word jumbo depths
         -- costs ~7K LUTs and does not close timing at 100/125 MHz on Artix-7.
@@ -64,6 +64,9 @@ entity gmii_cdc is
 end entity gmii_cdc;
 
 architecture rtl of gmii_cdc is
+    -- RX_FIFO_ADDR_WIDTH resolved (its Verilog default depends on MAX_FRAME,
+    -- which a VHDL-93 generic default cannot; see emz_util_pkg.auto_or).
+    constant RX_FIFO_AW : integer := auto_or(RX_FIFO_ADDR_WIDTH, max_int(clog2(MAX_FRAME + 10), 12));
 
     attribute ASYNC_REG : string;
 
@@ -82,12 +85,12 @@ architecture rtl of gmii_cdc is
     -- =========================================================================
     -- FIFO data: [9] = EOF marker, [8] = error, [7:0] = data.
     -- On an EOF word, [8] set means the frame was truncated by RX FIFO overflow.
-    constant RX_FIFO_DEPTH : unsigned(RX_FIFO_ADDR_WIDTH downto 0) :=
-        shift_left(to_unsigned(1, RX_FIFO_ADDR_WIDTH + 1), RX_FIFO_ADDR_WIDTH);
+    constant RX_FIFO_DEPTH : unsigned(RX_FIFO_AW downto 0) :=
+        shift_left(to_unsigned(1, RX_FIFO_AW + 1), RX_FIFO_AW);
     signal rx_wr_data  : std_logic_vector(9 downto 0);
     signal rx_wr_en    : std_logic;
     signal rx_wr_full  : std_logic;
-    signal rx_wr_count : std_logic_vector(RX_FIFO_ADDR_WIDTH downto 0);
+    signal rx_wr_count : std_logic_vector(RX_FIFO_AW downto 0);
     signal rx_dv_d1    : std_logic;
     signal rx_drop     : std_logic;   -- media_rx: current frame lost bytes to overflow
 
@@ -129,7 +132,7 @@ architecture rtl of gmii_cdc is
     -- 16 long before the RX FIFO fills - the counter wrapped, rx_frame_ready
     -- read false, and the readout stalled. At ADDR_WIDTH+1 bits the FIFO fills
     -- first, so it cannot alias.
-    constant RX_CNT_W : integer := RX_FIFO_ADDR_WIDTH + 1;
+    constant RX_CNT_W : integer := RX_FIFO_AW + 1;
     signal rx_frames_pending   : unsigned(RX_CNT_W-1 downto 0);
     signal rx_frame_done_pulse : std_logic;
     signal rx_reading          : std_logic;
@@ -330,7 +333,7 @@ begin
     u_rx_fifo : entity work.async_fifo
         generic map (
             DATA_WIDTH => 10,
-            ADDR_WIDTH => RX_FIFO_ADDR_WIDTH,
+            ADDR_WIDTH => RX_FIFO_AW,
             RAM_STYLE  => FIFO_RAM_STYLE
         )
         port map (

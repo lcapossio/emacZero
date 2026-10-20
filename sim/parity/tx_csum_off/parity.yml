@@ -26,7 +26,7 @@ golden:
 
 candidate:
   language: vhdl
-  std: "08"
+  std: "93"
   top: tx_csum_off
   sources: [../../../rtl/vhdl/emz_util_pkg.vhd, ../../../rtl/vhdl/sync_fifo.vhd,
             ../../../rtl/vhdl/csum_calc.vhd, ../../../rtl/vhdl/tx_csum_off.vhd]

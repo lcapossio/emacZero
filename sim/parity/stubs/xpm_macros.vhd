@@ -19,6 +19,7 @@ package xpm_stub_pkg is
     -- Up to 4 hex digits (rightmost = least significant) -> 16 bits.
     function hex16(s : string) return unsigned;
     function to_sl(b : boolean) return std_logic;
+    function min_int(a, b : integer) return integer;
 end package xpm_stub_pkg;
 
 package body xpm_stub_pkg is
@@ -66,6 +67,14 @@ package body xpm_stub_pkg is
             return '0';
         end if;
     end function to_sl;
+
+    function min_int(a, b : integer) return integer is
+    begin
+        if a < b then
+            return a;
+        end if;
+        return b;
+    end function min_int;
 end package body xpm_stub_pkg;
 
 library ieee;
@@ -195,12 +204,15 @@ begin
     begin
         if rising_edge(wr_clk) then
             if can_write = '1' then
-                case wr_cnt(1 downto 0) is
-                    when "00"   => mem0 <= din;
-                    when "01"   => mem1 <= din;
-                    when "10"   => mem2 <= din;
-                    when others => mem3 <= din;
-                end case;
+                if wr_cnt(1 downto 0) = "00" then
+                    mem0 <= din;
+                elsif wr_cnt(1 downto 0) = "01" then
+                    mem1 <= din;
+                elsif wr_cnt(1 downto 0) = "10" then
+                    mem2 <= din;
+                else
+                    mem3 <= din;
+                end if;
             end if;
         end if;
     end process;
@@ -325,7 +337,7 @@ architecture stub of xpm_memory_sdpram is
     constant DEPTH    : integer := MEMORY_SIZE / WRITE_DATA_WIDTH_A;
     -- Storage clamped to 2**SAW words, indexed by the low address bits, to keep
     -- the proof small. DEPTH still matters: writes at addra >= DEPTH are dropped.
-    constant SAW      : integer := minimum(ADDR_WIDTH_A, 3);
+    constant SAW      : integer := min_int(ADDR_WIDTH_A, 3);
     constant RST_VAL  : std_logic_vector(READ_DATA_WIDTH_B-1 downto 0) :=
         std_logic_vector(resize(hex16(READ_RESET_VALUE_B), READ_DATA_WIDTH_B));
     constant COMMON   : boolean := CLOCKING_MODE = "common_clock";
@@ -333,7 +345,7 @@ architecture stub of xpm_memory_sdpram is
     constant WR_FIRST : boolean := WRITE_MODE_B = "write_first";
     constant NO_CHG   : boolean := (not RD_FIRST) and (not WR_FIRST);
 
-    type mem_t is array (0 to 2**SAW-1) of std_logic_vector(WRITE_DATA_WIDTH_A-1 downto 0);
+    type mem_t is array (integer range 0 to 2**SAW-1) of std_logic_vector(WRITE_DATA_WIDTH_A-1 downto 0);
     signal mem       : mem_t;
     signal doutb_r   : std_logic_vector(READ_DATA_WIDTH_B-1 downto 0);
     signal doutb_r2  : std_logic_vector(READ_DATA_WIDTH_B-1 downto 0);

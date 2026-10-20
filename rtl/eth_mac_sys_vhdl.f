@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 #
-# emacZero eth_mac_sys flat filelist (VHDL port, analyse in order as VHDL-2008).
+# emacZero eth_mac_sys flat filelist (VHDL port, analyse in order as VHDL-93).
 # Paths are relative to the project root. See docs/vhdl_port.md.
-#   ghdl   -> ghdl -a --std=08 $(grep -v '^#' rtl/eth_mac_sys_vhdl.f)
-#   vivado -> read_vhdl -vhdl2008 <each file>
+#   ghdl   -> ghdl -a --std=93 $(grep -v '^#' rtl/eth_mac_sys_vhdl.f)
+#   vivado -> read_vhdl <each file>
 #
 # The first file selects the DDR / XPM target; it replaces the Verilog
 # `define (XILINX_7SERIES, XILINX_ULTRASCALE_PLUS, INTEL_CYCLONE or SIM).

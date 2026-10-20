@@ -22,7 +22,7 @@ golden:
 
 candidate:
   language: vhdl
-  std: "08"
+  std: "93"
   top: mii_tx_saf
   sources: [../../../rtl/vhdl/async_fifo.vhd, ../../../rtl/vhdl/mii_tx_saf.vhd]
 

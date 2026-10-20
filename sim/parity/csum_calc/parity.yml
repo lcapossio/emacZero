@@ -14,7 +14,7 @@ golden:
 
 candidate:
   language: vhdl
-  std: "08"
+  std: "93"
   top: csum_calc
   sources: [../../../rtl/vhdl/csum_calc.vhd]
 

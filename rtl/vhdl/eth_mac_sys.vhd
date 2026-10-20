@@ -48,7 +48,7 @@ entity eth_mac_sys is
         -- downstream backpressure, with a 2048-byte (addr-width 11) floor for
         -- standard frames. Override smaller to save BRAM when the downstream sink
         -- never stalls for a full frame.
-        RX_AXIS_ADDR_WIDTH : integer := maximum(clog2(MAX_FRAME), 11);
+        RX_AXIS_ADDR_WIDTH : integer := 0;   -- 0 = max(clog2(MAX_FRAME), 11), as the Verilog default
         -- Checksum offload (IPv4 header, TCP, UDP, ICMP, ICMPv6; IPv4 and IPv6;
         -- one optional VLAN tag). 1 = synthesize the TX inserter (tx_csum_off,
         -- CTRL[7] turns insertion on) / the RX checker (in eth_mac_rx, CTRL[9]
@@ -154,6 +154,10 @@ entity eth_mac_sys is
 end entity eth_mac_sys;
 
 architecture rtl of eth_mac_sys is
+
+    -- RX_AXIS_ADDR_WIDTH resolved (its Verilog default depends on MAX_FRAME,
+    -- which a VHDL-93 generic default cannot; see emz_util_pkg.auto_or).
+    constant RX_AXIS_AW : integer := auto_or(RX_AXIS_ADDR_WIDTH, max_int(clog2(MAX_FRAME), 11));
 
     -- =========================================================================
     -- CSR outputs
@@ -422,7 +426,7 @@ begin
     u_mac_rx : entity work.eth_mac_rx
         generic map (
             MCAST_HASH_FILTER    => MCAST_HASH_FILTER,
-            AXIS_FIFO_ADDR_WIDTH => RX_AXIS_ADDR_WIDTH,
+            AXIS_FIFO_ADDR_WIDTH => RX_AXIS_AW,
             MAX_FRAME_JUMBO      => MAX_FRAME,
             RX_CSUM_OFFLOAD      => RX_CSUM_OFFLOAD
         )
@@ -617,7 +621,7 @@ begin
         u_mii_tx : entity work.mii_tx_saf
             generic map (
                 MAX_FRAME       => MAX_FRAME,
-                FIFO_ADDR_WIDTH => maximum(clog2(MAX_FRAME + 1), 11)
+                FIFO_ADDR_WIDTH => max_int(clog2(MAX_FRAME + 1), 11)
             )
             port map (
                 clk           => clk,

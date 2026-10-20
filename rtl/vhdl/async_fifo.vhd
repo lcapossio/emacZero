@@ -89,7 +89,7 @@ architecture rtl of async_fifo is
     begin
         g := unsigned(gray);
         b := g;
-        for i in 1 to gray'length-1 loop
+        for i in integer range 1 to gray'length-1 loop
             b := b xor shift_right(g, i);
         end loop;
         return b;

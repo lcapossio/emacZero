@@ -24,7 +24,7 @@ golden:
 
 candidate:
   language: vhdl
-  std: "08"
+  std: "93"
   top: eth_mac_rx
   sources: [../../../rtl/vhdl/crc32.vhd, ../../../rtl/vhdl/sync_fifo.vhd,
             ../../../rtl/vhdl/csum_calc.vhd, ../../../rtl/vhdl/eth_mac_rx.vhd]

@@ -43,7 +43,7 @@ entity tx_csum_off is
         MAX_FRAME       : integer := 9018;
         -- Byte buffer depth 2^BUF_ADDR_WIDTH; must exceed MAX_FRAME. One
         -- MAX_FRAME is enough for full rate (one frame drains while the next fills).
-        BUF_ADDR_WIDTH  : integer := clog2(MAX_FRAME + 8);
+        BUF_ADDR_WIDTH  : integer := 0;     -- 0 = clog2(MAX_FRAME + 8), as the Verilog default
         META_ADDR_WIDTH : integer := 4      -- committed frames held: 2^N
     );
     port (
@@ -66,6 +66,9 @@ entity tx_csum_off is
 end entity tx_csum_off;
 
 architecture rtl of tx_csum_off is
+    -- BUF_ADDR_WIDTH resolved (its Verilog default depends on MAX_FRAME, which
+    -- a VHDL-93 generic default cannot; see emz_util_pkg.auto_or).
+    constant BUF_AW : integer := auto_or(BUF_ADDR_WIDTH, clog2(MAX_FRAME + 8));
 
     constant META_DEPTH : integer := 2 ** META_ADDR_WIDTH;
     -- csum_calc results are final 3 cycles after the last byte; commit on the
@@ -235,7 +238,7 @@ begin
     u_buf : entity work.sync_fifo
         generic map (
             DATA_WIDTH => 9,
-            ADDR_WIDTH => BUF_ADDR_WIDTH
+            ADDR_WIDTH => BUF_AW
         )
         port map (
             clk         => clk,

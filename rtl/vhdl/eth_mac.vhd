@@ -18,7 +18,7 @@ entity eth_mac is
         MAX_FRAME          : integer := 9018;   -- jumbo MTU + headers (1518 = standard)
         -- RX AXIS buffer depth (address width). Scales with MAX_FRAME so a jumbo
         -- frame can be absorbed under backpressure; 2048-byte floor for standard.
-        RX_AXIS_ADDR_WIDTH : integer := maximum(clog2(MAX_FRAME), 11);
+        RX_AXIS_ADDR_WIDTH : integer := 0;   -- 0 = max(clog2(MAX_FRAME), 11), as the Verilog default
         MII_DEBUG          : integer := 0
     );
     port (
@@ -96,6 +96,10 @@ entity eth_mac is
 end entity eth_mac;
 
 architecture rtl of eth_mac is
+
+    -- RX_AXIS_ADDR_WIDTH resolved (its Verilog default depends on MAX_FRAME,
+    -- which a VHDL-93 generic default cannot; see emz_util_pkg.auto_or).
+    constant RX_AXIS_AW : integer := auto_or(RX_AXIS_ADDR_WIDTH, max_int(clog2(MAX_FRAME), 11));
 
     -- =========================================================================
     -- Internal GMII bus (sys_clk domain, hidden from external)
@@ -222,7 +226,7 @@ begin
     -- =========================================================================
     u_mac_rx : entity work.eth_mac_rx
         generic map (
-            AXIS_FIFO_ADDR_WIDTH => RX_AXIS_ADDR_WIDTH,
+            AXIS_FIFO_ADDR_WIDTH => RX_AXIS_AW,
             MAX_FRAME_JUMBO      => MAX_FRAME          -- with jumbo_en, FCS included
         )
         port map (

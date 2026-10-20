@@ -15,7 +15,7 @@ golden:
 
 candidate:
   language: vhdl
-  std: "08"
+  std: "93"
   top: ddr_output
   sources: [../../../rtl/vhdl/target/emz_target_sim.vhd, ../../../rtl/vhdl/ddr_output.vhd]
 

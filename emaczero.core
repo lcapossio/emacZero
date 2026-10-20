@@ -36,7 +36,7 @@ filesets:
   rtl_vhdl_target:
     files:
       - rtl/vhdl/target/emz_target_xilinx_7series.vhd
-    file_type: vhdlSource-2008
+    file_type: vhdlSource-93
 
   rtl_vhdl_core:
     files:
@@ -62,7 +62,7 @@ filesets:
       - rtl/vhdl/gmii_cdc.vhd
       - rtl/vhdl/tx_csum_off.vhd
       - rtl/vhdl/eth_mac_sys.vhd
-    file_type: vhdlSource-2008
+    file_type: vhdlSource-93
 
   rtl_l3:
     files:

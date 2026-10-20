@@ -154,7 +154,7 @@ architecture rtl of mii_tx_saf is
     begin
         g := gray;
         r(gray'length-1) := g(gray'length-1);
-        for i in gray'length-2 downto 0 loop
+        for i in integer range gray'length-2 downto 0 loop
             r(i) := r(i+1) xor g(i);
         end loop;
         return r;

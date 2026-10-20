@@ -136,7 +136,7 @@ def run_suite(name, spec, args) -> int:
         name = f"vhdl_{name}"
         runner = get_runner("ghdl")
         sources = _vhdl_sources(spec["sources"])
-        tool_args = {"build_args": ["--std=08", "-fsynopsys"]}
+        tool_args = {"build_args": ["--std=93"]}
     else:
         runner = get_runner("icarus")
         sources = spec["sources"]
