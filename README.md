@@ -1,8 +1,11 @@
 # emacZero
 
 [![sim](https://github.com/lcapossio/emacZero/actions/workflows/sim.yml/badge.svg?branch=main)](https://github.com/lcapossio/emacZero/actions/workflows/sim.yml?query=branch%3Amain)
+[![parity](https://github.com/lcapossio/emacZero/actions/workflows/parity.yml/badge.svg?branch=main)](https://github.com/lcapossio/emacZero/actions/workflows/parity.yml?query=branch%3Amain)
 
-Open-source Ethernet MAC in Verilog 2001. Supports 10/100/1G operation through
+Open-source Ethernet MAC in Verilog 2001, with a VHDL-93 port of the MAC IP
+that is formally proven equivalent to it ([docs/vhdl_port.md](docs/vhdl_port.md)).
+Supports 10/100/1G operation through
 MII (10/100 only), GMII (1000 Mbps only), or RGMII (10/100/1G with runtime
 speed selection).
 Provides AXI4-Stream interfaces, AXI4-Lite register control, MDIO management,
@@ -308,6 +311,21 @@ output cell must drive only its output buffer, place and route must complete,
 and the internal paths must meet timing. No board build uses RGMII, so run it
 after changing `rgmii_if.v` or the DDR wrappers.
 
+The VHDL port ([rtl/vhdl/](rtl/vhdl/)) is checked by three more phases, each
+skipped, not failed, when its tool is missing:
+
+- `PHASE 0d` analyses and elaborates it with GHDL, as VHDL-93, for every vendor
+  target.
+- `PHASE 1c` reruns the core testbenches against it in Vivado xsim.
+- `PHASE 2b` runs the cocotb suites against it under GHDL.
+
+GHDL is used from `PATH`, or from WSL on Windows. The formal equivalence
+proofs run separately (use GHDL 4.1 for them; with GHDL 6.0.0 four of them do
+not close) with
+[translateHDL](https://github.com/lcapossio/translateHDL), one manifest per
+module and configuration in [sim/parity/](sim/parity/); see
+[docs/vhdl_port.md](docs/vhdl_port.md#reproducing-the-proofs).
+
 ### Test Suite
 
 | Test | Description | Checks |
@@ -430,13 +448,18 @@ iverilog -g2001 -I rtl -f rtl/eth_mac_sys.f your_top.v
 `-I rtl` is required because [`axilite_regs.v`](rtl/axilite_regs.v) does
 `` `include "version.vh" `` (single source of truth — see *Versioning* below).
 
-**VHDL** — [rtl/vhdl/](rtl/vhdl/) is a VHDL-2008 port of the MAC IP, with
+**VHDL** — [rtl/vhdl/](rtl/vhdl/) is a VHDL-93 port of the MAC IP, with
 the filelist [rtl/eth_mac_sys_vhdl.f](rtl/eth_mac_sys_vhdl.f). Its first file
 picks the vendor target (one package per target in
 [rtl/vhdl/target/](rtl/vhdl/target/)). Each module is formally proven
 equivalent to its Verilog original, and the Verilog testbenches and cocotb
-suites also run against it (Vivado xsim and GHDL). The port has not been run
-on hardware yet. See [docs/vhdl_port.md](docs/vhdl_port.md).
+suites also run against it (Vivado xsim and GHDL). Entity, generic and port
+names match the Verilog. One difference: the generics whose Verilog default is
+computed from `MAX_FRAME` (`RX_AXIS_ADDR_WIDTH` of `eth_mac` and `eth_mac_sys`,
+`RX_FIFO_ADDR_WIDTH` of `gmii_cdc`, `BUF_ADDR_WIDTH` of `tx_csum_off`) default
+to 0, which selects that same computed value. VHDL-93 cannot express a generic
+default that depends on another generic. The port has not been run on hardware
+yet. See [docs/vhdl_port.md](docs/vhdl_port.md).
 
 **LiteX** — `litex_emaczero/emaczero.py` ships an `EmacZero` `LiteXModule` that wraps
 `eth_mac_sys` with LiteX-native AXI-Lite + AXI-Stream interfaces:
@@ -493,9 +516,20 @@ clock generation only for the MAC/PHY logic.
 
 ### Continuous integration
 
-[.github/workflows/sim.yml](.github/workflows/sim.yml) runs
-`python build_and_test.py` (lint + the full Icarus Verilog regression) on
-every push and PR to `main`.
+Two workflows run on every push and PR to `main`:
+
+- [.github/workflows/sim.yml](.github/workflows/sim.yml) runs
+  `python build_and_test.py` with Icarus, Verilator, cocotb and GHDL installed.
+  That covers lint, the full Icarus Verilog regression, and the cocotb suites
+  on both languages. It also runs the GHDL analysis of the VHDL port for every
+  vendor target.
+- [.github/workflows/parity.yml](.github/workflows/parity.yml) proves the VHDL
+  port equivalent to the Verilog, one job per module. Each job runs every
+  manifest in `sim/parity/<module>/` with `--strict`. translateHDL and Yosys
+  are pinned, and GHDL is 4.1 from Ubuntu 24.04.
+
+The Vivado phases (`PHASE 1b`, `PHASE 1c`, `--impl`) need a Vivado install and
+run locally only.
 
 ## Security and CRA Readiness
 
@@ -555,16 +589,18 @@ exactly once in [`rtl/version.vh`](rtl/version.vh):
 `axilite_regs.v` `` `include "version.vh" `` builds the 32-bit constant from
 the three defines, so the simulator and synthesised CSR always agree.
 
-Two derived files mirror the same numbers:
+Three derived files mirror the same numbers:
 
 - [`sw/emaczero/emaczero.h`](sw/emaczero/emaczero.h) — `EMZ_VERSION_MAJOR /
   MINOR / ID` for the bare-metal driver.
 - [`emaczero.core`](emaczero.core) — `name: bard0:eth:emaczero:<MAJOR>.<MINOR>.0`
   for FuseSoC.
+- [`rtl/vhdl/emz_version_pkg.vhd`](rtl/vhdl/emz_version_pkg.vhd) — the same
+  constants for the VHDL port.
 
-`build_and_test.py`'s `PHASE 0a: Version consistency` parses all three on
+`build_and_test.py`'s `PHASE 0a: Version consistency` parses all four on
 every run and fails if they disagree, so you cannot ship a mismatched bump.
-To change the version, edit `rtl/version.vh` and update the two mirrored
+To change the version, edit `rtl/version.vh` and update the three mirrored
 constants in lockstep.
 
 Releases are published as tags and GitHub releases

@@ -9,8 +9,8 @@ hand-written Icarus testbenches in `sim/tb/` — it does not replace them.
 The suite is deliberately **backend-agnostic**: testbenches drive the DUT through
 cocotb's language-neutral interface and sources are passed via `sources=`, so the
 *same* Python re-runs against a VHDL port under GHDL — only the simulator name and
-the RTL source files change. That is the point: the verification survives the
-planned Verilog→VHDL port.
+the RTL source files change. That is the point: the verification carries over to
+the VHDL port in `rtl/vhdl/`.
 
 ## Layout
 
@@ -62,7 +62,8 @@ python sim/cocotb/run.py --hdl vhdl
 Requires `cocotb>=2.0` and Icarus Verilog on `PATH` (both already present on the
 dev bench). `--hdl vhdl` needs GHDL instead (tested: GHDL 4.1 in WSL, gcc
 backend). Both are wired into `build_and_test.py` as their own phases (2 and
-2b); phase 2b runs in WSL when GHDL is not on the Windows `PATH`.
+2b); phase 2b runs in WSL when GHDL is not on the Windows `PATH`. CI
+(`.github/workflows/sim.yml`) runs both.
 
 ## Modules covered
 

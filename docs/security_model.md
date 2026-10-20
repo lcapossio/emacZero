@@ -6,7 +6,8 @@ appropriate for a product and what evidence they must keep around it.
 
 ## Intended Use
 
-emacZero is a Verilog 2001 Ethernet MAC core for FPGA or ASIC designs. It
+emacZero is a Verilog 2001 Ethernet MAC core for FPGA or ASIC designs, with a
+VHDL-93 port of the MAC IP formally proven equivalent to it. It
 provides MII or RGMII PHY-facing logic, AXI4-Stream packet interfaces,
 AXI4-Lite control/status registers, MDIO management, statistics, optional
 checksum offload, and optional demo L3 helpers.

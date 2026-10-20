@@ -1,6 +1,6 @@
 # VHDL port
 
-`rtl/vhdl/` holds a VHDL translation of the emacZero core (`rtl/eth_mac_sys.f`).
+`rtl/vhdl/` holds a VHDL-93 translation of the emacZero core (`rtl/eth_mac_sys.f`).
 The Verilog in `rtl/` stays the golden source. Each VHDL file is checked against
 its Verilog original with the [translateHDL](https://github.com/lcapossio/translateHDL)
 parity ladder, whose main evidence is a formal sequential-equivalence proof
@@ -60,17 +60,24 @@ generate-scope pairing, and checks the base case of every induction proof
 from the initial state. Point `YOSYS`/`GHDL` at the binaries if they are not
 on `PATH` under those names.
 
-Last full run: every manifest, GHDL 4.1 with yowasp-yosys 0.63 under WSL,
-translateHDL be0ba18 (2026-10-20). With GHDL 6.0.0 on Windows, `eth_mac`,
+Last full run: every manifest as VHDL-93 (61 configurations proven), GHDL 4.1
+with yowasp-yosys 0.63 under WSL, translateHDL be0ba18 (2026-10-20). With GHDL 6.0.0 on Windows, `eth_mac`,
 `eth_mac_rx`, `eth_mac_sys` and `tx_csum_off` leave `$equiv` cells unproven
 (the same with older translateHDL); use GHDL 4.1 for those.
 
 ```sh
-python <translateHDL>/skills/translate-hdl/scripts/parity.py sim/parity/<module>/parity.yml --strict
+cd sim/parity/<module>
+python <translateHDL>/skills/translate-hdl/scripts/parity.py parity.yml --strict
 ```
 
 Each manifest in [sim/parity/](../sim/parity/) lists its modules and parameter
-sets.
+sets. Run the manifests of one directory one after another: they share a GHDL
+work library there.
+
+CI runs every manifest on every push and pull request to `main`
+([.github/workflows/parity.yml](../.github/workflows/parity.yml), one job per
+module, Ubuntu 24.04's GHDL 4.1). translateHDL and yowasp-yosys are pinned in
+that workflow. Bump them there, and rerun everything when you do.
 
 ## Proof assumptions
 
@@ -142,9 +149,25 @@ Xilinx unisim models, which run on Verilog only.
 - Resets are kept exactly as written, async active-low (`rst_n = '0'` outside
   `rising_edge`). This is a faithful port. The project rule to prefer
   synchronous resets applies to new RTL, not to translations.
-- Files are analysed as VHDL-2008 but written in a VHDL-93 style:
-  `ieee.numeric_std` only, explicit sensitivity lists, and an internal signal
-  when a module reads back one of its own outputs.
+- The files are VHDL-93: they analyse with `ghdl --std=93` (strict, without
+  `-fsynopsys`) and with Vivado's default `xvhdl` mode. They use
+  `ieee.numeric_std` only and explicit sensitivity lists, and add an internal
+  signal when a module reads back one of its own outputs.
+- A Verilog parameter whose default is computed from another parameter cannot
+  be a VHDL-93 generic default. Those generics default to 0, and the
+  architecture uses `auto_or(generic, derived)` from `emz_util_pkg`, so 0
+  gives the Verilog default:
+  - `RX_AXIS_ADDR_WIDTH` in `eth_mac` and `eth_mac_sys`
+  - `RX_FIFO_ADDR_WIDTH` in `gmii_cdc`
+  - `BUF_ADDR_WIDTH` in `tx_csum_off`
+
+  An explicit value works as in Verilog. Address width 0 is not a valid
+  setting, so 0 is free to mean "derive".
+- VHDL-93 has no `else generate`. An `if`/`else` choice is two `if` generates
+  with opposite conditions. Where the branches instantiate a module, their
+  labels are chosen so that the instance flattens to the Verilog's name on
+  either branch: `u` + `rx_fifo` and `u_rx` + `fifo` both give `u_rx_fifo`.
+  The proof pairs state by those names.
 - Verilog's implicit width extension is made explicit, and every intermediate
   keeps the Verilog width (`unsigned` arithmetic wraps at the declared width).
 - `(* ASYNC_REG *)`, `(* ram_style *)` and `(* IOB *)` become VHDL attributes
@@ -154,6 +177,8 @@ Xilinx unisim models, which run on Verilog only.
   `rtl/vhdl/target/`, and the file list picks exactly one (VHDL has no
   preprocessor). Vendor primitives (ODDR, IDDR, ODDRE1, IDDRE1, XPM) are
   declared as local components, so GHDL analyses without vendor libraries and
-  Vivado binds them to unisim/XPM.
+  Vivado binds them to unisim/XPM. Those files also `use work.all`: VHDL-93 binds a
+  component by default only to a directly visible entity, so without it a
+  simulation model compiled into `work` (as in the proofs) would stay unbound.
 - Latent Verilog bugs found during the port are reproduced as-is, logged, and
   fixed on both sides in a separate change.

@@ -7,12 +7,13 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
-- VHDL-2008 port of the MAC IP (`rtl/eth_mac_sys.f`) in `rtl/vhdl/`, with the
+- VHDL-93 port of the MAC IP (`rtl/eth_mac_sys.f`) in `rtl/vhdl/`, with the
   filelist `rtl/eth_mac_sys_vhdl.f` and FuseSoC target `vhdl`. Vendor
   selection uses one target package per vendor in `rtl/vhdl/target/`. Every
   module is formally proven equivalent to the v0.2.0 Verilog with translateHDL
-  (manifests in `sim/parity/`; see `docs/vhdl_port.md`). Not yet run on
-  hardware.
+  (manifests in `sim/parity/`; see `docs/vhdl_port.md`). Generics whose Verilog
+  default is computed from `MAX_FRAME` default to 0 in VHDL, which selects
+  that same value. Not yet run on hardware.
 - `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
   The phase is skipped when GHDL is not installed.
@@ -22,6 +23,11 @@ This project does not yet maintain long-lived release branches.
 - `build_and_test.py` phase 1c reruns the core Verilog testbenches against
   the VHDL port in Vivado xsim (skipped without xsim on `PATH`). 43 of 44 pass;
   `RGMII-LOOPBACK` forces DUT internals and stays Verilog-only.
+- CI installs GHDL 4.1, so the GHDL checks and the cocotb suites of the VHDL
+  port run on every push and pull request. A new `parity` workflow runs every
+  formal equivalence proof in `sim/parity/`, one job per module, with
+  translateHDL and yowasp-yosys pinned. CI runs on Ubuntu 24.04 instead of
+  `ubuntu-latest`.
 
 ### Changed
 
