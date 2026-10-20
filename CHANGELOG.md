@@ -25,8 +25,8 @@ This project does not yet maintain long-lived release branches.
   `RGMII-LOOPBACK` forces DUT internals and stays Verilog-only.
 - CI installs GHDL 4.1, so the GHDL checks and the cocotb suites of the VHDL
   port run on every push and pull request. A new `parity` workflow runs every
-  formal equivalence proof in `sim/parity/`, one job per module, with
-  translateHDL and yowasp-yosys pinned. CI runs on Ubuntu 24.04 instead of
+  formal equivalence proof in `sim/parity/` in one job
+  (`sim/parity/run_all.py`), with translateHDL and yowasp-yosys pinned. CI runs on Ubuntu 24.04 instead of
   `ubuntu-latest`.
 
 ### Changed

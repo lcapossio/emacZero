@@ -66,17 +66,21 @@ with yowasp-yosys 0.63 under WSL, translateHDL be0ba18 (2026-10-20). With GHDL 6
 (the same with older translateHDL); use GHDL 4.1 for those.
 
 ```sh
+# everything (module directories in parallel, -j N), or name some modules
+python sim/parity/run_all.py --translatehdl <translateHDL> [-j N] [module ...]
+# one manifest
 cd sim/parity/<module>
 python <translateHDL>/skills/translate-hdl/scripts/parity.py parity.yml --strict
 ```
 
 Each manifest in [sim/parity/](../sim/parity/) lists its modules and parameter
 sets. Run the manifests of one directory one after another: they share a GHDL
-work library there.
+work library there. `run_all.py` does that, and exits 1 if any manifest does
+not pass.
 
 CI runs every manifest on every push and pull request to `main`
-([.github/workflows/parity.yml](../.github/workflows/parity.yml), one job per
-module, Ubuntu 24.04's GHDL 4.1). translateHDL and yowasp-yosys are pinned in
+([.github/workflows/parity.yml](../.github/workflows/parity.yml), one job
+running `run_all.py -j 4`, Ubuntu 24.04's GHDL 4.1). translateHDL and yowasp-yosys are pinned in
 that workflow. Bump them there, and rerun everything when you do.
 
 ## Proof assumptions

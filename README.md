@@ -524,9 +524,9 @@ Two workflows run on every push and PR to `main`:
   on both languages. It also runs the GHDL analysis of the VHDL port for every
   vendor target.
 - [.github/workflows/parity.yml](.github/workflows/parity.yml) proves the VHDL
-  port equivalent to the Verilog, one job per module. Each job runs every
-  manifest in `sim/parity/<module>/` with `--strict`. translateHDL and Yosys
-  are pinned, and GHDL is 4.1 from Ubuntu 24.04.
+  port equivalent to the Verilog: one job runs every manifest in
+  `sim/parity/` with `--strict` (`sim/parity/run_all.py`). translateHDL and
+  Yosys are pinned, and GHDL is 4.1 from Ubuntu 24.04.
 
 The Vivado phases (`PHASE 1b`, `PHASE 1c`, `--impl`) need a Vivado install and
 run locally only.

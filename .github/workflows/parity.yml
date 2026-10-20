@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 #
 # Formal equivalence of the VHDL port (rtl/vhdl/) against the Verilog golden
-# (rtl/). Runs every translateHDL manifest in sim/parity/<module>/ with
-# --strict, one job per module. See docs/vhdl_port.md.
+# (rtl/). Runs every translateHDL manifest in sim/parity/ with --strict
+# (sim/parity/run_all.py). See docs/vhdl_port.md.
 
 name: parity
 
@@ -21,34 +21,12 @@ env:
   YOWASP_YOSYS_VERSION: 0.63.0.0.post1107
 
 jobs:
-  modules:
-    runs-on: ubuntu-24.04
-    outputs:
-      list: ${{ steps.list.outputs.list }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: list
-        # Every sim/parity/<module>/ that holds a manifest (stubs/ and
-        # defines/ only hold shared files).
-        run: |
-          list=$(for d in sim/parity/*/; do
-                   ls "$d"*.yml >/dev/null 2>&1 && basename "$d"
-                 done | jq -R . | jq -sc .)
-          echo "list=$list" >> "$GITHUB_OUTPUT"
-          echo "$list"
-
-  prove:
-    needs: modules
-    name: prove (${{ matrix.module }})
+  parity:
     # Pinned: Ubuntu 24.04's GHDL is 4.1. GHDL 6 leaves some proofs unclosed
     # (docs/vhdl_port.md).
     runs-on: ubuntu-24.04
-    # eth_mac_sys takes about 11 minutes; the others 1 to 5.
+    # The modules run 4 at a time; eth_mac_sys alone takes about 11 minutes.
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        module: ${{ fromJSON(needs.modules.outputs.list) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -75,18 +53,8 @@ jobs:
           pip install "yowasp-yosys==${YOWASP_YOSYS_VERSION}" pyyaml
           yowasp-yosys -V
 
-      - name: Prove ${{ matrix.module }}
+      - name: Prove every module
         env:
           GHDL: ghdl
           YOSYS: yowasp-yosys
-        # Manifests in one directory share a GHDL work library, so they run
-        # one after another.
-        run: |
-          cd "sim/parity/${{ matrix.module }}"
-          rc=0
-          for f in *.yml; do
-            echo "::group::$f"
-            python "$GITHUB_WORKSPACE/.translatehdl/skills/translate-hdl/scripts/parity.py" "$f" --strict || rc=1
-            echo "::endgroup::"
-          done
-          exit $rc
+        run: python sim/parity/run_all.py --translatehdl .translatehdl -j 4
