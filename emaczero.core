@@ -75,6 +75,18 @@ filesets:
       - rtl/net/udp_stats_reply.v
     file_type: verilogSource
 
+  # VHDL port of rtl_l3 (rtl/eth_mac_sys_l3_vhdl.f), all but net_rx, which is
+  # not ported yet: use with rtl/net/net_rx.v in a mixed-language build.
+  rtl_vhdl_l3:
+    files:
+      - rtl/vhdl/icmp_echo.vhd
+      - rtl/vhdl/udp_echo.vhd
+      - rtl/vhdl/udp_blast.vhd
+      - rtl/vhdl/udp_blast_trigger.vhd
+      - rtl/vhdl/udp_iperf_sink.vhd
+      - rtl/vhdl/udp_stats_reply.vhd
+    file_type: vhdlSource-93
+
   fpga_arty_rtl:
     files:
       - fpga/arty_a7/rtl/clk_gen.v

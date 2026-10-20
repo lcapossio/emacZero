@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/net/udp_echo.v (golden) vs rtl/vhdl/udp_echo.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/udp_echo/parity.yml --strict
+# udp_echo has no submodules. Its payload buffer (BUF_SIZE bytes: 1536 on
+# both boards, 1024 by default) is turned into flops by memory_map, so the
+# formal proof runs at small power-of-two sizes (8 and 16). The RTL is
+# parametric in BUF_SIZE.
+# A BUF_SIZE that is not a power of two (like 1536) does not close by
+# induction (BUF_SIZE = 6: 8 tx_data_mux bits unproven, everything else
+# proven). The ADDR_W-bit read address then reaches past the buffer, a
+# Verilog X; Yosys resolves that X to udp_buf[0] in the golden netlist and
+# to udp_buf[4]/[5] (addresses 6/7) in GHDL's, so the sides differ for
+# payload_tx_cnt >= BUF_SIZE in TX_PAYLOAD, which no input sequence reaches
+# (payload_len <= BUF_SIZE whenever a reply is sent, and it holds still
+# during the reply).
+# Writes are guarded (rx_cnt < BUF_SIZE) on both sides and do prove.
+# LISTEN_PORT is a [15:0] vector parameter (std_logic_vector generic), which
+# translateHDL param sets cannot set, so the nonzero-port branch (both boards
+# use 9999) goes through a one-instance wrapper per side
+# (udp_echo_listen.{v,vhd}) that takes the port as an integer. udp_echo
+# itself is proven at the default LISTEN_PORT = 0 (echo every port).
+# L4 runs at the production sizes.
+version: 1
+name: udp_echo_parity
+description: udp_echo Verilog golden vs VHDL port (LISTEN_PORT 0 and 9999)
+
+golden:
+  language: verilog
+  top: udp_echo
+  sources: [../../../rtl/net/udp_echo.v, udp_echo_listen.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: udp_echo
+  sources: [../../../rtl/vhdl/emz_util_pkg.vhd, ../../../rtl/vhdl/udp_echo.vhd,
+            udp_echo_listen.vhd]
+
+interface:
+  top: udp_echo
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: udp_echo
+      param_sets:
+        - {BUF_SIZE: 8}
+        - {BUF_SIZE: 16}
+    - name: udp_echo_listen
+      param_sets:
+        - {BUF_SIZE: 8, LPORT: 9999}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {}
+    - {BUF_SIZE: 1536}

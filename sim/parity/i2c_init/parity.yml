@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: fpga/zcu106/rtl/i2c_init.v (golden, which
+# `includes zcu106_si5328_rom.vh) vs fpga/zcu106/rtl/i2c_init.vhd (with
+# zcu106_si5328_rom_pkg.vhd).
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/i2c_init/parity.yml --strict
+#
+# The ROM is flattened into both sides, so every L2 proof also proves the two
+# tables equal: entry and alt are paired state, so the induction compares
+# rom_entry() for every idx (0..65535, including the default region) and both
+# values of alt. check_rom.py compares the two table sources textually.
+#
+# Param sets:
+# - the instance in zcu106_top (REFCLK_SI5328 = 1): 50 MHz, 100 kHz, 1 s start
+#   delay, 100 ms retry and done delays (production counters, full widths);
+# - the Verilog defaults;
+# - small dividers and delays (QTR = 2, and QTR = 1 with zero delays), so the
+#   base case reaches the bit engine within the induction depth.
+version: 1
+name: i2c_init_parity
+description: i2c_init Verilog golden vs VHDL port (Si5328 ROM included)
+
+golden:
+  language: verilog
+  top: i2c_init
+  sources: [../../../fpga/zcu106/rtl/i2c_init.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: i2c_init
+  sources: [../../../fpga/zcu106/rtl/zcu106_si5328_rom_pkg.vhd, ../../../fpga/zcu106/rtl/i2c_init.vhd]
+
+interface:
+  top: i2c_init
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 12
+  modules:
+    - name: i2c_init
+      param_sets:
+        - {CLK_HZ: 50000000, I2C_HZ: 100000, START_DELAY: 50000000, RETRY_DELAY: 5000000, DONE_DELAY: 5000000}
+        - {}
+        - {CLK_HZ: 8, I2C_HZ: 1, START_DELAY: 3, RETRY_DELAY: 2, DONE_DELAY: 4}
+        - {CLK_HZ: 4, I2C_HZ: 1, START_DELAY: 0, RETRY_DELAY: 0, DONE_DELAY: 0}
+
+# L4 tolerance is wider than the 10% default (148 -> 184 cells, +24.3%).
+# Registers, adders and muxes count the same on both sides; the candidate has
+# 37 more $eq cells (77 vs 40) and a few more small decode cells, from how
+# the ghdl --synth netlist lowers the case statements (ROM lookup and FSM)
+# into comparators. Which case contributes how much is not isolated. L2 is
+# the equivalence proof, at all four param sets.
+synth:
+  enabled: true
+  tolerance_pct: 30.0
+  param_sets:
+    - {}

@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/net/icmp_echo.v (golden) vs rtl/vhdl/icmp_echo.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/icmp_echo/parity.yml --strict
+# icmp_echo has no submodules. Its request buffer (MAX_LEN bytes, 1480 in
+# every instance) is turned into flops by memory_map, so the formal proof runs
+# at small MAX_LEN: 12, 15 and 20 (LEN_W = 4, 4, 5; none a power of two, like
+# 1480). The RTL is parametric in MAX_LEN. L4 runs at the production size.
+# A power-of-two MAX_LEN (e.g. 8) does not close by induction: the LEN_W-bit
+# counter then has one more bit than the buffer needs, GHDL truncates the
+# write address to clog2(MAX_LEN) bits while Yosys ignores an out-of-range
+# Verilog write, and the two differ for rx_cnt > MAX_LEN, which no input
+# sequence reaches (rx_store stops at MAX_LEN). MAX_LEN = 8 is
+# bounded-equivalent for 30 steps (no counterexample, ~13 min); it is left
+# out so the manifest passes --strict.
+version: 1
+name: icmp_echo_parity
+description: icmp_echo Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: icmp_echo
+  sources: [../../../rtl/net/icmp_echo.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: icmp_echo
+  sources: [../../../rtl/vhdl/emz_util_pkg.vhd, ../../../rtl/vhdl/icmp_echo.vhd]
+
+interface:
+  top: icmp_echo
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: icmp_echo
+      param_sets:
+        - {MAX_LEN: 12}
+        - {MAX_LEN: 15}
+        - {MAX_LEN: 20}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {}

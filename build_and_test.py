@@ -375,6 +375,39 @@ def run_vivado_elab():
 VHDL_FILELIST = os.path.join(PROJECT_DIR, "rtl", "eth_mac_sys_vhdl.f")
 VHDL_TARGETS = ("sim", "xilinx_7series", "xilinx_ultrascale_plus",
                 "intel_cyclone", "none")
+VHDL_L3_FILELIST = os.path.join(PROJECT_DIR, "rtl", "eth_mac_sys_l3_vhdl.f")
+
+# Proof-only models in sim/parity/ generated from (or checked against) the
+# real RTL; each script exits 1 when its model is stale.
+PARITY_GEN_CHECKS = (
+    ("sim/parity/mii_if/gen_smallram.py", "mii_if small-RAM parity models"),
+    ("sim/parity/test_sequencer/gen_golden.py", "test_sequencer parity golden"),
+    ("sim/parity/zcu106_top/gen_split.py", "zcu106_top split-pin parity models"),
+    ("sim/parity/i2c_init/check_rom.py", "Si5328 ROM: .vh table vs VHDL package"),
+)
+
+# Board-support VHDL, analysed after the core and L3 lists. Each step is
+# (files to analyse, entities to elaborate). Xilinx primitives, vendor IP,
+# fcapz and the Verilog-only children are component declarations left unbound,
+# which GHDL accepts. zcu106_top.vhd and zcu106_top_lb.vhd both declare entity
+# zcu106_top (the two ZCU106_SFP1_LB builds), so each is analysed and
+# elaborated in turn.
+VHDL_BOARD_STEPS = (
+    (["rtl/vhdl/axil_arb2.vhd",
+      "fpga/arty_a7/rtl/clk_gen.vhd",
+      "fpga/arty_a7/rtl/uart_tx.vhd",
+      "fpga/arty_a7/rtl/arp_responder.vhd",
+      "fpga/arty_a7/rtl/test_sequencer.vhd",
+      "fpga/arty_a7/rtl/gmii_lb_selftest.vhd",
+      "fpga/zcu106/rtl/zcu106_si5328_rom_pkg.vhd",
+      "fpga/zcu106/rtl/i2c_init.vhd",
+      "fpga/zcu106/rtl/sfp_lb_tester.vhd"],
+     ["icmp_echo", "udp_echo", "udp_blast", "udp_blast_trigger", "udp_iperf_sink",
+      "udp_stats_reply", "axil_arb2", "clk_gen", "uart_tx", "arp_responder",
+      "test_sequencer", "gmii_lb_selftest", "i2c_init", "sfp_lb_tester"]),
+    (["fpga/zcu106/rtl/zcu106_top.vhd"], ["zcu106_top"]),
+    (["fpga/zcu106/rtl/zcu106_top_lb.vhd"], ["zcu106_top"]),
+)
 
 
 def _vhdl_sources(target):
@@ -399,16 +432,17 @@ def run_ghdl_lint():
     The generated parity models of mii_if are checked first (no GHDL needed)."""
     header("PHASE 0d: GHDL lint (VHDL port)")
     all_ok = True
-    gen = os.path.join(PROJECT_DIR, "sim", "parity", "mii_if", "gen_smallram.py")
-    rc, stdout, stderr = run_cmd(f'"{sys.executable}" "{gen}" --check',
-                                 cwd=PROJECT_DIR, timeout=60)
-    if rc != 0:
-        all_ok = False
-        fail("mii_if small-RAM parity models are out of date")
-        for line in (stdout.strip() + "\n" + stderr.strip()).strip().splitlines()[:5]:
-            print(f"    {line}")
-    else:
-        ok("mii_if small-RAM parity models match rtl/mii_if.v and rtl/vhdl/mii_if.vhd")
+    for script, what in PARITY_GEN_CHECKS:
+        gen = os.path.join(PROJECT_DIR, *script.split("/"))
+        rc, stdout, stderr = run_cmd(f'"{sys.executable}" "{gen}" --check',
+                                     cwd=PROJECT_DIR, timeout=60)
+        if rc != 0:
+            all_ok = False
+            fail(f"{what}: out of date ({script} --check)")
+            for line in (stdout.strip() + "\n" + stderr.strip()).strip().splitlines()[:5]:
+                print(f"    {line}")
+        else:
+            ok(f"{what}: in sync")
 
     ghdl = os.environ.get("GHDL") or shutil.which("ghdl")
     wsl = None if ghdl else _find_wsl()
@@ -449,6 +483,40 @@ def run_ghdl_lint():
                 print(f"    {line}")
         else:
             ok(f"GHDL lint ({target}): analyse + elaborate eth_mac_sys")
+
+    # L3 and board-support VHDL, on the 7-series target. The commands run from
+    # inside the work directory, so any binary or object an elaboration leaves
+    # behind is removed with it.
+    rel = f"sim/.ghdl_{os.getpid()}_boards"
+    workdir = os.path.join(PROJECT_DIR, rel)
+    os.makedirs(workdir, exist_ok=True)
+    up = "../../"
+    core = [up + s for s in _vhdl_sources("xilinx_7series")]
+    with open(VHDL_L3_FILELIST, "r", encoding="utf-8") as f:
+        l3 = [up + ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+    steps = [f"cd {rel}", "{q} -a --std=93 " + " ".join(core + l3)]
+    tops = []
+    for files, entities in VHDL_BOARD_STEPS:
+        steps.append("{q} -a --std=93 " + " ".join(up + s for s in files))
+        steps += ["{q} -e --std=93 " + e for e in entities]
+        tops += entities
+    script = " && ".join(steps)
+    try:
+        if ghdl:
+            rc, stdout, stderr = run_cmd(script.format(q=f'"{ghdl}"'),
+                                         cwd=PROJECT_DIR, timeout=600)
+        else:
+            rc, stdout, stderr = _wsl_run(wsl, script.format(q="ghdl"), 600)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    if rc != 0:
+        all_ok = False
+        fail("GHDL lint (L3 + board VHDL)")
+        output = "\n".join(x for x in [stdout.strip(), stderr.strip()] if x)
+        for line in output.splitlines()[:20]:
+            print(f"    {line}")
+    else:
+        ok(f"GHDL lint (L3 + board VHDL): analyse + elaborate {len(tops)} tops")
     return all_ok
 
 

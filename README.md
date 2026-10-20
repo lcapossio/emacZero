@@ -319,7 +319,7 @@ The VHDL port ([rtl/vhdl/](rtl/vhdl/)) is checked by three more phases, each
 skipped, not failed, when its tool is missing:
 
 - `PHASE 0d` analyses and elaborates it with GHDL, as VHDL-93, for every vendor
-  target.
+  target, then does the same for the L3 and board VHDL.
 - `PHASE 1c` reruns the core testbenches against it in Vivado xsim.
 - `PHASE 2b` runs the same cocotb suites against it under GHDL, so both
   languages pass exactly the same tests.
@@ -465,7 +465,10 @@ computed from `MAX_FRAME` (`RX_AXIS_ADDR_WIDTH` of `eth_mac` and `eth_mac_sys`,
 `RX_FIFO_ADDR_WIDTH` of `gmii_cdc`, `BUF_ADDR_WIDTH` of `tx_csum_off`) default
 to 0, which selects that same computed value. VHDL-93 cannot express a generic
 default that depends on another generic. The port has not been run on hardware
-yet. See [docs/vhdl_port.md](docs/vhdl_port.md).
+yet. The L3 helpers ([rtl/eth_mac_sys_l3_vhdl.f](rtl/eth_mac_sys_l3_vhdl.f),
+all but `net_rx`) and most board modules of the Arty A7 and ZCU106 designs,
+including `zcu106_top`, are ported and proven too, but not simulated in VHDL;
+the board builds still need some Verilog. See [docs/vhdl_port.md](docs/vhdl_port.md).
 
 **LiteX** — `litex_emaczero/emaczero.py` ships an `EmacZero` `LiteXModule` that wraps
 `eth_mac_sys` with LiteX-native AXI-Lite + AXI-Stream interfaces:

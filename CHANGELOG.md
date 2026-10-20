@@ -14,9 +14,20 @@ This project does not yet maintain long-lived release branches.
   (manifests in `sim/parity/`; see `docs/vhdl_port.md`). Generics whose Verilog
   default is computed from `MAX_FRAME` default to 0 in VHDL, which selects
   that same value. Not yet run on hardware.
+- VHDL-93 ports of the L3 helpers (`rtl/eth_mac_sys_l3_vhdl.f`, FuseSoC
+  fileset `rtl_vhdl_l3`; all but `net_rx`), `axil_arb2`, and the board
+  modules `clk_gen`, `uart_tx`, `arp_responder`, `test_sequencer`,
+  `gmii_lb_selftest` (Arty A7) and `i2c_init`, `sfp_lb_tester`, `zcu106_top`
+  (ZCU106; `zcu106_top_lb.vhd` is the `ZCU106_SFP1_LB` build). Each is
+  formally proven equivalent to its Verilog, the tops with their children
+  replaced by stateful stand-ins. `net_rx`, `arty_tx_arbiter`, `arty_a7_top`
+  and `zcu106_eth_demo` are not ported yet, so board builds stay mixed
+  language. `udp_blast`'s delay generics are VHDL integers: pass a delay of
+  2^31 cycles or more as its negative 32-bit equivalent.
 - `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
-  The phase is skipped when GHDL is not installed.
+  The phase is skipped when GHDL is not installed. It also analyses and
+  elaborates the L3 and board VHDL, and checks the generated parity models.
 - cocotb ports of all 44 core Verilog testbenches (`sim/cocotb/tests/`), with
   the same DUT, parameters, timing and checks. Every cocotb suite runs on both
   the Verilog (Icarus) and the VHDL port (GHDL): `sim/cocotb/run.py --hdl both

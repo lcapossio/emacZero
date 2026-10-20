@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: fpga/zcu106/rtl/zcu106_top.v (golden, with
+# ZCU106_SFP1_LB defined, zcu106_sfp1_lb.vh) vs fpga/zcu106/rtl/zcu106_top_lb.vhd.
+# parity.yml proves the build without the loopback against zcu106_top.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/zcu106_top/parity_lb.yml --strict
+#
+# Param sets: the two build_zcu106.tcl lb configurations, si570 lb
+# (REFCLK_SI5328 = 0) and si5328 lb (REFCLK_SI5328 = 1).
+#
+# ASSUMPTIONS - what L2 covers:
+# - Every child is replaced, on both sides, by the stand-ins in
+#   zcu106_top_children.{v,vhd}: IBUFDS, BUFGCE_DIV, pcs_pma_1000basex(_ns),
+#   fcapz_ejtagaxi_xilinxus, fcapz_eio_xilinxus, i2c_init, zcu106_eth_demo and
+#   sfp_lb_tester. L2 covers the top's own logic (reset synchronizers, GT
+#   watchdog, MAC reset, counters, LEDs, ...) and its wiring to and generics
+#   on every child. It says nothing about the children: i2c_init is proven on
+#   its own (sim/parity/i2c_init), the others are vendor IP, fcapz, or other
+#   proofs. The stand-ins are registers on their own clock, fed by every input
+#   at its own bit and by a fingerprint of the generics, so outputs are not
+#   constant and a wrong connection or generic value diverges (see the header
+#   of zcu106_top_children.v for why port-only stubs would prove nothing).
+# - L2 runs on zcu106_top_split.v / zcu106_top_lb_split.vhd (gen_split.py --check keeps them
+#   current): the real tops with the open-drain I2C pins split into
+#   IIC_SCL_t / IIC_SDA_t / IIC_SDA_i, because L2 does not model the inout
+#   IIC_SDA and folds 'Z' to a constant. The two tri-state drivers themselves
+#   are checked only by gen_split.py matching them textually on both sides.
+#   L0, L1 and L4 run on the real tops.
+# - The 27-bit watchdog, 22/24-bit frequency meter and 23-bit LED stretch
+#   counters keep their real widths and limits (all state pairs by name).
+version: 1
+name: zcu106_top_lb_parity
+description: zcu106_top Verilog golden vs VHDL port (SFP1 loopback build), children stood in
+
+golden:
+  language: verilog
+  top: zcu106_top
+  sources: [zcu106_sfp1_lb.vh, zcu106_top_children.v, ../../../fpga/zcu106/rtl/zcu106_top.v, zcu106_top_split.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: zcu106_top
+  sources: [zcu106_top_children.vhd, ../../../fpga/zcu106/rtl/zcu106_top_lb.vhd, zcu106_top_lb_split.vhd]
+
+interface:
+  top: zcu106_top
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 10
+  modules:
+    - name: zcu106_top
+      golden_top: zcu106_top_split
+      candidate_top: zcu106_top_split
+      param_sets:
+        - {REFCLK_SI5328: 0}
+        - {REFCLK_SI5328: 1}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {REFCLK_SI5328: 0}
+    - {REFCLK_SI5328: 1}

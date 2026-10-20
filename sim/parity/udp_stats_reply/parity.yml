@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/net/udp_stats_reply.v (golden) vs rtl/vhdl/udp_stats_reply.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/udp_stats_reply/parity.yml --strict
+# udp_stats_reply has no parameters and no submodules; the 16-bit ip_id_cnt
+# and the latched 32-bit stats are proven at full width.
+version: 1
+name: udp_stats_reply_parity
+description: udp_stats_reply Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: udp_stats_reply
+  sources: [../../../rtl/net/udp_stats_reply.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: udp_stats_reply
+  sources: [../../../rtl/vhdl/udp_stats_reply.vhd]
+
+interface:
+  top: udp_stats_reply
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: udp_stats_reply
+      param_sets:
+        - {}
+
+# L4 tolerance is wider than the 10% default: GHDL lowers every `case` (the
+# RX and TX FSMs and the 14/20/52-way byte muxes on tx_cnt) to a one-hot
+# decode plus a $pmux keyed on that one-hot vector, so the coarse $eq count
+# goes 56 -> 145 (casing on the vector instead of to_integer() gives the same
+# count). Cell delta is +53.9% (178 -> 274, translateHDL be0ba18). The
+# register cells match exactly (4 $adff + 23 $adffe on both sides); L2 is the
+# equivalence proof.
+synth:
+  enabled: true
+  tolerance_pct: 60.0
+  param_sets:
+    - {}

@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/net/udp_blast.v (golden) vs rtl/vhdl/udp_blast.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/udp_blast/parity.yml --strict
+# udp_blast has no submodules. Its counters (32-bit start_delay_cnt, seq_cnt,
+# pkts_sent, ts_sec_cnt, ts_usec_cnt with the fixed 999999 rollover, 24-bit
+# gap_cnt) have fixed widths with no parameter to shrink them, so they are
+# proven at full width: every register pairs by name, so induction does not
+# need to reach a rollover. Proven at the instantiated parameters: default
+# (START_DELAY_CYCLES 0, the `!= 0` branch disabled; USEC_TICK_CYCLES 100),
+# the start-delay bench (4), Arty (100000000), ZCU106 (125000000 with
+# USEC_TICK_CYCLES 125), plus corners: USEC_TICK_CYCLES 200 (truncated to 7
+# bits by the Verilog `parameter [6:0]`, = 72) and, through the wrapper pair
+# udp_blast_maxdelay.{v,vhd}, START_DELAY_CYCLES = 32'hFFFFFFFF together with
+# USEC_TICK_CYCLES 0 (the `- 7'd1` compare wraps to 127). The VHDL integer
+# generic carries a 32-bit two's-complement pattern (-1 there), and Yosys
+# `hierarchy -chparam` cannot take a negative number, so that set cannot be
+# a plain param_set.
+version: 1
+name: udp_blast_parity
+description: udp_blast Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: udp_blast
+  sources: [../../../rtl/net/udp_blast.v, udp_blast_maxdelay.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: udp_blast
+  sources: [../../../rtl/vhdl/udp_blast.vhd, udp_blast_maxdelay.vhd]
+
+interface:
+  top: udp_blast
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: udp_blast
+      param_sets:
+        - {}
+        - {START_DELAY_CYCLES: 4}
+        - {START_DELAY_CYCLES: 100000000}
+        - {START_DELAY_CYCLES: 125000000, USEC_TICK_CYCLES: 125}
+        - {USEC_TICK_CYCLES: 200}
+    - name: udp_blast_maxdelay
+      param_sets:
+        - {}
+
+# L4 tolerance is wider than the 10% default: GHDL lowers every `case` (the
+# 6-state FSM and the four per-state byte muxes on hdr_cnt) to a one-hot
+# decode plus a $pmux keyed on that one-hot vector, so the coarse $eq count
+# triples (28 -> 88). Cell delta is +39.0% (159 -> 221, translateHDL
+# be0ba18). The register cells match exactly (8 $adff + 16 $adffe on both
+# sides); L2 is the equivalence proof.
+synth:
+  enabled: true
+  tolerance_pct: 45.0
+  param_sets:
+    - {}
