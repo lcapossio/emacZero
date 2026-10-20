@@ -22,8 +22,8 @@ wherever it is enabled. Parameters not listed are the Verilog defaults.
 | `csum_calc` | default | 10% |
 | `sync_fifo` | DW=4/AW=2, DW=11/AW=3 | 10% |
 | `async_fifo` | DW=4/AW=2, DW=10/AW=3; RAM_STYLE DISTRIBUTED and BLOCK | 10% |
-| `ddr_output` | SIM, NONE, INTEL_CYCLONE, XILINX_7SERIES, XILINX_ULTRASCALE_PLUS | 10% (vendor targets: n/a) |
-| `ddr_input` | SIM, NONE, INTEL_CYCLONE, XILINX_7SERIES, XILINX_ULTRASCALE_PLUS | 10% (vendor targets: n/a) |
+| `ddr_output` | SIM, INTEL_CYCLONE, XILINX_7SERIES, XILINX_ULTRASCALE_PLUS (NONE: output deliberately undriven, L0/L1/L4 only) | 10% (vendor targets: n/a) |
+| `ddr_input` | SIM, INTEL_CYCLONE, XILINX_7SERIES, XILINX_ULTRASCALE_PLUS (NONE: output deliberately undriven, L0/L1/L4 only) | 10% (vendor targets: n/a) |
 | `gmii_if` | SIM, INTEL_CYCLONE (no logic of its own depends on the target; the Xilinx DDR branches are proven in `ddr_output`) | 10% |
 | `rgmii_if` | RGMII_SPEEDS ALL, 1G_ONLY, 10_100 | 10% |
 | `mii_if` | MII_DEBUG=0 with TX_ENABLE 1 and 0; XILINX_7SERIES (XPM models) and the other targets (RX frame RAM cut to 8 words) | 10% |
@@ -60,9 +60,10 @@ generate-scope pairing, and checks the base case of every induction proof
 from the initial state. Point `YOSYS`/`GHDL` at the binaries if they are not
 on `PATH` under those names.
 
-With GHDL 6.0.0 on Windows, `eth_mac`, `eth_mac_rx`, `eth_mac_sys` and
-`tx_csum_off` leave `$equiv` cells unproven (the
-same with older translateHDL); they prove with GHDL 4.1.
+Last full run: every manifest, GHDL 4.1 with yowasp-yosys 0.63 under WSL,
+translateHDL be0ba18 (2026-10-20). With GHDL 6.0.0 on Windows, `eth_mac`,
+`eth_mac_rx`, `eth_mac_sys` and `tx_csum_off` leave `$equiv` cells unproven
+(the same with older translateHDL); use GHDL 4.1 for those.
 
 ```sh
 python <translateHDL>/skills/translate-hdl/scripts/parity.py sim/parity/<module>/parity.yml --strict
