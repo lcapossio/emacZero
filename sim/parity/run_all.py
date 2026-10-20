@@ -6,8 +6,10 @@
     python sim/parity/run_all.py --translatehdl <translateHDL checkout> [-j N] [module ...]
 
 Each sim/parity/<module>/ directory runs its manifests one after another (they
-share a GHDL work library there); up to N directories run in parallel. GHDL
-and Yosys come from $GHDL / $YOSYS or PATH, as translateHDL looks them up.
+share a GHDL work library there), then any prove_*.py in it: a proof that
+drives translateHDL's L2 directly where a manifest cannot express it, called
+with the translateHDL scripts directory. Up to N directories run in parallel.
+GHDL and Yosys come from $GHDL / $YOSYS or PATH, as translateHDL looks them up.
 Prints each module's log, then a summary, and exits 1 if any manifest did not
 pass. Under GitHub Actions each module's log is a collapsible group.
 """
@@ -29,17 +31,18 @@ def modules() -> list[str]:
 
 
 def run_module(name: str, parity: Path) -> tuple[str, list[tuple[str, int]], str, float]:
-    """Every manifest of one module: (name, [(manifest, rc)], log, seconds)."""
+    """Every manifest and prove_*.py of one module: (name, [(file, rc)], log, seconds)."""
     start = time.monotonic()
     results, log = [], []
-    for manifest in sorted((HERE / name).glob("*.yml")):
-        res = subprocess.run(
-            [sys.executable, str(parity), manifest.name, "--strict"],
-            cwd=HERE / name, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, check=False,
-        )
-        results.append((manifest.name, res.returncode))
-        log.append(f"===== {name}/{manifest.name} (exit {res.returncode})\n{res.stdout}")
+    cmds = [(m.name, [sys.executable, str(parity), m.name, "--strict"])
+            for m in sorted((HERE / name).glob("*.yml"))]
+    cmds += [(p.name, [sys.executable, str(p), str(parity.parent)])
+             for p in sorted((HERE / name).glob("prove_*.py"))]
+    for label, cmd in cmds:
+        res = subprocess.run(cmd, cwd=HERE / name, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, check=False)
+        results.append((label, res.returncode))
+        log.append(f"===== {name}/{label} (exit {res.returncode})\n{res.stdout}")
     return name, results, "\n".join(log), time.monotonic() - start
 
 
@@ -82,14 +85,14 @@ def main() -> int:
         bad = [m for m, rc in results if rc != 0]
         failed += [f"{name}/{m}" for m in bad]
         verdict = "PASS" if not bad else "FAIL " + ", ".join(bad)
-        print(f"  {name:<14} {len(results)} manifest(s)  {secs:6.0f} s  {verdict}")
+        print(f"  {name:<32} {len(results)} proof(s)  {secs:6.0f} s  {verdict}")
     if failed:
-        print(f"\n{len(failed)} manifest(s) did not pass: {', '.join(failed)}")
+        print(f"\n{len(failed)} proof(s) did not pass: {', '.join(failed)}")
         if gha:
             for f in failed:
                 print(f"::error::parity {f} did not pass")
         return 1
-    print(f"\nAll {sum(len(r) for _, r, _ in done)} manifests passed.")
+    print(f"\nAll {sum(len(r) for _, r, _ in done)} proofs passed.")
     return 0
 
 

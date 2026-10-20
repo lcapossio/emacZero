@@ -79,8 +79,10 @@ python <translateHDL>/skills/translate-hdl/scripts/parity.py parity.yml --strict
 
 Each manifest in [sim/parity/](../sim/parity/) lists its modules and parameter
 sets. Run the manifests of one directory one after another: they share a GHDL
-work library there. `run_all.py` does that, and exits 1 if any manifest does
-not pass.
+work library there. `run_all.py` does that, then runs any `prove_*.py` in the
+directory: proofs that drive translateHDL's L2 directly where a manifest
+cannot express them (`rgmii_if` with the real DDR cells of every target). It
+exits 1 if anything does not pass.
 
 CI runs every manifest on every push and pull request to `main`
 ([.github/workflows/parity.yml](../.github/workflows/parity.yml), one job

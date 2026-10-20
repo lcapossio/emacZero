@@ -14,7 +14,7 @@ equiv_induct, counterexample probe) and changes only how the design is read:
     `chparam -set RGMII_SPEEDS "<v>"` on the Verilog side and
     `ghdl --synth -gRGMII_SPEEDS=<v>` on the VHDL side, no wrapper.
 
-  * --ddr standin (default, the proof of record) reads the stateless DDR
+  * --ddr standin (also the proof of record, parity.yml) reads the stateless DDR
     stand-ins in sim/parity/stubs/ddr_standin.{v,vhd}. Yosys names a
     for-generate instance gen_txd[0].u_txd and GHDL names it gen_txd_n1_u_txd,
     so state inside those cells never pairs by name. The stand-ins hold no
@@ -22,7 +22,7 @@ equiv_induct, counterexample probe) and changes only how the design is read:
     cell connection. The real cells are proven per target in
     sim/parity/ddr_output and sim/parity/ddr_input.
 
-  * --ddr <target> (supplementary) reads the real ddr_output / ddr_input for
+  * --ddr <target> reads the real ddr_output / ddr_input for
     that target (Xilinx primitives as the stubs in sim/parity/stubs/) and
     renames instance labels in the GHDL netlist so the cell state pairs:
     gen_txd_n<k>_u_txd -> gen_txd[k-1].u_txd (same for gen_rx_data), and the
@@ -33,7 +33,10 @@ Needs GHDL and a Yosys with `rename -unescape` (GHDL / YOSYS env vars as for
 translateHDL). Usage, from the repository root:
 
   python3 sim/parity/rgmii_if/prove_rgmii_if.py <translateHDL>/skills/translate-hdl/scripts
-  python3 sim/parity/rgmii_if/prove_rgmii_if.py <scripts> --ddr sim
+  python3 sim/parity/rgmii_if/prove_rgmii_if.py <scripts> --ddr sim xilinx_7series
+
+Without --ddr it proves the stand-ins and every target (sim/parity/run_all.py
+runs it that way).
 Exit status 0 only if every requested configuration is PASS.
 """
 
@@ -86,7 +89,9 @@ def relabel(net: str, ddr: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("scripts", type=Path, help="translateHDL skills/translate-hdl/scripts dir")
-    ap.add_argument("--ddr", choices=("standin",) + TARGETS, default="standin")
+    ap.add_argument("--ddr", nargs="+", choices=("standin",) + TARGETS,
+                    default=["standin", *TARGETS],
+                    help="DDR cells to prove with (default: the stand-ins and every target)")
     ap.add_argument("--speeds", nargs="+", choices=SPEEDS, default=list(SPEEDS))
     ap.add_argument("--induct-depth", type=int, default=20)
     args = ap.parse_args()
@@ -100,21 +105,21 @@ def main() -> int:
         return 77
 
     # translateHDL reads each side through _read_cmds; hand it ours instead.
-    formal_equiv._read_cmds = lambda root, side, top, params, tmp, wrapper: side["cmds"]
+    formal_equiv._read_cmds = lambda root, side, top, params, tmp, wrapper, *_: side["cmds"]
 
-    gold_src, gate_src = sources(args.ddr)
     ok = True
     with tempfile.TemporaryDirectory(prefix=".formal_rgmii_", dir=REPO) as tmpname:
         tmp = Path(tmpname)
-        for speeds in args.speeds:
-            net = tmp / f"rgmii_if_{speeds}.v"
+        for ddr, speeds in ((d, s) for d in args.ddr for s in args.speeds):
+            gold_src, gate_src = sources(ddr)
+            net = tmp / f"rgmii_if_{ddr}_{speeds}.v"
             ghdl = [tool("ghdl"), "--std=93", f"--workdir={tmp}"]
             subprocess.run([ghdl[0], "-a", *ghdl[1:], *map(str, gate_src)], cwd=tmp, check=True)
             text = subprocess.run([ghdl[0], "--synth", *ghdl[1:], "--out=verilog",
                                    f"-gRGMII_SPEEDS={speeds}", "rgmii_if"],
                                   cwd=tmp, check=True, capture_output=True, text=True).stdout
-            if args.ddr != "standin":
-                text = relabel(text, args.ddr)
+            if ddr != "standin":
+                text = relabel(text, ddr)
             net.write_text(text, encoding="utf-8")
             gold = ["read_verilog " + " ".join(p.as_posix() for p in gold_src),
                     f'chparam -set RGMII_SPEEDS "{speeds}" rgmii_if',
@@ -124,7 +129,7 @@ def main() -> int:
                 REPO, {"golden": {"cmds": gold}, "candidate": {"cmds": gate}},
                 "rgmii_if", "rgmii_if", {}, {}, tmp, None, args.induct_depth, 0,
                 "clk2fflogic")
-            print(f"{status:5} rgmii_if[RGMII_SPEEDS={speeds}, ddr={args.ddr}] - {detail}",
+            print(f"{status:5} rgmii_if[RGMII_SPEEDS={speeds}, ddr={ddr}] - {detail}",
                   flush=True)
             ok = ok and status == "PASS"
     print("RESULT:", "PASS" if ok else "FAIL")
