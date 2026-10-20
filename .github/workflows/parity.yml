@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+#
+# Formal equivalence of the VHDL port (rtl/vhdl/) against the Verilog golden
+# (rtl/). Runs every translateHDL manifest in sim/parity/<module>/ with
+# --strict, one job per module. See docs/vhdl_port.md.
+
+name: parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # translateHDL and Yosys are pinned so a proof result only changes when this
+  # repository changes. Bump them together with a full rerun.
+  TRANSLATEHDL_REF: be0ba18db38cbba52af7343e4f9faeb5012eccd9
+  YOWASP_YOSYS_VERSION: 0.63.0.0.post1107
+
+jobs:
+  modules:
+    runs-on: ubuntu-24.04
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        # Every sim/parity/<module>/ that holds a manifest (stubs/ and
+        # defines/ only hold shared files).
+        run: |
+          list=$(for d in sim/parity/*/; do
+                   ls "$d"*.yml >/dev/null 2>&1 && basename "$d"
+                 done | jq -R . | jq -sc .)
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          echo "$list"
+
+  prove:
+    needs: modules
+    name: prove (${{ matrix.module }})
+    # Pinned: Ubuntu 24.04's GHDL is 4.1. GHDL 6 leaves some proofs unclosed
+    # (docs/vhdl_port.md).
+    runs-on: ubuntu-24.04
+    # eth_mac_sys takes about 11 minutes; the others 1 to 5.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(needs.modules.outputs.list) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: lcapossio/translateHDL
+          ref: ${{ env.TRANSLATEHDL_REF }}
+          path: .translatehdl
+
+      - name: Install GHDL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ghdl
+          ghdl --version | head -1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Yosys (YoWASP) and pyyaml
+        run: |
+          pip install "yowasp-yosys==${YOWASP_YOSYS_VERSION}" pyyaml
+          yowasp-yosys -V
+
+      - name: Prove ${{ matrix.module }}
+        env:
+          GHDL: ghdl
+          YOSYS: yowasp-yosys
+        # Manifests in one directory share a GHDL work library, so they run
+        # one after another.
+        run: |
+          cd "sim/parity/${{ matrix.module }}"
+          rc=0
+          for f in *.yml; do
+            echo "::group::$f"
+            python "$GITHUB_WORKSPACE/.translatehdl/skills/translate-hdl/scripts/parity.py" "$f" --strict || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc

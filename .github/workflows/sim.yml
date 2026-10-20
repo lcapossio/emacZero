@@ -2,6 +2,9 @@
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 #
 # Lint + simulation + cocotb regression. Mirrors `python build_and_test.py`.
+# With GHDL installed it also covers the VHDL port: PHASE 0d (GHDL analysis
+# and elaboration for every vendor target) and PHASE 2b (the cocotb suites on
+# the VHDL). The formal proofs of the port run in parity.yml.
 
 name: sim
 
@@ -14,8 +17,10 @@ on:
 
 jobs:
   sim:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Pinned: Ubuntu 24.04's GHDL is 4.1, the version the port is proven and
+    # simulated with (GHDL 6 behaves differently, see docs/vhdl_port.md).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,20 +29,24 @@ jobs:
       - name: Install HDL tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y iverilog verilator
+          sudo apt-get install -y iverilog verilator ghdl
           iverilog -V | head -1
           verilator --version
+          # Fails the step if GHDL is missing; build_and_test.py would only
+          # skip the VHDL phases.
+          ghdl --version | head -1
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install cocotb
-        # Icarus (installed above) is cocotb's simulator backend. Without this
-        # the cocotb phase (PHASE 2) would skip silently instead of running.
+        # Icarus and GHDL (installed above) are cocotb's simulator backends.
+        # Without this the cocotb phases (PHASE 2 and 2b) would skip silently
+        # instead of running.
         run: |
           pip install "cocotb>=2.0"
           python -c "import cocotb; print('cocotb', cocotb.__version__)"
 
-      - name: Run lint + simulation + cocotb
+      - name: Run lint + simulation + cocotb (Verilog and VHDL)
         run: python build_and_test.py
