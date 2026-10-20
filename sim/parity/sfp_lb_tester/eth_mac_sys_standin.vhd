@@ -128,7 +128,7 @@ architecture standin of eth_mac_sys is
     -- Every input but clk / rst_n, in port order (100 bits)
     signal in_bits : std_logic_vector(99 downto 0);
 
-    signal bb_q : std_logic_vector(127 downto 0);
+    signal bb_q : std_logic_vector(227 downto 0);
 
 begin
 
@@ -146,8 +146,7 @@ begin
         if rst_n = '0' then
             bb_q <= (others => '0');
         elsif rising_edge(clk) then
-            bb_q <= (bb_q(126 downto 0) & bb_q(127)) xor
-                    (std_logic_vector(to_unsigned(0, 28)) & in_bits) xor GEN_FP;
+            bb_q <= (bb_q(226 downto 0) & bb_q(227)) xor (in_bits & GEN_FP);
         end if;
     end process;
 

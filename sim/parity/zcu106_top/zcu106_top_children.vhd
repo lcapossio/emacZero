@@ -47,12 +47,12 @@ end entity BUFGCE_DIV;
 architecture standin of BUFGCE_DIV is
     constant FP : std_logic_vector(31 downto 0) :=
         std_logic_vector(to_signed(BUFGCE_DIVIDE, 32));
-    signal st : std_logic_vector(31 downto 0);
+    signal st : std_logic_vector(33 downto 0);
 begin
     process (I)
     begin
         if rising_edge(I) then
-            st <= (st(30 downto 0) & st(31)) xor FP xor ((31 downto 2 => '0') & CLR & CE);
+            st <= (st(32 downto 0) & st(33)) xor (CLR & CE & FP);
         end if;
     end process;
     O <= st(0);
@@ -93,14 +93,12 @@ architecture standin of i2c_init is
         std_logic_vector(G4) & std_logic_vector(G3) & std_logic_vector(G2) &
         std_logic_vector(G1) & std_logic_vector(G0);
 
-    signal st  : std_logic_vector(159 downto 0);
-    signal din : std_logic_vector(159 downto 0);
+    signal st  : std_logic_vector(161 downto 0);
 begin
-    din <= (159 downto 2 => '0') & rst_n & sda_i;
     process (clk)
     begin
         if rising_edge(clk) then
-            st <= (st(158 downto 0) & st(159)) xor din xor FP;
+            st <= (st(160 downto 0) & st(161)) xor (rst_n & sda_i & FP);
         end if;
     end process;
 
@@ -499,11 +497,11 @@ entity zcu106_eth_demo is
 end entity zcu106_eth_demo;
 
 architecture standin of zcu106_eth_demo is
-    signal st  : std_logic_vector(95 downto 0);
-    signal din : std_logic_vector(95 downto 0);
+    signal st  : std_logic_vector(164 downto 0);
+    signal din : std_logic_vector(68 downto 0);
     signal fp  : std_logic_vector(95 downto 0);
 begin
-    din <= (26 downto 0 => '0') & rst_n & gmii_rxd & gmii_rx_dv & gmii_rx_er &
+    din <= rst_n & gmii_rxd & gmii_rx_dv & gmii_rx_er &
            s_axi_awaddr & s_axi_awvalid & s_axi_wdata & s_axi_wstrb & s_axi_wvalid &
            s_axi_bready & s_axi_araddr & s_axi_arvalid & s_axi_rready &
            blast_frames_clear;
@@ -511,7 +509,7 @@ begin
     process (clk)
     begin
         if rising_edge(clk) then
-            st <= (st(94 downto 0) & st(95)) xor din xor fp;
+            st <= (st(163 downto 0) & st(164)) xor (din & fp);
         end if;
     end process;
 

@@ -15,7 +15,11 @@ architecture (that architecture's signals plus its entity's in/inout ports),
 strips comments, drops names declared locally as constants, variables or
 loop indices, and treats a name as read when it appears anywhere other than
 the target of a signal assignment. It can over-report (then fix the list or
-rename), and it does not look inside functions or procedures.
+rename). It misses signals read only inside an impure function or a
+procedure, or through an alias; it reads a record as its base name; and it
+skips a whole process that tests a clock edge, even one that also has
+combinational paths. The port has no impure functions or aliases, and its
+only procedures are local to a clocked process (test_sequencer).
 
     python sim/parity/sens_check.py               # every *.vhd in the repo
     python sim/parity/sens_check.py a.vhd b.vhd   # just these
@@ -74,7 +78,8 @@ def check_file(path: Path) -> list:
             sigs |= split_names(m.group(1))
         for m in re.finditer(r"\bprocess\s*\(([^)]*)\)(.*?)\bend\s+process\b", arch, re.I | re.S):
             body = m.group(2)
-            if re.search(r"rising_edge|falling_edge|'event", body, re.I):
+            # A real edge test, not just a name containing "rising_edge".
+            if re.search(r"\b(?:rising_edge|falling_edge)\s*\(|\w'event\b", body, re.I):
                 continue
             sens = split_names(m.group(1))
             local = set()

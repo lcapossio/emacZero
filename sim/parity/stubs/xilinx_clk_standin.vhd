@@ -7,11 +7,14 @@
 --
 -- MMCME2_BASE keeps a register `st` clocked by CLKIN1 (no reset, no initial
 -- value, so it pairs by name and starts free) whose next value is `st`
--- rotated by one, XOR RST and PWRDWN at bits 0 and 1, XOR a fingerprint of
--- every parameter at full width: each real parameter as round(value * 1000)
+-- rotated by one XOR {PWRDWN, RST, fingerprint}: the two pins sit above a
+-- fingerprint of every parameter at full width, so a pin can never cancel a
+-- parameter. In the fingerprint: each real parameter as round(value * 1000)
 -- in its own 32-bit field, each integer in its own 32-bit field, BANDWIDTH and
--- the two booleans as one bit per value. Distinct parameter values give
--- distinct fingerprints, so a wrong value on either side diverges (`st` is a
+-- the two booleans as one bit per value. Distinct legal values give distinct
+-- fingerprints (UG953 gives the real attributes to 0.001; two reals that round
+-- to the same thousandth share a field, and an illegal string sets no bit),
+-- so a wrong value on either side diverges (`st` is a
 -- paired state point). Every output is its own bit of `st`; CLKOUT0 also XORs
 -- CLKFBIN, so the feedback connection is checked. The output clocks are
 -- therefore state, not the input clock: a process clocked from CLKOUT0 has
@@ -93,8 +96,7 @@ architecture standin of MMCME2_BASE is
     begin
         return std_logic_vector(to_signed(x, 32));
     end function i32;
-    constant GEN_FP : std_logic_vector(839 downto 0) :=
-        "000" &
+    constant GEN_FP : std_logic_vector(836 downto 0) :=
         b(STARTUP_WAIT) &
         r32(REF_JITTER1) &
         i32(DIVCLK_DIVIDE) &
@@ -124,13 +126,12 @@ architecture standin of MMCME2_BASE is
         r32(CLKFBOUT_PHASE) &
         r32(CLKFBOUT_MULT_F) &
         b(BANDWIDTH = "HIGH") & b(BANDWIDTH = "LOW") & b(BANDWIDTH = "OPTIMIZED");
-    signal st : std_logic_vector(839 downto 0);
+    signal st : std_logic_vector(838 downto 0);
 begin
     process (CLKIN1)
     begin
         if rising_edge(CLKIN1) then
-            st <= (st(838 downto 0) & st(839)) xor GEN_FP xor
-                  (std_logic_vector(to_unsigned(0, 838)) & PWRDWN & RST);
+            st <= (st(837 downto 0) & st(838)) xor (PWRDWN & RST & GEN_FP);
         end if;
     end process;
 

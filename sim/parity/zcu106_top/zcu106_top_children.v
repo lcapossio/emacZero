@@ -24,7 +24,9 @@
 //   - the state sits under the instance name on both sides
 //     (u_demo.st, gen_si5328.u_si5328_init.st, ...), so it pairs by name.
 // The fingerprint gives every generic its own full-width field (strings one
-// bit per legal value), so distinct values never cancel. Clock outputs of the
+// bit per legal value), and the inputs are XORed in at bit positions above it,
+// so two generic values never cancel, neither against each other nor against
+// an input (a wrong generic plus an inverted control pin). Clock outputs of the
 // PCS/PMA cores are distinct combinational functions of the GT reference
 // clock pins; BUFGCE_DIV's output is a register bit clocked by its input, so
 // the divided clock is a different clock from the one it divides and logic
@@ -53,8 +55,8 @@ module BUFGCE_DIV #(
     input  wire I
 );
     localparam [31:0] FP = BUFGCE_DIVIDE;
-    reg [31:0] st;
-    always @(posedge I) st <= {st[30:0], st[31]} ^ FP ^ {30'd0, CLR, CE};
+    reg [33:0] st;
+    always @(posedge I) st <= {st[32:0], st[33]} ^ {CLR, CE, FP};
     assign O = st[0];
 endmodule
 
@@ -82,9 +84,8 @@ module i2c_init #(
     localparam [31:0] G4 = DONE_DELAY;
     localparam [159:0] FP = {G4, G3, G2, G1, G0};
 
-    reg  [159:0] st;
-    wire [159:0] din = {158'd0, rst_n, sda_i};
-    always @(posedge clk) st <= {st[158:0], st[159]} ^ din ^ FP;
+    reg  [161:0] st;
+    always @(posedge clk) st <= {st[160:0], st[161]} ^ {rst_n, sda_i, FP};
 
     assign scl_t      = st[0];
     assign sda_t      = st[1];
@@ -409,13 +410,13 @@ module zcu106_eth_demo #(
     input  wire        blast_frames_clear,
     output wire [31:0] blast_frames
 );
-    reg  [95:0] st;
-    wire [95:0] din = {27'd0, rst_n, gmii_rxd, gmii_rx_dv, gmii_rx_er,
+    reg  [164:0] st;
+    wire [68:0] din = {rst_n, gmii_rxd, gmii_rx_dv, gmii_rx_er,
                        s_axi_awaddr, s_axi_awvalid, s_axi_wdata, s_axi_wstrb, s_axi_wvalid,
                        s_axi_bready, s_axi_araddr, s_axi_arvalid, s_axi_rready,
                        blast_frames_clear};
     wire [95:0] fp  = {OUR_MAC, UDP_ECHO_PORT, BLAST_START_DELAY};
-    always @(posedge clk) st <= {st[94:0], st[95]} ^ din ^ fp;
+    always @(posedge clk) st <= {st[163:0], st[164]} ^ {din, fp};
 
     assign gmii_txd      = st[7:0];
     assign gmii_tx_en    = st[8];

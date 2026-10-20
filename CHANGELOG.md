@@ -56,9 +56,10 @@ This project does not yet maintain long-lived release branches.
 
 ### Known issues
 
-- `udp_echo` (Verilog, and the VHDL port, which reproduces it): a UDP payload
-  of exactly 4096 bytes at `BUF_SIZE` 1536 wraps the received length to 0, and
-  the echo then transmits until reset. Payloads of 4097 to 5632 bytes get a
+- `udp_echo` (Verilog, and the VHDL port, which reproduces it): at `BUF_SIZE`
+  1536 the received payload length wraps every 4096 bytes. A payload of
+  exactly 4096 or 8192 bytes is accepted with length 0, and the echo then
+  transmits until reset; payloads of 4097 to 5632 and 8193 to 8972 bytes get a
   truncated reply. Only a build that can receive such a frame is affected:
   the ZCU106 demo (MAX_FRAME 9018) once `jumbo_en` is set, not the Arty build
   (MAX_FRAME 1518).

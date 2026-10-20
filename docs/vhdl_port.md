@@ -124,29 +124,37 @@ stand-ins**, never by empty stubs: a port-only stub leaves its outputs
 undriven, Yosys folds them to constants, and everything fed by them then
 proves equal whatever it computes. Each stand-in is a register, clocked by
 the child's own clock input, that every cycle takes its rotated self XOR
-every input XOR a fingerprint of its generics, and drives every output from
+the inputs and a fingerprint of its generics, each at its own bits (the inputs
+above the fingerprint), and drives every output from
 that register (`sim/parity/sfp_lb_tester/eth_mac_sys_standin.{v,vhd}`,
 `sim/parity/zcu106_top/zcu106_top_children.{v,vhd}`,
 `sim/parity/stubs/xilinx_clk_standin.{v,vhd}`). The fingerprint gives each
 generic its own full-width field (a real as round(value * 1000) in 32 bits, a
-string as one bit per legal value), so two different settings never give the
-same fingerprint. The clocks a stand-in puts out (MMCM outputs, the
+string as one bit per legal value), so two different legal settings never
+give the same fingerprint, and since the inputs sit above it, a wrong generic
+cannot be cancelled by an inverted input either. The limits: reals are
+compared to 0.001 (the resolution the MMCM attributes are given to in UG953),
+an illegal string value sets no bit, and the fcapz EIO stand-in, which has no
+clock, folds its 96-bit fingerprint onto `probe_in` and is injective only for
+IN_W of 96 or more (`zcu106_top` uses 256 and 608). The clocks a stand-in puts out (MMCM outputs, the
 `BUFGCE_DIV` output) are bits of that register, not wires from its input
 clock, so logic moved from one clock domain to another diverges. A wrong
 port, generic or clock therefore fails the proof. Deliberate mutants were run
 against `clk_gen`, `sfp_lb_tester`, `gmii_lb_selftest` and `zcu106_top` (a
 swapped port, a wrong generic, a wrong constant, a wrong MMCM divider, a
 process moved to another clock, two generics changed so that an XOR
-fingerprint would cancel), and none of them passes.
+fingerprint would cancel, a wrong divide plus an inverted enable on
+`BUFGCE_DIV`), and none of them passes.
 
 **Known Verilog bug, reproduced as-is.** `udp_echo` counts the received
 payload in ADDR_W+1 bits (12 at BUF_SIZE 1536), and the count wraps. A
-payload of exactly 4096 bytes, which the ZCU106 build (MAX_FRAME 9018) can
-receive once `jumbo_en` is set, is accepted with length 0. The reply's end
+payload of exactly 4096 or 8192 bytes, which the ZCU106 build (MAX_FRAME
+9018, payloads up to 8972 bytes) can receive once `jumbo_en` is set, is
+accepted with length 0. The reply's end
 test compares the 12-bit byte counter with the 32-bit `payload_len - 1` and
 never matches, so the echo transmits until reset, reading past the buffer
-(x in Verilog, 0 in VHDL). Payloads of 4097 to 5632 bytes wrap to a short
-length and get a truncated reply. The Arty build (MAX_FRAME 1518) cannot
+(x in Verilog, 0 in VHDL). Payloads of 4097 to 5632 and 8193 to 8972 bytes
+wrap to a short length and get a truncated reply. The Arty build (MAX_FRAME 1518) cannot
 receive such a frame. The VHDL behaves the same; the fix, for both languages,
 is a separate change.
 

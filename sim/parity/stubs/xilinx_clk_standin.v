@@ -7,11 +7,14 @@
 //
 // MMCME2_BASE keeps a register `st` clocked by CLKIN1 (no reset, no initial
 // value, so it pairs by name and starts free) whose next value is `st`
-// rotated by one, XOR RST and PWRDWN at bits 0 and 1, XOR a fingerprint of
-// every parameter at full width: each real parameter as round(value * 1000)
+// rotated by one XOR {PWRDWN, RST, fingerprint}: the two pins sit above a
+// fingerprint of every parameter at full width, so a pin can never cancel a
+// parameter. In the fingerprint: each real parameter as round(value * 1000)
 // in its own 32-bit field, each integer in its own 32-bit field, BANDWIDTH and
-// the two booleans as one bit per value. Distinct parameter values give
-// distinct fingerprints, so a wrong value on either side diverges (`st` is a
+// the two booleans as one bit per value. Distinct legal values give distinct
+// fingerprints (UG953 gives the real attributes to 0.001; two reals that round
+// to the same thousandth share a field, and an illegal string sets no bit),
+// so a wrong value on either side diverges (`st` is a
 // paired state point). Every output is its own bit of `st`; CLKOUT0 also XORs
 // CLKFBIN, so the feedback connection is checked. The output clocks are
 // therefore state, not the input clock: a process clocked from CLKOUT0 has
@@ -119,11 +122,11 @@ module MMCME2_BASE #(
     localparam integer I_REF_JITTER1 = REF_JITTER1 * 1000.0;
     localparam [31:0]  F_REF_JITTER1 = I_REF_JITTER1;
     localparam [0:0]   F_STARTUP_WAIT = (STARTUP_WAIT == "TRUE");
-    localparam [839:0] GEN_FP = {3'd0, F_STARTUP_WAIT, F_REF_JITTER1, F_DIVCLK_DIVIDE, F_CLKOUT6_PHASE, F_CLKOUT6_DUTY_CYCLE, F_CLKOUT6_DIVIDE, F_CLKOUT5_PHASE, F_CLKOUT5_DUTY_CYCLE, F_CLKOUT5_DIVIDE, F_CLKOUT4_PHASE, F_CLKOUT4_DUTY_CYCLE, F_CLKOUT4_DIVIDE, F_CLKOUT4_CASCADE, F_CLKOUT3_PHASE, F_CLKOUT3_DUTY_CYCLE, F_CLKOUT3_DIVIDE, F_CLKOUT2_PHASE, F_CLKOUT2_DUTY_CYCLE, F_CLKOUT2_DIVIDE, F_CLKOUT1_PHASE, F_CLKOUT1_DUTY_CYCLE, F_CLKOUT1_DIVIDE, F_CLKOUT0_PHASE, F_CLKOUT0_DUTY_CYCLE, F_CLKOUT0_DIVIDE_F, F_CLKIN1_PERIOD, F_CLKFBOUT_PHASE, F_CLKFBOUT_MULT_F, F_BANDWIDTH};
+    localparam [836:0] GEN_FP = {F_STARTUP_WAIT, F_REF_JITTER1, F_DIVCLK_DIVIDE, F_CLKOUT6_PHASE, F_CLKOUT6_DUTY_CYCLE, F_CLKOUT6_DIVIDE, F_CLKOUT5_PHASE, F_CLKOUT5_DUTY_CYCLE, F_CLKOUT5_DIVIDE, F_CLKOUT4_PHASE, F_CLKOUT4_DUTY_CYCLE, F_CLKOUT4_DIVIDE, F_CLKOUT4_CASCADE, F_CLKOUT3_PHASE, F_CLKOUT3_DUTY_CYCLE, F_CLKOUT3_DIVIDE, F_CLKOUT2_PHASE, F_CLKOUT2_DUTY_CYCLE, F_CLKOUT2_DIVIDE, F_CLKOUT1_PHASE, F_CLKOUT1_DUTY_CYCLE, F_CLKOUT1_DIVIDE, F_CLKOUT0_PHASE, F_CLKOUT0_DUTY_CYCLE, F_CLKOUT0_DIVIDE_F, F_CLKIN1_PERIOD, F_CLKFBOUT_PHASE, F_CLKFBOUT_MULT_F, F_BANDWIDTH};
 
-    reg  [839:0] st;
+    reg  [838:0] st;
     always @(posedge CLKIN1)
-        st <= {st[838:0], st[839]} ^ GEN_FP ^ {838'd0, PWRDWN, RST};
+        st <= {st[837:0], st[838]} ^ {PWRDWN, RST, GEN_FP};
 
     assign CLKFBOUT  = st[0];
     assign CLKFBOUTB = st[1];
