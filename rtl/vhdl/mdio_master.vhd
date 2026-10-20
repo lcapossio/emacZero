@@ -161,7 +161,7 @@ begin
             mdio_i_sampled <= '1';
         elsif rising_edge(clk) then
             if mdc_rising = '1' then
-                mdio_i_sampled <= mdio_i;
+                mdio_i_sampled <= to_X01(mdio_i);
             end if;
         end if;
     end process;

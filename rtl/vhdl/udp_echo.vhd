@@ -392,7 +392,15 @@ begin
                     when others => tx_data_mux <= x"00";
                 end case;
             when TX_PAYLOAD =>
-                tx_data_mux <= udp_buf(to_integer(payload_tx_cnt(ADDR_W-1 downto 0)));
+                -- Past the last word (a BUF_SIZE that is not a power of two)
+                -- the Verilog reads x; this reads 0, one legal value of that
+                -- x. Reachable: a payload of exactly 2^(ADDR_W+1) bytes wraps
+                -- payload_len to 0 and the reply runs on (docs/vhdl_port.md).
+                if to_integer(payload_tx_cnt(ADDR_W-1 downto 0)) < BUF_SIZE then
+                    tx_data_mux <= udp_buf(to_integer(payload_tx_cnt(ADDR_W-1 downto 0)));
+                else
+                    tx_data_mux <= x"00";
+                end if;
             when others =>
                 tx_data_mux <= x"00";
         end case;

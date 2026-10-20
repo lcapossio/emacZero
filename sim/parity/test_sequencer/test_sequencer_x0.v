@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // PARITY MODEL ONLY - not for synthesis. GENERATED from
-// fpga/arty_a7/rtl/test_sequencer.v by sim/parity/test_sequencer/gen_golden.py; do not edit.
-// Renamed to test_sequencer_x0; the out-of-range ARP ROM read returns
-// 8'h00 instead of x. Everything else is the source verbatim.
+// fpga/arty_a7/rtl/test_sequencer.v by sim/parity/gen_goldens.py; do not edit.
+// Renamed to test_sequencer_x0; an out-of-range memory read returns 8'h00 instead
+// of x. Everything else is the source verbatim.
 // =============================================================================
 // test_sequencer.v - Hardware test FSM for emacZero on Arty A7
 // Drives AXI4-Lite CSR reads/writes, MDIO commands, sends a gratuitous ARP,

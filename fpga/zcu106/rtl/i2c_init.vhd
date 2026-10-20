@@ -94,7 +94,7 @@ begin
     process (clk)
     begin
         if rising_edge(clk) then
-            sda_sync <= sda_sync(0) & sda_i;
+            sda_sync <= sda_sync(0) & to_X01(sda_i);
         end if;
     end process;
     sda_s <= sda_sync(1);

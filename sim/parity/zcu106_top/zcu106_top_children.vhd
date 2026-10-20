@@ -25,10 +25,12 @@ begin
     O <= I and not IB;
 end architecture standin;
 
--- Pass-through for BUFGCE_DIVIDE = 6 (the value zcu106_top uses), inverted for
--- any other value, so a different divide value fails the proof.
+-- A register on I that mixes CE, CLR and BUFGCE_DIVIDE (all 32 bits); O is
+-- one of its bits. So O is a different clock from I, and a wrong divide value
+-- or a miswired CE / CLR diverges.
 library ieee;
 use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
 
 entity BUFGCE_DIV is
     generic (
@@ -43,13 +45,17 @@ entity BUFGCE_DIV is
 end entity BUFGCE_DIV;
 
 architecture standin of BUFGCE_DIV is
-    function fp_bit (c : boolean) return std_ulogic is
-    begin
-        if c then return '1'; else return '0'; end if;
-    end function fp_bit;
-    constant FP : std_ulogic := fp_bit(BUFGCE_DIVIDE /= 6);
+    constant FP : std_logic_vector(31 downto 0) :=
+        std_logic_vector(to_signed(BUFGCE_DIVIDE, 32));
+    signal st : std_logic_vector(31 downto 0);
 begin
-    O <= (I and CE and not CLR) xor FP;
+    process (I)
+    begin
+        if rising_edge(I) then
+            st <= (st(30 downto 0) & st(31)) xor FP xor ((31 downto 2 => '0') & CLR & CE);
+        end if;
+    end process;
+    O <= st(0);
 end architecture standin;
 
 -- ---- fpga/zcu106/rtl/i2c_init.v -----------------------------------------------
@@ -83,18 +89,18 @@ architecture standin of i2c_init is
     constant G2 : unsigned(31 downto 0) := to_unsigned(START_DELAY, 32);
     constant G3 : unsigned(31 downto 0) := to_unsigned(RETRY_DELAY, 32);
     constant G4 : unsigned(31 downto 0) := to_unsigned(DONE_DELAY, 32);
-    constant FP : std_logic_vector(31 downto 0) := std_logic_vector(
-        G0 xor rotate_left(G1, 1) xor rotate_left(G2, 2)
-           xor rotate_left(G3, 3) xor rotate_left(G4, 4));
+    constant FP : std_logic_vector(159 downto 0) :=
+        std_logic_vector(G4) & std_logic_vector(G3) & std_logic_vector(G2) &
+        std_logic_vector(G1) & std_logic_vector(G0);
 
-    signal st  : std_logic_vector(31 downto 0);
-    signal din : std_logic_vector(31 downto 0);
+    signal st  : std_logic_vector(159 downto 0);
+    signal din : std_logic_vector(159 downto 0);
 begin
-    din <= (31 downto 2 => '0') & rst_n & sda_i;
+    din <= (159 downto 2 => '0') & rst_n & sda_i;
     process (clk)
     begin
         if rising_edge(clk) then
-            st <= (st(30 downto 0) & st(31)) xor din xor FP;
+            st <= (st(158 downto 0) & st(159)) xor din xor FP;
         end if;
     end process;
 
@@ -307,7 +313,13 @@ entity fcapz_ejtagaxi_xilinxus is
 end entity fcapz_ejtagaxi_xilinxus;
 
 architecture standin of fcapz_ejtagaxi_xilinxus is
-    -- Integer generics only; the three memory-type strings are not modelled.
+    -- Every generic: the integers in their own 32-bit fields, each memory-type
+    -- string as one bit per legal value.
+    function b (c : boolean) return std_logic_vector is
+    begin
+        if c then return "1"; end if;
+        return "0";
+    end function b;
     constant G0 : unsigned(31 downto 0) := to_unsigned(ADDR_W, 32);
     constant G1 : unsigned(31 downto 0) := to_unsigned(DATA_W, 32);
     constant G2 : unsigned(31 downto 0) := to_unsigned(FIFO_DEPTH, 32);
@@ -317,11 +329,19 @@ architecture standin of fcapz_ejtagaxi_xilinxus is
     constant G6 : unsigned(31 downto 0) := to_unsigned(DEBUG_EN, 32);
     constant G7 : unsigned(31 downto 0) := to_unsigned(ASYNC_FIFO_IMPL, 32);
     constant G8 : unsigned(31 downto 0) := to_unsigned(CHAIN, 32);
-    constant FP : std_logic_vector(31 downto 0) := std_logic_vector(
-        G0 xor rotate_left(G1, 1) xor rotate_left(G2, 2)
-           xor rotate_left(G3, 3) xor rotate_left(G4, 4)
-           xor rotate_left(G5, 5) xor rotate_left(G6, 6)
-           xor rotate_left(G7, 7) xor rotate_left(G8, 8));
+    constant S0 : std_logic_vector(3 downto 0) :=
+        b(CMD_FIFO_MEMORY_TYPE = "ultra") & b(CMD_FIFO_MEMORY_TYPE = "distributed") &
+        b(CMD_FIFO_MEMORY_TYPE = "block") & b(CMD_FIFO_MEMORY_TYPE = "auto");
+    constant S1 : std_logic_vector(3 downto 0) :=
+        b(RESP_FIFO_MEMORY_TYPE = "ultra") & b(RESP_FIFO_MEMORY_TYPE = "distributed") &
+        b(RESP_FIFO_MEMORY_TYPE = "block") & b(RESP_FIFO_MEMORY_TYPE = "auto");
+    constant S2 : std_logic_vector(3 downto 0) :=
+        b(BURST_FIFO_MEMORY_TYPE = "ultra") & b(BURST_FIFO_MEMORY_TYPE = "distributed") &
+        b(BURST_FIFO_MEMORY_TYPE = "block") & b(BURST_FIFO_MEMORY_TYPE = "auto");
+    constant FP : std_logic_vector(299 downto 0) :=
+        S2 & S1 & S0 & std_logic_vector(G8) & std_logic_vector(G7) & std_logic_vector(G6) &
+        std_logic_vector(G5) & std_logic_vector(G4) & std_logic_vector(G3) &
+        std_logic_vector(G2) & std_logic_vector(G1) & std_logic_vector(G0);
 
     constant P_RREADY  : integer := 0;
     constant P_ARPROT  : integer := 1;
@@ -343,20 +363,21 @@ architecture standin of fcapz_ejtagaxi_xilinxus is
     constant P_AWADDR  : integer := P_AWLEN + 8;
     constant W         : integer := P_AWADDR + ADDR_W;   -- >= DATA_W + 11 and >= 32
     constant IN_N      : integer := DATA_W + 11;
+    constant WS        : integer := W + 300;          -- room for the whole FP
 
-    signal st    : std_logic_vector(W-1 downto 0);
+    signal st    : std_logic_vector(WS-1 downto 0);
     signal din_i : std_logic_vector(IN_N-1 downto 0);
-    signal din   : std_logic_vector(W-1 downto 0);
-    signal fp_w  : std_logic_vector(W-1 downto 0);
+    signal din   : std_logic_vector(WS-1 downto 0);
+    signal fp_w  : std_logic_vector(WS-1 downto 0);
 begin
     din_i <= axi_rst & m_axi_awready & m_axi_wready & m_axi_bresp & m_axi_bvalid &
              m_axi_arready & m_axi_rdata & m_axi_rresp & m_axi_rvalid & m_axi_rlast;
-    din   <= (W-1 downto IN_N => '0') & din_i;
-    fp_w  <= (W-1 downto 32 => '0') & FP;
+    din   <= (WS-1 downto IN_N => '0') & din_i;
+    fp_w  <= (WS-1 downto 300 => '0') & FP;
     process (axi_clk)
     begin
         if rising_edge(axi_clk) then
-            st <= (st(W-2 downto 0) & st(W-1)) xor din xor fp_w;
+            st <= (st(WS-2 downto 0) & st(WS-1)) xor din xor fp_w;
         end if;
     end process;
 
@@ -407,8 +428,8 @@ architecture standin of fcapz_eio_xilinxus is
     constant G0 : unsigned(31 downto 0) := to_unsigned(IN_W, 32);
     constant G1 : unsigned(31 downto 0) := to_unsigned(OUT_W, 32);
     constant G2 : unsigned(31 downto 0) := to_unsigned(CHAIN, 32);
-    constant FP : std_logic_vector(31 downto 0) := std_logic_vector(
-        G0 xor rotate_left(G1, 8) xor rotate_left(G2, 16));
+    constant FP : std_logic_vector(95 downto 0) :=
+        std_logic_vector(G2) & std_logic_vector(G1) & std_logic_vector(G0);
 begin
     -- lin, q, r: see zcu106_top_children.v.
     process (probe_in)
@@ -424,7 +445,7 @@ begin
             q := q xor (probe_in(i) and probe_in(i + 1));
         end loop;
         r := '0';
-        for i in integer range 0 to 31 loop
+        for i in integer range 0 to 95 loop
             r := r xor (FP(i) and probe_in(i mod IN_W));
         end loop;
         for j in integer range 0 to OUT_W - 1 loop

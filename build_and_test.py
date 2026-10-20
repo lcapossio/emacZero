@@ -381,10 +381,11 @@ VHDL_L3_FILELIST = os.path.join(PROJECT_DIR, "rtl", "eth_mac_sys_l3_vhdl.f")
 # real RTL; each script exits 1 when its model is stale.
 PARITY_GEN_CHECKS = (
     ("sim/parity/mii_if/gen_smallram.py", "mii_if small-RAM parity models"),
-    ("sim/parity/test_sequencer/gen_golden.py", "test_sequencer parity golden"),
+    ("sim/parity/gen_goldens.py", "test_sequencer and udp_echo x-refined parity goldens"),
     ("sim/parity/zcu106_top/gen_split.py", "zcu106_top split-pin parity models"),
     ("sim/parity/i2c_init/check_rom.py", "Si5328 ROM: .vh table vs VHDL package"),
 )
+SENS_CHECK = os.path.join(PROJECT_DIR, "sim", "parity", "sens_check.py")
 
 # Board-support VHDL, analysed after the core and L3 lists. Each step is
 # (files to analyse, entities to elaborate). Xilinx primitives, vendor IP,
@@ -429,7 +430,8 @@ def run_ghdl_lint():
     elaborate eth_mac_sys. The proofs of equivalence with the Verilog live in
     sim/parity/ (translateHDL); this phase only keeps the VHDL compiling.
     Skipped (not failed) where GHDL is unavailable, natively or in WSL.
-    The generated parity models of mii_if are checked first (no GHDL needed)."""
+    The generated parity models and the sensitivity lists of combinational
+    processes are checked first (no GHDL needed)."""
     header("PHASE 0d: GHDL lint (VHDL port)")
     all_ok = True
     for script, what in PARITY_GEN_CHECKS:
@@ -443,6 +445,17 @@ def run_ghdl_lint():
                 print(f"    {line}")
         else:
             ok(f"{what}: in sync")
+
+    # An incomplete sensitivity list shows only in simulation; the proofs run
+    # on synthesised netlists and cannot see it.
+    rc, stdout, stderr = run_cmd(f'"{sys.executable}" "{SENS_CHECK}"', cwd=PROJECT_DIR, timeout=60)
+    if rc != 0:
+        all_ok = False
+        fail("VHDL sensitivity lists (sim/parity/sens_check.py)")
+        for line in (stdout.strip() + "\n" + stderr.strip()).strip().splitlines()[:10]:
+            print(f"    {line}")
+    else:
+        ok(f"VHDL sensitivity lists: {stdout.strip().splitlines()[-1]}")
 
     ghdl = os.environ.get("GHDL") or shutil.which("ghdl")
     wsl = None if ghdl else _find_wsl()

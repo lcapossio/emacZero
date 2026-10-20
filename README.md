@@ -319,7 +319,9 @@ The VHDL port ([rtl/vhdl/](rtl/vhdl/)) is checked by three more phases, each
 skipped, not failed, when its tool is missing:
 
 - `PHASE 0d` analyses and elaborates it with GHDL, as VHDL-93, for every vendor
-  target, then does the same for the L3 and board VHDL.
+  target, then does the same for the L3 and board VHDL. Before that, without
+  GHDL, it checks the generated parity models and the sensitivity lists of the
+  combinational processes.
 - `PHASE 1c` reruns the core testbenches against it in Vivado xsim.
 - `PHASE 2b` runs the same cocotb suites against it under GHDL, so both
   languages pass exactly the same tests.

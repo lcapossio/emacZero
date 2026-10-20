@@ -4,28 +4,30 @@
 # fpga/arty_a7/rtl/clk_gen.vhd.
 # Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/clk_gen/parity.yml --strict
 #
-# clk_gen is one MMCME2_BASE and two BUFGs. Both sides read the stateless
-# stand-ins in this directory (xilinx_clk_prims.{v,vhd}) in place of unisim, so
-# L2 covers the wiring only: which net reaches which primitive pin, the
-# PWRDWN / RST tie-offs, the feedback BUFG and the output BUFG. It does NOT
-# cover the primitives or the MMCM parameter values (the stand-ins accept the
-# parameters but do not model them); those were checked by review against the
-# Verilog (same values; STARTUP_WAIT is the boolean FALSE in VHDL, where the
-# unisim VHDL component declares it boolean and the Verilog passes "FALSE").
+# clk_gen is one MMCME2_BASE and two BUFGs. Both sides read the stand-ins in
+# ../stubs/xilinx_clk_standin.{v,vhd} in place of unisim: the MMCM is a
+# register on CLKIN1 that mixes RST, PWRDWN and a full-width fingerprint of all
+# 29 parameters, with every output its own register bit (CLKOUT0 also XOR
+# CLKFBIN); BUFG is a wire. So L2 covers the wiring (which net reaches which
+# primitive pin, the PWRDWN / RST tie-offs, the feedback BUFG and the output
+# BUFG) and every MMCM parameter value, not the primitives themselves.
+# STARTUP_WAIT is the boolean FALSE in VHDL, where the unisim VHDL component
+# declares it boolean and the Verilog passes "FALSE"; the stand-ins encode
+# both as one bit.
 version: 1
 name: clk_gen_parity
-description: clk_gen Verilog golden vs VHDL port, primitive wiring only (stateless stand-ins)
+description: clk_gen Verilog golden vs VHDL port, primitive wiring and MMCM parameters (stateful stand-ins)
 
 golden:
   language: verilog
   top: clk_gen
-  sources: [xilinx_clk_prims.v, ../../../fpga/arty_a7/rtl/clk_gen.v]
+  sources: [../stubs/xilinx_clk_standin.v, ../../../fpga/arty_a7/rtl/clk_gen.v]
 
 candidate:
   language: vhdl
   std: "93"
   top: clk_gen
-  sources: [xilinx_clk_prims.vhd, ../../../fpga/arty_a7/rtl/clk_gen.vhd]
+  sources: [../stubs/xilinx_clk_standin.vhd, ../../../fpga/arty_a7/rtl/clk_gen.vhd]
 
 interface:
   top: clk_gen

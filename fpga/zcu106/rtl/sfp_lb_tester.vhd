@@ -450,7 +450,7 @@ begin
     exp_len <= to_unsigned(60, 16) when flen < 60 else flen;
 
     -- Expected reply byte at ridx, and whether it is compared
-    process (ridx, flen, kind, seq, ip_len, proto, udp_sport)
+    process (ridx, flen, kind, seq, ip_len, proto, udp_sport, udp_len_w)
         variable b : std_logic_vector(7 downto 0);
         variable c : std_logic;
     begin

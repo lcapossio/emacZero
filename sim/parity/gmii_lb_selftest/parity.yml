@@ -15,10 +15,13 @@
 #     the generic values (MAX_FRAME 9018, RX_AXIS_ADDR_WIDTH left at its
 #     default), not the MAC. In the induction step the MAC outputs take
 #     arbitrary values.
-#   - MMCME2_BASE, BUFG -> xilinx_clk_prims_standin.{v,vhd}: CLKOUT0 follows
-#     CLKIN1 (gated by the closed feedback loop), BUFG is a wire, LOCKED comes
-#     from a register mixing PWRDWN and a fingerprint of the four MMCM
-#     parameters. They check the wiring and generic values around the
+#   - MMCME2_BASE, BUFG -> ../stubs/xilinx_clk_standin.{v,vhd} (shared with
+#     clk_gen): the MMCM is a register on CLKIN1 that mixes RST, PWRDWN and a
+#     full-width fingerprint of all its parameters, with every output (the
+#     clocks too) its own register bit and CLKOUT0 also XOR CLKFBIN. So clk_125
+#     is a different clock from clk, logic moved between the two domains
+#     diverges, and a wrong MMCM parameter or feedback connection diverges.
+#     BUFG is a wire. They check the wiring and generic values around the
 #     primitives, not the primitives.
 #
 # Target: XILINX_7SERIES on both sides (defines/xilinx_7series.vh,
@@ -38,7 +41,7 @@ golden:
   top: gmii_lb_selftest
   sources:
     - ../defines/xilinx_7series.vh
-    - xilinx_clk_prims_standin.v
+    - ../stubs/xilinx_clk_standin.v
     - ../sfp_lb_tester/eth_mac_sys_standin.v
     - ../../../fpga/arty_a7/rtl/gmii_lb_selftest.v
 
@@ -49,7 +52,7 @@ candidate:
   sources:
     - ../../../rtl/vhdl/target/emz_target_xilinx_7series.vhd
     - ../../../rtl/vhdl/emz_util_pkg.vhd
-    - xilinx_clk_prims_standin.vhd
+    - ../stubs/xilinx_clk_standin.vhd
     - ../sfp_lb_tester/eth_mac_sys_standin.vhd
     - ../../../fpga/arty_a7/rtl/gmii_lb_selftest.vhd
 

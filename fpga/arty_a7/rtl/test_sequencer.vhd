@@ -196,7 +196,7 @@ architecture rtl of test_sequencer is
     -- Verilog `arp_frame[arp_idx]`. arp_idx only counts 0..41, so in operation
     -- this is a plain lookup. An index past word 41 is unreachable and reads x
     -- in Verilog; here it reads 0, one legal value of that x. The parity proof
-    -- uses a golden with the same 0 (sim/parity/test_sequencer/gen_golden.py).
+    -- uses a golden with the same 0 (sim/parity/gen_goldens.py).
     function arp_byte(idx : unsigned(7 downto 0)) return std_logic_vector is
     begin
         if idx < 42 then

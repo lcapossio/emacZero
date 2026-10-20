@@ -23,9 +23,13 @@
 //   - a generic passed with a different value diverges;
 //   - the state sits under the instance name on both sides
 //     (u_demo.st, gen_si5328.u_si5328_init.st, ...), so it pairs by name.
-// Clock outputs are combinational functions of clock inputs; each one is a
-// different function, so swapped clock connections diverge too. The fcapz
-// EIO has no clock port: its stand-in is combinational, see its comment.
+// The fingerprint gives every generic its own full-width field (strings one
+// bit per legal value), so distinct values never cancel. Clock outputs of the
+// PCS/PMA cores are distinct combinational functions of the GT reference
+// clock pins; BUFGCE_DIV's output is a register bit clocked by its input, so
+// the divided clock is a different clock from the one it divides and logic
+// moved between the two domains diverges. The fcapz EIO has no clock port:
+// its stand-in is combinational, see its comment.
 // =============================================================================
 
 // ---- unisim -----------------------------------------------------------------
@@ -37,8 +41,9 @@ module IBUFDS (
     assign O = I & ~IB;
 endmodule
 
-// Pass-through for BUFGCE_DIVIDE = 6 (the value zcu106_top uses), inverted for
-// any other value, so a different divide value fails the proof.
+// A register on I that mixes CE, CLR and BUFGCE_DIVIDE (all 32 bits); O is
+// one of its bits. So O is a different clock from I, and a wrong divide value
+// or a miswired CE / CLR diverges.
 module BUFGCE_DIV #(
     parameter BUFGCE_DIVIDE = 1
 ) (
@@ -47,7 +52,10 @@ module BUFGCE_DIV #(
     input  wire CLR,
     input  wire I
 );
-    assign O = (I & CE & ~CLR) ^ (BUFGCE_DIVIDE != 6);
+    localparam [31:0] FP = BUFGCE_DIVIDE;
+    reg [31:0] st;
+    always @(posedge I) st <= {st[30:0], st[31]} ^ FP ^ {30'd0, CLR, CE};
+    assign O = st[0];
 endmodule
 
 // ---- fpga/zcu106/rtl/i2c_init.v -----------------------------------------------
@@ -72,12 +80,11 @@ module i2c_init #(
     localparam [31:0] G2 = START_DELAY;
     localparam [31:0] G3 = RETRY_DELAY;
     localparam [31:0] G4 = DONE_DELAY;
-    localparam [31:0] FP = G0 ^ ((G1 << 1) | (G1 >> 31)) ^ ((G2 << 2) | (G2 >> 30))
-                              ^ ((G3 << 3) | (G3 >> 29)) ^ ((G4 << 4) | (G4 >> 28));
+    localparam [159:0] FP = {G4, G3, G2, G1, G0};
 
-    reg  [31:0] st;
-    wire [31:0] din = {30'd0, rst_n, sda_i};
-    always @(posedge clk) st <= {st[30:0], st[31]} ^ din ^ FP;
+    reg  [159:0] st;
+    wire [159:0] din = {158'd0, rst_n, sda_i};
+    always @(posedge clk) st <= {st[158:0], st[159]} ^ din ^ FP;
 
     assign scl_t      = st[0];
     assign sda_t      = st[1];
@@ -251,7 +258,8 @@ module fcapz_ejtagaxi_xilinxus #(
     output wire [255:0]          debug_axi,
     output wire [255:0]          debug_axi_edge
 );
-    // Integer generics only; the three memory-type strings are not modelled.
+    // Every generic: the integers in their own 32-bit fields, each memory-type
+    // string as one bit per legal value.
     localparam [31:0] G0 = ADDR_W;
     localparam [31:0] G1 = DATA_W;
     localparam [31:0] G2 = FIFO_DEPTH;
@@ -261,10 +269,13 @@ module fcapz_ejtagaxi_xilinxus #(
     localparam [31:0] G6 = DEBUG_EN;
     localparam [31:0] G7 = ASYNC_FIFO_IMPL;
     localparam [31:0] G8 = CHAIN;
-    localparam [31:0] FP = G0 ^ ((G1 << 1) | (G1 >> 31)) ^ ((G2 << 2) | (G2 >> 30))
-                              ^ ((G3 << 3) | (G3 >> 29)) ^ ((G4 << 4) | (G4 >> 28))
-                              ^ ((G5 << 5) | (G5 >> 27)) ^ ((G6 << 6) | (G6 >> 26))
-                              ^ ((G7 << 7) | (G7 >> 25)) ^ ((G8 << 8) | (G8 >> 24));
+    localparam [3:0] S0 = {CMD_FIFO_MEMORY_TYPE == "ultra", CMD_FIFO_MEMORY_TYPE == "distributed",
+                           CMD_FIFO_MEMORY_TYPE == "block", CMD_FIFO_MEMORY_TYPE == "auto"};
+    localparam [3:0] S1 = {RESP_FIFO_MEMORY_TYPE == "ultra", RESP_FIFO_MEMORY_TYPE == "distributed",
+                           RESP_FIFO_MEMORY_TYPE == "block", RESP_FIFO_MEMORY_TYPE == "auto"};
+    localparam [3:0] S2 = {BURST_FIFO_MEMORY_TYPE == "ultra", BURST_FIFO_MEMORY_TYPE == "distributed",
+                           BURST_FIFO_MEMORY_TYPE == "block", BURST_FIFO_MEMORY_TYPE == "auto"};
+    localparam [299:0] FP = {S2, S1, S0, G8, G7, G6, G5, G4, G3, G2, G1, G0};
 
     localparam P_RREADY  = 0;
     localparam P_ARPROT  = 1;
@@ -286,13 +297,14 @@ module fcapz_ejtagaxi_xilinxus #(
     localparam P_AWADDR  = P_AWLEN + 8;
     localparam W         = P_AWADDR + ADDR_W;   // >= DATA_W + 11 and >= 32
     localparam IN_N      = DATA_W + 11;
+    localparam WS        = W + 300;                 // room for the whole FP
 
-    reg  [W-1:0] st;
+    reg  [WS-1:0] st;
     wire [IN_N-1:0] din_i = {axi_rst, m_axi_awready, m_axi_wready, m_axi_bresp, m_axi_bvalid,
                              m_axi_arready, m_axi_rdata, m_axi_rresp, m_axi_rvalid, m_axi_rlast};
-    wire [W-1:0] din = {{(W-IN_N){1'b0}}, din_i};
-    wire [W-1:0] fp  = {{(W-32){1'b0}}, FP};
-    always @(posedge axi_clk) st <= {st[W-2:0], st[W-1]} ^ din ^ fp;
+    wire [WS-1:0] din = {{(WS-IN_N){1'b0}}, din_i};
+    wire [WS-1:0] fp  = {{W{1'b0}}, FP};
+    always @(posedge axi_clk) st <= {st[WS-2:0], st[WS-1]} ^ din ^ fp;
 
     assign m_axi_rready  = st[P_RREADY];
     assign m_axi_arprot  = st[P_ARPROT+2:P_ARPROT];
@@ -332,14 +344,15 @@ module fcapz_eio_xilinxus #(
     localparam [31:0] G0 = IN_W;
     localparam [31:0] G1 = OUT_W;
     localparam [31:0] G2 = CHAIN;
-    localparam [31:0] FP = G0 ^ ((G1 << 8) | (G1 >> 24)) ^ ((G2 << 16) | (G2 >> 16));
+    localparam [95:0] FP = {G2, G1, G0};
 
     // lin: chunk k of probe_in rotated by k bits, XORed onto probe_out.
     // q:   XOR of the products of neighbouring probe_in bits; it reaches every
     //      output bit, so a swap of any two probe_in bits changes even an
     //      output bit the top reads alone (cnt_ctrl[0]).
-    // r:   XOR of FP[k] & probe_in[k]; a different generic value changes it
-    //      for some probe_in value, on every output bit.
+    // r:   XOR of FP[k] & probe_in[k mod IN_W]; with IN_W >= 96 (zcu106_top
+    //      uses 256) each FP bit meets its own probe_in bit, so a different
+    //      generic value changes r for some probe_in value, on every output bit.
     reg [OUT_W-1:0] lin;
     reg             q, r;
     integer i;
@@ -351,7 +364,7 @@ module fcapz_eio_xilinxus #(
         for (i = 0; i < IN_W - 1; i = i + 1)
             q = q ^ (probe_in[i] & probe_in[i + 1]);
         r = 1'b0;
-        for (i = 0; i < 32; i = i + 1)
+        for (i = 0; i < 96; i = i + 1)
             r = r ^ (FP[i] & probe_in[i % IN_W]);
         // Bit by bit, as the VHDL twin: one OUT_W-wide $xor would keep every
         // lin chain alive in L4 even where the top reads a single output bit.

@@ -27,7 +27,9 @@ This project does not yet maintain long-lived release branches.
 - `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
   The phase is skipped when GHDL is not installed. It also analyses and
-  elaborates the L3 and board VHDL, and checks the generated parity models.
+  elaborates the L3 and board VHDL, checks the generated parity models, and
+  fails on a combinational VHDL process whose sensitivity list misses a
+  signal it reads (`sim/parity/sens_check.py`).
 - cocotb ports of all 44 core Verilog testbenches (`sim/cocotb/tests/`), with
   the same DUT, parameters, timing and checks. Every cocotb suite runs on both
   the Verilog (Icarus) and the VHDL port (GHDL): `sim/cocotb/run.py --hdl both
@@ -51,6 +53,15 @@ This project does not yet maintain long-lived release branches.
 - `tb_gmii_cdc_rx_overflow.v` reads its FIFO-word probe through a wire, and
   `tb_eth_stats.v` can leave out its force-based saturation test
   (`TB_NO_HIER_FORCE`), so both also run against a VHDL DUT in xsim.
+
+### Known issues
+
+- `udp_echo` (Verilog, and the VHDL port, which reproduces it): a UDP payload
+  of exactly 4096 bytes at `BUF_SIZE` 1536 wraps the received length to 0, and
+  the echo then transmits until reset. Payloads of 4097 to 5632 bytes get a
+  truncated reply. Only a build that can receive such a frame is affected:
+  the ZCU106 demo (MAX_FRAME 9018) once `jumbo_en` is set, not the Arty build
+  (MAX_FRAME 1518).
 
 ### Fixed
 

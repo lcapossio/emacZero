@@ -17,9 +17,12 @@
 #   on every child. It says nothing about the children: i2c_init is proven on
 #   its own (sim/parity/i2c_init), the others are vendor IP, fcapz, or other
 #   proofs. The stand-ins are registers on their own clock, fed by every input
-#   at its own bit and by a fingerprint of the generics, so outputs are not
-#   constant and a wrong connection or generic value diverges (see the header
-#   of zcu106_top_children.v for why port-only stubs would prove nothing).
+#   at its own bit and by a fingerprint of the generics (each generic in its
+#   own full-width field, so two settings never collide), so outputs are not
+#   constant and a wrong connection or generic value diverges. BUFGCE_DIV's
+#   output is a register bit too, so clk_50 is a clock of its own and logic
+#   moved to clk_300_ibuf diverges (see the header of zcu106_top_children.v,
+#   also for why port-only stubs would prove nothing).
 # - L2 runs on zcu106_top_split.{v,vhd} (gen_split.py --check keeps them
 #   current): the real tops with the open-drain I2C pins split into
 #   IIC_SCL_t / IIC_SDA_t / IIC_SDA_i, because L2 does not model the inout
