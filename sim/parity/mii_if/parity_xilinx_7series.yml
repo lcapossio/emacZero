@@ -8,7 +8,7 @@
 # (sim/parity/stubs/xpm_macros.{v,vhd}; read that header for what they model).
 # The proof shows mii_if.v == mii_if.vhd around identical macro behaviour, and
 # checks every port connection and every generic value the VHDL passes (the
-# stubs fingerprint all of them, strings by their last 24 characters), even
+# stubs fingerprint all of them and refuse strings over 24 characters), even
 # the generics whose behaviour the stubs do not model. It says nothing about
 # the real XPMs. The stubs keep only a few words
 # of storage (FIFO 4, sdpram 8, data aliases past that) so the unbounded proof

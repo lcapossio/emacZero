@@ -48,7 +48,8 @@ Not proven:
 - `mii_if`'s inline 4096x9 RX frame RAM at full depth on the non-Xilinx
   targets. The solver does not finish. The proofs use a generated copy with
   the RAM cut to 8 words on both sides; the addressing logic keeps its full
-  width.
+  width, and each word keeps the high bits of its write address as a tag
+  (see the stand-ins below), so a wrong address bit still shows.
 
 The higher L4 tolerances are for state machines: GHDL lowers a `case` to a
 one-hot decode, roughly doubling the `$eq` cells. Flop counts match.
@@ -118,7 +119,9 @@ Not proven, and why:
   the two drivers are the same expression on both sides. The split models
   also bring the fcapz EIO's `probe_in` out on an extra output,
   `PARITY_PROBE_IN`, so every probe bit is compared directly (see the EIO
-  stand-in below).
+  stand-in below). The port is driven from whatever `probe_in` is actually
+  wired to (the VHDL port map is read, not assumed), so a corrupted copy
+  wired into the EIO is what gets compared.
 
 What the board proofs cover: each top's own logic and every connection and
 generic it passes to a child. The children are proven separately (or are
@@ -242,6 +245,15 @@ that workflow. Bump them there, and rerun everything when you do.
     proven equivalent across languages at those parameter sets.
   - `sim/parity/mii_if/mii_if_smallram.{v,vhd}`: `mii_if` with the RX frame
     RAM cut to 8 words, generated from the real files by `gen_smallram.py`.
+    Eight words alone would hide address bits 11:3, so each word also keeps
+    those bits of its write address, and a read returns the stored byte XOR
+    (stored high bits XOR read address bits 11:3): the byte itself when the
+    read address is the one written, a different value otherwise. The tag
+    is a second array: an 18-bit word holding both stops the induction from
+    closing. Checked on a one-module extract of the generated RAM block: a
+    read address with bits 11:3 dropped, or a write address off by 8, fails
+    with a counterexample (on the whole `mii_if` such a mutant was still in
+    induction after 45 minutes).
     `build_and_test.py` fails if the copies are out of date. Used by the
     `mii_if`, `eth_mac` and `eth_mac_sys` (MII) proofs.
   - `sim/parity/stubs/ddr_standin.{v,vhd}`: stateless DDR cells inside
@@ -252,14 +264,18 @@ that workflow. Bump them there, and rerun everything when you do.
     not the primitive itself. The XPM models also check every generic by
     value, including those whose behaviour they do not model (memory
     primitive, ECC, read latencies they do not implement): each folds a
-    fingerprint of all its generics (strings by their last 24 characters)
-    into bit 0 of its read data, so a generic that differs between the two
-    sides fails the proof. It fails as BOUNDED rather than with a
+    fingerprint of all its generics into bit 0 of its read data, so a
+    generic that differs between the two sides fails the proof. A string
+    longer than 24 characters, which the fingerprint could not tell apart,
+    stops elaboration on both sides. The 8-word `xpm_memory_sdpram` keeps the
+    same address tag as `mii_if_smallram`, so a wrong high address bit on
+    either port changes the data read. It fails as BOUNDED rather than with a
     counterexample when the differing bit lies deep in the fingerprint
     (induction fails on the read data, and the short probe from reset cannot
     step that far through it); `--strict` counts both as failures. Checked
     with mutants on one-instance wrappers using `mii_if`'s generic maps: a
     wrong memory primitive, `READ_LATENCY_B` 0, `MEMORY_INIT_FILE`,
+    a read or write address off by 8 or 2048,
     `FIFO_READ_LATENCY`, `FIFO_MEMORY_TYPE`, and `USE_ADV_FEATURES` "0x04"
     for "0004" (the same hex value) all fail. On the whole `mii_if`, one such
     mutant was still in induction after more than half an hour, so the

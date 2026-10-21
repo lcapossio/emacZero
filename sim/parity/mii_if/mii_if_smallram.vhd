@@ -3,7 +3,10 @@
 -- PARITY MODEL ONLY - not for synthesis or the core. GENERATED from
 -- rtl/vhdl/mii_if.vhd by sim/parity/mii_if/gen_smallram.py; do not edit.
 -- The inline RX frame RAM is cut from 4096 to 8 words, indexed by the
--- low three address bits. Everything else is the source verbatim.
+-- low three address bits; rx_frame_mem_tag keeps each word's write
+-- address bits 11:3, XORed with the read address bits 11:3 on a read
+-- (see gen_smallram.py).
+-- Everything else is the source verbatim.
 -- =============================================================================
 -- mii_if.vhd - MII PHY Interface with Store-and-Forward CDC
 -- Converts between 8-bit GMII (100 MHz sys_clk) and 4-bit MII (25 MHz PHY)
@@ -417,6 +420,7 @@ architecture rtl of mii_if is
     -- Inferred RX frame buffer (every target except XILINX_7SERIES). Declared
     -- here rather than inside the generate so its name matches the Verilog.
     signal rx_frame_mem        : frame_mem_t;
+    signal rx_frame_mem_tag    : frame_mem_t;
     attribute ram_style of rx_frame_mem : signal is "block";
     signal rx_frame_mem_dout_r : std_logic_vector(8 downto 0);
 
@@ -890,10 +894,15 @@ begin
         begin
             if rising_edge(clk) then
                 if rx_mem_wr_en = '1' then
-                    rx_frame_mem(to_integer(rx_mem_wr_addr(2 downto 0))) <= rx_mem_wr_data;
+                    rx_frame_mem(to_integer(rx_mem_wr_addr(2 downto 0)))     <= rx_mem_wr_data;
+                    rx_frame_mem_tag(to_integer(rx_mem_wr_addr(2 downto 0))) <=
+                        std_logic_vector(rx_mem_wr_addr(11 downto 3));
                 end if;
                 if rx_mem_rd_en = '1' then
-                    rx_frame_mem_dout_r <= rx_frame_mem(to_integer(unsigned(rx_mem_rd_addr_reg(2 downto 0))));
+                    rx_frame_mem_dout_r <=
+                        rx_frame_mem(to_integer(unsigned(rx_mem_rd_addr_reg(2 downto 0)))) xor
+                        rx_frame_mem_tag(to_integer(unsigned(rx_mem_rd_addr_reg(2 downto 0)))) xor
+                        rx_mem_rd_addr_reg(11 downto 3);
                 end if;
             end if;
         end process;

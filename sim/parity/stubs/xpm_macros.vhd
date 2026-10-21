@@ -26,6 +26,8 @@ package xpm_stub_pkg is
     constant FP_SN : integer := 24;
     function fp_i32(x : integer) return std_logic_vector;
     function fp_str(s : string) return std_logic_vector;
+    -- Fails elaboration with msg unless ok.
+    function fp_guard(ok : boolean; msg : string) return boolean;
 end package xpm_stub_pkg;
 
 package body xpm_stub_pkg is
@@ -90,6 +92,9 @@ package body xpm_stub_pkg is
     function fp_str(s : string) return std_logic_vector is
         variable r : std_logic_vector(8*FP_SN-1 downto 0) := (others => '0');
     begin
+        -- Longer strings would alias: refuse to elaborate rather than prove too much.
+        assert s'length <= FP_SN
+            report "xpm stub: string generic longer than 24 characters" severity failure;
         for i in 0 to FP_SN-1 loop
             if i < s'length then
                 r(8*i+7 downto 8*i) := std_logic_vector(to_unsigned(character'pos(s(s'right - i)), 8));
@@ -97,6 +102,12 @@ package body xpm_stub_pkg is
         end loop;
         return r;
     end function fp_str;
+
+    function fp_guard(ok : boolean; msg : string) return boolean is
+    begin
+        assert ok report msg severity failure;
+        return ok;
+    end function fp_guard;
 end package body xpm_stub_pkg;
 
 library ieee;
@@ -397,7 +408,10 @@ architecture stub of xpm_memory_sdpram is
     constant DEPTH    : integer := MEMORY_SIZE / WRITE_DATA_WIDTH_A;
     -- Storage clamped to 2**SAW words, indexed by the low address bits, to keep
     -- the proof small. DEPTH still matters: writes at addra >= DEPTH are dropped.
+    -- mem_tag keeps each word's full write address (see xpm_macros.v).
     constant SAW      : integer := min_int(ADDR_WIDTH_A, 3);
+    constant TAG_FITS : boolean := fp_guard(ADDR_WIDTH_B - SAW <= READ_DATA_WIDTH_B,
+        "xpm stub: address high bits wider than the read data");
     constant RST_VAL  : std_logic_vector(READ_DATA_WIDTH_B-1 downto 0) :=
         std_logic_vector(resize(hex16(READ_RESET_VALUE_B), READ_DATA_WIDTH_B));
     constant COMMON   : boolean := CLOCKING_MODE = "common_clock";
@@ -441,6 +455,10 @@ architecture stub of xpm_memory_sdpram is
 
     type mem_t is array (integer range 0 to 2**SAW-1) of std_logic_vector(WRITE_DATA_WIDTH_A-1 downto 0);
     signal mem       : mem_t;
+    type tag_t is array (integer range 0 to 2**SAW-1) of std_logic_vector(ADDR_WIDTH_A-1 downto 0);
+    signal mem_tag   : tag_t;
+    signal tag_x     : std_logic_vector(ADDR_WIDTH_B-1 downto 0);
+    signal tag_hi    : std_logic_vector(READ_DATA_WIDTH_B-1 downto 0);
     signal doutb_r   : std_logic_vector(READ_DATA_WIDTH_B-1 downto 0);
     signal doutb_r2  : std_logic_vector(READ_DATA_WIDTH_B-1 downto 0);
 
@@ -458,12 +476,16 @@ begin
     wr_now    <= ena and wea(0);
     wr_in_rng <= to_sl(to_integer(unsigned(addra)) < DEPTH);
     collision <= wr_now and to_sl(addra = addrb);
+    tag_x     <= std_logic_vector(resize(unsigned(mem_tag(to_integer(unsigned(addrb(SAW-1 downto 0))))),
+                                         ADDR_WIDTH_B)) xor addrb;
+    tag_hi    <= std_logic_vector(resize(shift_right(unsigned(tag_x), SAW), READ_DATA_WIDTH_B));
 
     process (clka)
     begin
         if rising_edge(clka) then
             if (wr_now and wr_in_rng) = '1' then
-                mem(to_integer(unsigned(addra(SAW-1 downto 0)))) <= dina;
+                mem(to_integer(unsigned(addra(SAW-1 downto 0))))     <= dina;
+                mem_tag(to_integer(unsigned(addra(SAW-1 downto 0)))) <= addra;
             end if;
         end if;
     end process;
@@ -477,7 +499,7 @@ begin
                 if WR_FIRST and collision = '1' then
                     doutb_r <= dina;
                 elsif not (NO_CHG and wr_now = '1') then
-                    doutb_r <= mem(to_integer(unsigned(addrb(SAW-1 downto 0))));
+                    doutb_r <= mem(to_integer(unsigned(addrb(SAW-1 downto 0)))) xor tag_hi;
                 end if;
             end if;
         end if;

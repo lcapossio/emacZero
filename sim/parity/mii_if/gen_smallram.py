@@ -6,6 +6,15 @@
 mii_if_smallram.v and mii_if_smallram.vhd are rtl/mii_if.v and
 rtl/vhdl/mii_if.vhd with the inline 4096x9 RX frame RAM cut to 8 words,
 indexed by the low three address bits. Everything else is copied verbatim.
+
+A second 8-word array, rx_frame_mem_tag, keeps the high nine bits of each
+word's write address, and a read returns the stored byte XOR (stored high
+bits XOR read high bits): the byte itself when the read address is the one
+written, and otherwise a value that depends on every address bit. Without
+the tag, an error in address bits 11:3 on either port would be invisible,
+since eight-word storage aliases them. (The tag is its own array: widening
+the data word to 18 bits instead stops equiv_induct from closing.)
+
 The real RAM makes equiv_induct intractable for yowasp-yosys. The parity
 manifests that use these models are parity_smallram.yml,
 ../eth_mac/parity.yml and the MII set of ../eth_mac_sys/parity.yml.
@@ -30,9 +39,18 @@ MODELS = [
         "dst": "mii_if_smallram.v",
         "comment": "//",
         "edits": [
-            ("reg [8:0] rx_frame_mem [0:4095];", "reg [8:0] rx_frame_mem [0:7];"),
-            ("rx_frame_mem[rx_mem_wr_addr]", "rx_frame_mem[rx_mem_wr_addr[2:0]]"),
-            ("rx_frame_mem[rx_mem_rd_addr_reg]", "rx_frame_mem[rx_mem_rd_addr_reg[2:0]]"),
+            ("reg [8:0] rx_frame_mem [0:4095];",
+             "reg [8:0] rx_frame_mem [0:7];\n"
+             "    reg [8:0] rx_frame_mem_tag [0:7];"),
+            ("rx_frame_mem[rx_mem_wr_addr] <= rx_mem_wr_data;",
+             "begin\n"
+             "                rx_frame_mem[rx_mem_wr_addr[2:0]]     <= rx_mem_wr_data;\n"
+             "                rx_frame_mem_tag[rx_mem_wr_addr[2:0]] <= rx_mem_wr_addr[11:3];\n"
+             "            end"),
+            ("rx_frame_mem_dout_r <= rx_frame_mem[rx_mem_rd_addr_reg];",
+             "rx_frame_mem_dout_r <= rx_frame_mem[rx_mem_rd_addr_reg[2:0]] ^\n"
+             "                                   rx_frame_mem_tag[rx_mem_rd_addr_reg[2:0]] ^\n"
+             "                                   rx_mem_rd_addr_reg[11:3];"),
         ],
     },
     {
@@ -41,10 +59,18 @@ MODELS = [
         "comment": "--",
         "edits": [
             ("type frame_mem_t is array (0 to 4095)", "type frame_mem_t is array (0 to 7)"),
-            ("rx_frame_mem(to_integer(rx_mem_wr_addr))",
-             "rx_frame_mem(to_integer(rx_mem_wr_addr(2 downto 0)))"),
-            ("rx_frame_mem(to_integer(unsigned(rx_mem_rd_addr_reg)))",
-             "rx_frame_mem(to_integer(unsigned(rx_mem_rd_addr_reg(2 downto 0))))"),
+            ("    signal rx_frame_mem        : frame_mem_t;\n",
+             "    signal rx_frame_mem        : frame_mem_t;\n"
+             "    signal rx_frame_mem_tag    : frame_mem_t;\n"),
+            ("rx_frame_mem(to_integer(rx_mem_wr_addr)) <= rx_mem_wr_data;",
+             "rx_frame_mem(to_integer(rx_mem_wr_addr(2 downto 0)))     <= rx_mem_wr_data;\n"
+             "                    rx_frame_mem_tag(to_integer(rx_mem_wr_addr(2 downto 0))) <=\n"
+             "                        std_logic_vector(rx_mem_wr_addr(11 downto 3));"),
+            ("rx_frame_mem_dout_r <= rx_frame_mem(to_integer(unsigned(rx_mem_rd_addr_reg)));",
+             "rx_frame_mem_dout_r <=\n"
+             "                        rx_frame_mem(to_integer(unsigned(rx_mem_rd_addr_reg(2 downto 0)))) xor\n"
+             "                        rx_frame_mem_tag(to_integer(unsigned(rx_mem_rd_addr_reg(2 downto 0)))) xor\n"
+             "                        rx_mem_rd_addr_reg(11 downto 3);"),
         ],
     },
 ]
@@ -63,7 +89,10 @@ def render(model: dict) -> str:
         f"{c} PARITY MODEL ONLY - not for synthesis or the core. GENERATED from",
         f"{c} {model['src']} by sim/parity/mii_if/gen_smallram.py; do not edit.",
         f"{c} The inline RX frame RAM is cut from 4096 to 8 words, indexed by the",
-        f"{c} low three address bits. Everything else is the source verbatim.",
+        f"{c} low three address bits; rx_frame_mem_tag keeps each word's write",
+        f"{c} address bits 11:3, XORed with the read address bits 11:3 on a read",
+        f"{c} (see gen_smallram.py).",
+        f"{c} Everything else is the source verbatim.",
     ]
     lines = src.splitlines(keepends=True)
     # Keep the SPDX and copyright lines first.

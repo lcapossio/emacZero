@@ -21,8 +21,12 @@ The models also bring the fcapz EIO's probe_in vector out on an extra output,
 PARITY_PROBE_IN (256 bits, 608 in the ZCU106_SFP1_LB build), so L2 compares
 every probe bit directly. The EIO has no clock, so its stand-in can only fold
 the probe onto its 8 or 16 outputs, where two wrong probe bits can cancel;
-through this port they cannot. In the Verilog the probe is an inline
-concatenation, which is moved into `assign PARITY_PROBE_IN = {...};`.
+through this port they cannot. The port is driven from whatever the EIO's
+probe_in is actually wired to, never from a name fixed here: in the Verilog
+the inline concatenation is moved into `assign PARITY_PROBE_IN = {...};`
+and the EIO reads PARITY_PROBE_IN; in the VHDL the one signal on probe_in is
+read from the port map (anything but one EIO instance with a plain signal on
+probe_in stops the script).
 
 Everything else is copied verbatim, so L2 on these models covers all of the
 top except the two tri-state drivers, which this script checks are the same
@@ -62,7 +66,7 @@ V_EDITS = [
 ]
 
 
-def vhdl_edits(probe_w: int, probe: str, inst: str) -> list:
+def vhdl_edits(probe_w: int) -> list:
     """The I2C split and the EIO probe port, for one VHDL top."""
     return [
         ("entity zcu106_top is", "entity zcu106_top_split is"),
@@ -80,9 +84,25 @@ def vhdl_edits(probe_w: int, probe: str, inst: str) -> list:
          "    IIC_SCL_t <= scl_t;\n"
          "    IIC_SDA_t <= sda_t;\n"),
         ("                sda_i      => IIC_SDA,", "                sda_i      => IIC_SDA_i,"),
-        (f"    {inst} : fcapz_eio_xilinxus\n",
-         f"    PARITY_PROBE_IN <= {probe};\n    {inst} : fcapz_eio_xilinxus\n"),
     ]
+
+
+EIO_VHD = re.compile(r"^    (\w+) : fcapz_eio_xilinxus\n.*?\n        \);\n", re.M | re.S)
+PROBE_VHD = re.compile(r"\bprobe_in\s*=>\s*([^,\n]*?)\s*,")
+
+
+def lift_probe_vhd(src: str) -> str:
+    """Drive PARITY_PROBE_IN from the signal the EIO's probe_in is actually wired to."""
+    insts = list(EIO_VHD.finditer(src))
+    if len(insts) != 1:
+        raise SystemExit(f"expected one fcapz_eio_xilinxus instance, found {len(insts)}; "
+                         "update gen_split.py")
+    m = insts[0]
+    actuals = PROBE_VHD.findall(m.group(0))
+    if len(actuals) != 1 or not re.fullmatch(r"[A-Za-z]\w*", actuals[0]):
+        raise SystemExit(f"{m.group(1)}: probe_in must be wired to one plain signal, found "
+                         f"{actuals}; update gen_split.py")
+    return (src[:m.start()] + f"    PARITY_PROBE_IN <= {actuals[0]};\n" + src[m.start():])
 
 
 PROBE_V = re.compile(r"\.probe_in  \((\{[^;]*?\})\),")
@@ -108,9 +128,9 @@ MODELS = [
     {"src": "fpga/zcu106/rtl/zcu106_top.v", "dst": "zcu106_top_split.v",
      "comment": "//", "edits": V_EDITS, "post": lift_probes_v},
     {"src": "fpga/zcu106/rtl/zcu106_top.vhd", "dst": "zcu106_top_split.vhd",
-     "comment": "--", "edits": vhdl_edits(256, "cnt_probe_in", "u_cnt_eio")},
+     "comment": "--", "edits": vhdl_edits(256), "post": lift_probe_vhd},
     {"src": "fpga/zcu106/rtl/zcu106_top_lb.vhd", "dst": "zcu106_top_lb_split.vhd",
-     "comment": "--", "edits": vhdl_edits(608, "lb_probe_in", "u_eio")},
+     "comment": "--", "edits": vhdl_edits(608), "post": lift_probe_vhd},
 ]
 
 

@@ -3,7 +3,10 @@
 // PARITY MODEL ONLY - not for synthesis or the core. GENERATED from
 // rtl/mii_if.v by sim/parity/mii_if/gen_smallram.py; do not edit.
 // The inline RX frame RAM is cut from 4096 to 8 words, indexed by the
-// low three address bits. Everything else is the source verbatim.
+// low three address bits; rx_frame_mem_tag keeps each word's write
+// address bits 11:3, XORed with the read address bits 11:3 on a read
+// (see gen_smallram.py).
+// Everything else is the source verbatim.
 // =============================================================================
 // mii_if.v - MII PHY Interface with Store-and-Forward CDC
 // Converts between 8-bit GMII (100 MHz sys_clk) and 4-bit MII (25 MHz PHY)
@@ -528,14 +531,20 @@ module mii_if #(
     );
 `else
     (* ram_style = "block" *) reg [8:0] rx_frame_mem [0:7];
+    reg [8:0] rx_frame_mem_tag [0:7];
     reg [8:0] rx_frame_mem_dout_r;
     assign rx_frame_mem_dout = rx_frame_mem_dout_r;
 
     always @(posedge clk) begin
         if (rx_mem_wr_en)
-            rx_frame_mem[rx_mem_wr_addr[2:0]] <= rx_mem_wr_data;
+            begin
+                rx_frame_mem[rx_mem_wr_addr[2:0]]     <= rx_mem_wr_data;
+                rx_frame_mem_tag[rx_mem_wr_addr[2:0]] <= rx_mem_wr_addr[11:3];
+            end
         if (rx_mem_rd_en)
-            rx_frame_mem_dout_r <= rx_frame_mem[rx_mem_rd_addr_reg[2:0]];
+            rx_frame_mem_dout_r <= rx_frame_mem[rx_mem_rd_addr_reg[2:0]] ^
+                                   rx_frame_mem_tag[rx_mem_rd_addr_reg[2:0]] ^
+                                   rx_mem_rd_addr_reg[11:3];
     end
 `endif
 

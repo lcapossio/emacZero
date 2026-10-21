@@ -15,14 +15,16 @@
 //
 // Every parameter is checked by value, modelled or not: each macro builds a
 // constant fingerprint GEN_FP of all its parameters, one field each (an
-// integer as 32 bits, a string as the 8-bit codes of its last FP_SN = 24
+// integer as 32 bits, a string as the 8-bit codes of its up to FP_SN = 24
 // characters), zero-padded to a power of two. A free-running counter fp_idx
 // on the read clock selects one fingerprint bit per edge, XORed into dout[0] /
 // doutb[0]. If a parameter differs between the two sides, the two outputs
-// differ at the fp_idx of a differing bit, so the proof fails. The one limit:
-// two strings that end in the same 24 characters alias. fp_idx has no reset,
-// so it pairs by name and starts free, and the data seen downstream has
-// bit 0 scrambled by the fingerprint (the same scrambling on both sides).
+// differ at the fp_idx of a differing bit, so the proof fails. A string
+// longer than 24 characters would alias, so both sides refuse to elaborate
+// one (Verilog: an instance of a module that does not exist; VHDL: a failing
+// assertion). fp_idx has no reset, so it pairs by name and starts free, and
+// the data seen downstream has bit 0 scrambled by the fingerprint (the same
+// scrambling on both sides).
 //
 // Behaviour is modelled only for the parameters listed below. For the rest,
 // any value behaves the same here, so the proof checks that the two sides
@@ -42,7 +44,10 @@
 //   EN_SIM_ASSERT_ERR, WAKEUP_TIME (sleep is ignored).
 // xpm_memory_sdpram - modelled: MEMORY_SIZE / WRITE_DATA_WIDTH_A (depth:
 //   writes at or past it are dropped; storage itself is only 8 words, indexed
-//   by the low three address bits, so data aliases past 8 words),
+//   by the low three address bits; each word keeps its full write address,
+//   and a read returns the word XOR the high bits of (that address XOR addrb),
+//   so a wrong address bit on either port changes the data read; elaboration
+//   is refused when those high bits are wider than the read data),
 //   port widths, CLOCKING_MODE (read port on clka for "common_clock"),
 //   READ_LATENCY_B (1, or 2 with regceb on the second stage; 0 behaves as 1
 //   and 3 or more as 2), READ_RESET_VALUE_B (rstb), WRITE_MODE_B
@@ -269,6 +274,19 @@ module xpm_fifo_async #(
         I_FIFO_WRITE_DEPTH,
         S_FIFO_MEMORY_TYPE};
 
+    // A string longer than FP_SN characters would alias in GEN_FP: refuse
+    // to elaborate (no such module exists) rather than prove too much.
+    localparam FP_TOO_LONG =
+        |(FIFO_MEMORY_TYPE >> (8*FP_SN)) |
+        |(READ_MODE >> (8*FP_SN)) |
+        |(USE_ADV_FEATURES >> (8*FP_SN)) |
+        |(DOUT_RESET_VALUE >> (8*FP_SN)) |
+        |(ECC_MODE >> (8*FP_SN)) |
+        |(EN_SIM_ASSERT_ERR >> (8*FP_SN));
+    generate if (FP_TOO_LONG) begin : g_fp_too_long
+        xpm_stub_string_longer_than_24_chars u_err ();
+    end endgenerate
+
     reg  [10:0] fp_idx;
     wire [2047:0] fp_sh = GEN_FP >> fp_idx;
     always @(posedge rd_clk)
@@ -364,6 +382,10 @@ module xpm_memory_sdpram #(
     localparam integer DEPTH = MEMORY_SIZE / WRITE_DATA_WIDTH_A;
     // Storage clamped to 2**SAW words, indexed by the low address bits, to keep
     // the proof small. DEPTH still matters: writes at addra >= DEPTH are dropped.
+    // Each word keeps its full write address in mem_tag, and a read returns the
+    // word XOR the high bits of (tag XOR addrb): the word itself when the read
+    // address is the one written, and a value that depends on every address
+    // bit otherwise, so a wrong high address bit on either port is not lost.
     localparam integer SAW   = (ADDR_WIDTH_A < 3) ? ADDR_WIDTH_A : 3;
     localparam [READ_DATA_WIDTH_B-1:0] RST_VAL = hex16(READ_RESET_VALUE_B);
     localparam COMMON  = (CLOCKING_MODE == "common_clock");
@@ -373,6 +395,7 @@ module xpm_memory_sdpram #(
     localparam integer FP_SN = 24;   // string characters fingerprinted
 
     reg [WRITE_DATA_WIDTH_A-1:0] mem [0:(1<<SAW)-1];
+    reg [ADDR_WIDTH_A-1:0]       mem_tag [0:(1<<SAW)-1];
     reg [READ_DATA_WIDTH_B-1:0]  doutb_r;
     reg [READ_DATA_WIDTH_B-1:0]  doutb_r2;
 
@@ -380,10 +403,19 @@ module xpm_memory_sdpram #(
     wire wr_now    = ena & wea[0];
     wire wr_in_rng = (addra < DEPTH);
     wire collision = wr_now & (addra == addrb);
+    wire [ADDR_WIDTH_B-1:0]      tag_x  = mem_tag[addrb[SAW-1:0]] ^ addrb;
+    wire [READ_DATA_WIDTH_B-1:0] tag_hi = tag_x >> SAW;
+
+    // The high address bits must fit in the read data, or tag_hi drops some.
+    generate if (ADDR_WIDTH_B - SAW > READ_DATA_WIDTH_B) begin : g_tag_too_wide
+        xpm_stub_address_wider_than_data_plus_3 u_err ();
+    end endgenerate
 
     always @(posedge clka) begin
-        if (wr_now && wr_in_rng)
-            mem[addra[SAW-1:0]] <= dina;
+        if (wr_now && wr_in_rng) begin
+            mem[addra[SAW-1:0]]     <= dina;
+            mem_tag[addra[SAW-1:0]] <= addra;
+        end
     end
 
     always @(posedge rd_clk) begin
@@ -393,7 +425,7 @@ module xpm_memory_sdpram #(
             if (WR_FIRST && collision)
                 doutb_r <= dina;
             else if (!(NO_CHG && wr_now))
-                doutb_r <= mem[addrb[SAW-1:0]];
+                doutb_r <= mem[addrb[SAW-1:0]] ^ tag_hi;
         end
     end
 
@@ -468,6 +500,27 @@ module xpm_memory_sdpram #(
         S_CLOCKING_MODE,
         S_MEMORY_PRIMITIVE,
         I_MEMORY_SIZE};
+
+    // A string longer than FP_SN characters would alias in GEN_FP: refuse
+    // to elaborate (no such module exists) rather than prove too much.
+    localparam FP_TOO_LONG =
+        |(MEMORY_PRIMITIVE >> (8*FP_SN)) |
+        |(CLOCKING_MODE >> (8*FP_SN)) |
+        |(ECC_MODE >> (8*FP_SN)) |
+        |(ECC_TYPE >> (8*FP_SN)) |
+        |(ECC_BIT_RANGE >> (8*FP_SN)) |
+        |(MEMORY_INIT_FILE >> (8*FP_SN)) |
+        |(MEMORY_INIT_PARAM >> (8*FP_SN)) |
+        |(WAKEUP_TIME >> (8*FP_SN)) |
+        |(MEMORY_OPTIMIZATION >> (8*FP_SN)) |
+        |(RAM_DECOMP >> (8*FP_SN)) |
+        |(RST_MODE_A >> (8*FP_SN)) |
+        |(READ_RESET_VALUE_B >> (8*FP_SN)) |
+        |(WRITE_MODE_B >> (8*FP_SN)) |
+        |(RST_MODE_B >> (8*FP_SN));
+    generate if (FP_TOO_LONG) begin : g_fp_too_long
+        xpm_stub_string_longer_than_24_chars u_err ();
+    end endgenerate
 
     reg  [11:0] fp_idx;
     wire [4095:0] fp_sh = GEN_FP >> fp_idx;
