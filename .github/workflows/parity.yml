@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+#
+# Formal equivalence of the VHDL port (rtl/vhdl/) against the Verilog golden
+# (rtl/). Runs every translateHDL manifest in sim/parity/ with --strict
+# (sim/parity/run_all.py). See docs/vhdl_port.md.
+
+name: parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # translateHDL and Yosys are pinned so a proof result only changes when this
+  # repository changes. Bump them together with a full rerun.
+  TRANSLATEHDL_REF: be0ba18db38cbba52af7343e4f9faeb5012eccd9
+  YOWASP_YOSYS_VERSION: 0.63.0.0.post1107
+
+jobs:
+  parity:
+    # Pinned: Ubuntu 24.04's GHDL is 4.1. GHDL 6 leaves some proofs unclosed
+    # (docs/vhdl_port.md).
+    runs-on: ubuntu-24.04
+    # The modules run 4 at a time; eth_mac_sys alone takes about 11 minutes.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: lcapossio/translateHDL
+          ref: ${{ env.TRANSLATEHDL_REF }}
+          path: .translatehdl
+
+      - name: Install GHDL and Icarus
+        # Icarus lints the Verilog side (L1); --strict fails a skipped layer.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ghdl iverilog
+          ghdl --version | head -1
+          iverilog -V 2>&1 | head -1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Yosys (YoWASP) and pyyaml
+        run: |
+          pip install "yowasp-yosys==${YOWASP_YOSYS_VERSION}" pyyaml
+          yowasp-yosys -V
+
+      - name: Prove every module
+        env:
+          GHDL: ghdl
+          YOSYS: yowasp-yosys
+        run: python sim/parity/run_all.py --translatehdl .translatehdl -j 4

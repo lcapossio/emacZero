@@ -1,24 +1,49 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Build + run the emacZero cocotb suites on Icarus.
+"""Build + run the emacZero cocotb suites on Icarus (Verilog) or GHDL (VHDL port).
 
-Backend-agnostic by design: sources are passed via the language-neutral
-`sources=` argument, so the same flow retargets GHDL once a VHDL port exists -
-only the simulator name and the source files change, not the Python testbenches.
+The same Python testbenches run against rtl/ on Icarus and against the VHDL
+port in rtl/vhdl/ on GHDL; only the simulator and the source list change.
+
+Each tests/test_*.py declares the suites it backs in a literal dict, read here
+without importing the module:
+
+    SUITES = {
+        "<suite name>": {
+            "toplevel": "eth_mac_rx",            # HDL top (DUT or a harness)
+            "sources": ["rtl/crc32.v", ...],     # Verilog, repo-relative, in order
+            "params": {"MAX_FRAME_STD": 1518},   # parameters / generics
+            # optional:
+            "target": "SIM",                     # vendor target, default SIM
+            "vhdl_sources": [...],               # instead of the automatic mapping
+            "env": {"KEY": "value"},             # extra environment for the test
+            "skip_vhdl": "reason",               # Verilog only, with the reason
+        },
+    }
+
+The target becomes a Verilog define (-DSIM) and, for VHDL, the package
+rtl/vhdl/target/emz_target_<target>.vhd. Without "vhdl_sources", rtl/**/<n>.v
+maps to rtl/vhdl/<n>.vhd and any other <dir>/<n>.v to <dir>/<n>.vhd (the test
+harnesses in sim/cocotb/hdl/ keep both languages side by side).
 
 Usage:
-    python run.py                       # all suites
-    python run.py --suite eth_mac_rx    # one suite
-    python run.py --seed 12345          # force cocotb's master seed (replay)
-    python run.py --test random_mix     # one testcase
+    python run.py                         # every suite, Verilog
+    python run.py --hdl vhdl              # every suite, VHDL port on GHDL
+    python run.py --hdl both -j 4         # both languages, 4 suites at a time
+    python run.py --suite eth_mac_rx      # one suite (repeatable)
+    python run.py --list                  # suite names
+    python run.py --seed 12345            # force cocotb's master seed (replay)
+    python run.py --test random_mix       # one testcase
     python run.py --waves
 """
 import argparse
+import ast
 import os
+import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-from cocotb_tools.runner import get_runner
 
 HERE = Path(__file__).parent.resolve()
 REPO = HERE.parent.parent
@@ -26,64 +51,122 @@ RTL = REPO / "rtl"
 TESTS = HERE / "tests"
 BUILD = HERE / "sim_build"
 
-SUITES = {
-    "mii_tx_saf": {
-        "toplevel": "mii_tx_saf",
-        "sources": ["async_fifo.v", "mii_tx_saf.v"],
-        "params": {"MAX_FRAME": 1518, "FIFO_ADDR_WIDTH": 12},
-        "test_module": "test_mii_tx_saf",
-        "env": {"SAF_MAX_FRAME": "1518", "SAF_FIFO_ADDR_WIDTH": "12"},
-    },
-    "eth_mac_rx": {
-        "toplevel": "eth_mac_rx",
-        "sources": ["crc32.v", "sync_fifo.v", "eth_mac_rx.v"],
-        "params": {"MAX_FRAME_STD": 1518},
-        "test_module": "test_eth_mac_rx",
-        "env": {"RX_MAX_FRAME_STD": "1518"},
-    },
-    "eth_mac_rx_robust": {
-        "toplevel": "eth_mac_rx",
-        "sources": ["crc32.v", "sync_fifo.v", "eth_mac_rx.v"],
-        "params": {"MAX_FRAME_STD": 1518},
-        "test_module": "test_eth_mac_rx_robust",
-        "env": {"RX_MAX_FRAME_STD": "1518"},
-    },
-    "eth_mac_rx_mcast": {
-        "toplevel": "eth_mac_rx",
-        "sources": ["crc32.v", "sync_fifo.v", "eth_mac_rx.v"],
-        "params": {"MAX_FRAME_STD": 1518, "MCAST_HASH_FILTER": 1},
-        "test_module": "test_eth_mac_rx_mcast",
-        "env": {"RX_MAX_FRAME_STD": "1518"},
-    },
-    "eth_mac_rx_csum": {
-        "toplevel": "eth_mac_rx",
-        "sources": ["crc32.v", "sync_fifo.v", "net/csum_calc.v", "eth_mac_rx.v"],
-        "params": {"MAX_FRAME_STD": 1518, "RX_CSUM_OFFLOAD": 1},
-        "test_module": "test_eth_mac_rx_csum",
-        "env": {},
-    },
-    "csum_calc": {
-        "toplevel": "csum_calc",
-        "sources": ["net/csum_calc.v"],
-        "params": {},
-        "test_module": "test_csum_calc",
-        "env": {},
-    },
-    "tx_csum_off": {
-        "toplevel": "tx_csum_off",
-        "sources": ["sync_fifo.v", "net/csum_calc.v", "net/tx_csum_off.v"],
-        "params": {"MAX_FRAME": 600},
-        "test_module": "test_tx_csum_off",
-        "env": {},
-    },
-    "gmii_cdc": {
-        "toplevel": "gmii_cdc",
-        "sources": ["async_fifo.v", "gmii_cdc.v"],
-        "params": {},
-        "test_module": "test_gmii_cdc",
-        "env": {},
-    },
+SPEC_KEYS = {"toplevel", "sources", "params", "target", "vhdl_sources", "env",
+             "skip_vhdl"}
+VHDL_UTIL = "rtl/vhdl/emz_util_pkg.vhd"
+# VHDL files a module needs that its Verilog source list does not show:
+# - eth_mac_rx instantiates csum_calc only when RX_CSUM_OFFLOAD=1, so Verilog
+#   source lists may leave it out, but VHDL analyses the entity regardless.
+# - axilite_regs `includes rtl/version.vh; the VHDL uses a package instead.
+VHDL_EXTRA_DEPS = {
+    "eth_mac_rx": ["rtl/vhdl/csum_calc.vhd"],
+    "axilite_regs": ["rtl/vhdl/emz_version_pkg.vhd"],
 }
+
+
+def discover() -> tuple[dict, list]:
+    """({suite name: spec}, [error]). Each spec gets its "test_module". A test
+    module whose SUITES cannot be read is reported and skipped, so one broken
+    file does not stop every other suite; main() still fails the run."""
+    suites, errors = {}, []
+    for path in sorted(TESTS.glob("test_*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+            found = {}
+            for node in tree.body:
+                if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                        and isinstance(node.targets[0], ast.Name)
+                        and node.targets[0].id == "SUITES"):
+                    found.update(ast.literal_eval(node.value))
+            for name, spec in found.items():
+                if name in suites:
+                    raise ValueError(f"suite {name!r} already declared in "
+                                     f"{suites[name]['test_module']}.py")
+                unknown = set(spec) - SPEC_KEYS
+                if unknown:
+                    raise ValueError(f"suite {name!r}: unknown keys {sorted(unknown)}")
+        except (SyntaxError, ValueError) as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        for name, spec in found.items():
+            suites[name] = {**spec, "test_module": path.stem}
+    return suites, errors
+
+
+def vhdl_sources(spec) -> list:
+    target = spec.get("target", "SIM").lower()
+    out = [f"rtl/vhdl/target/emz_target_{target}.vhd", VHDL_UTIL]
+    if "vhdl_sources" in spec:
+        files = list(spec["vhdl_sources"])
+    else:
+        files = []
+        for s in spec["sources"]:
+            p = Path(s)
+            vhd = (f"rtl/vhdl/{p.stem}.vhd" if p.parts[0] == "rtl"
+                   else p.with_suffix(".vhd").as_posix())
+            files += VHDL_EXTRA_DEPS.get(p.stem, []) + [vhd]
+    for f in files:
+        if f not in out:
+            out.append(f)
+    return out
+
+
+def run_one(name, spec, hdl, args) -> int:
+    """Build and run one suite in this process. Returns the failure count."""
+    from cocotb_tools.runner import get_runner
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(HERE), str(TESTS), env.get("PYTHONPATH", "")])
+    env.update(spec.get("env", {}))
+    os.environ.update(env)
+    # The runner builds the simulator's PYTHONPATH from sys.path, not from the
+    # environment, so the test modules must be on sys.path when the simulator
+    # does not run inside TESTS (GHDL).
+    for p in (str(TESTS), str(HERE)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+    params = dict(spec.get("params", {}))
+    if hdl == "vhdl":
+        build_name = f"vhdl_{name}"
+        runner = get_runner("ghdl")
+        sources = vhdl_sources(spec)
+        tool_args = {"build_args": ["--std=93"]}
+    else:
+        build_name = name
+        runner = get_runner("icarus")
+        sources = spec["sources"]
+        # Icarus reads -P values as expressions: a string needs its quotes.
+        params = {k: (f'"{v}"' if isinstance(v, str) else v) for k, v in params.items()}
+        tool_args = {"timescale": ("1ns", "1ps"),
+                     "defines": {spec.get("target", "SIM"): 1},
+                     "includes": [str(RTL)]}
+    build_dir = BUILD / build_name
+    runner.build(
+        sources=[str(REPO / s) for s in sources],
+        hdl_toplevel=spec["toplevel"],
+        parameters=params,
+        build_dir=str(build_dir),
+        always=True,
+        waves=args.waves,
+        **tool_args,
+    )
+    xml = runner.test(
+        test_module=spec["test_module"],
+        hdl_toplevel=spec["toplevel"],
+        # GHDL's gcc/llvm backends run the executable that elaboration left in
+        # build_dir; the test modules are found through PYTHONPATH either way.
+        test_dir=str(build_dir if hdl == "vhdl" else TESTS),
+        build_dir=str(build_dir),
+        seed=args.seed,
+        testcase=args.test,
+        extra_env=env,
+        waves=args.waves,
+        results_xml=f"results_{build_name}.xml",
+    )
+    failed = _count_failures(xml)
+    print(f"[{build_name}] results: {xml}  failures={failed}")
+    return failed
 
 
 def _count_failures(xml_path) -> int:
@@ -98,53 +181,91 @@ def _count_failures(xml_path) -> int:
                    for tc in root.iter("testcase"))
 
 
-def run_suite(name, spec, args) -> int:
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join([str(HERE), str(TESTS), env.get("PYTHONPATH", "")])
-    env.update(spec.get("env", {}))
-    os.environ.update(env)
-
-    build_dir = BUILD / name
-    runner = get_runner("icarus")
-    runner.build(
-        sources=[str(RTL / s) for s in spec["sources"]],
-        hdl_toplevel=spec["toplevel"],
-        parameters=spec["params"],
-        build_dir=str(build_dir),
-        timescale=("1ns", "1ps"),
-        always=True,
-        waves=args.waves,
-    )
-    xml = runner.test(
-        test_module=spec["test_module"],
-        hdl_toplevel=spec["toplevel"],
-        test_dir=str(TESTS),
-        build_dir=str(build_dir),
-        seed=args.seed,
-        testcase=args.test,
-        extra_env=env,
-        waves=args.waves,
-        results_xml=f"results_{name}.xml",
-    )
-    failed = _count_failures(xml)
-    print(f"[{name}] results: {xml}  failures={failed}")
-    return failed
+def _child(name, hdl, args):
+    """One (suite, language) in a subprocess: (name, hdl, rc, output, seconds)."""
+    cmd = [sys.executable, str(Path(__file__).resolve()), "--suite", name, "--hdl", hdl]
+    if args.seed is not None:
+        cmd += ["--seed", str(args.seed)]
+    if args.test:
+        cmd += ["--test", args.test]
+    if args.waves:
+        cmd.append("--waves")
+    start = time.monotonic()
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, check=False)
+    return name, hdl, res.returncode, res.stdout, time.monotonic() - start
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--suite", default=None, choices=list(SUITES))
+    suites, broken = discover()
+    for err in broken:
+        print(f"[cocotb] skipped {err}", file=sys.stderr)
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--suite", action="append", choices=sorted(suites),
+                    help="suite to run (repeatable; default: all)")
+    ap.add_argument("--hdl", default="verilog", choices=["verilog", "vhdl", "both"],
+                    help="verilog: rtl/ on Icarus (default); vhdl: rtl/vhdl/ on GHDL")
+    ap.add_argument("-j", "--jobs", type=int, default=1,
+                    help="suites run in parallel, each in its own process")
+    ap.add_argument("--list", action="store_true", help="print the suite names")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--test", default=None)
     ap.add_argument("--waves", action="store_true")
     args = ap.parse_args()
+    # Named suites run on their own; a full run fails if a test module was skipped.
+    broken_fails = bool(broken) and not args.suite
 
-    names = [args.suite] if args.suite else list(SUITES)
-    total = 0
-    for name in names:
-        total += run_suite(name, SUITES[name], args)
-    print(f"\n[cocotb] total failures across {len(names)} suite(s): {total}")
-    return 1 if total else 0
+    if args.list:
+        for name in sorted(suites):
+            skip = suites[name].get("skip_vhdl")
+            print(name + (f"  (Verilog only: {skip})" if skip else ""))
+        return 0
+
+    hdls = ["verilog", "vhdl"] if args.hdl == "both" else [args.hdl]
+    jobs, skipped = [], []
+    for name in args.suite or sorted(suites):
+        for hdl in hdls:
+            if hdl == "vhdl" and suites[name].get("skip_vhdl"):
+                skipped.append((name, suites[name]["skip_vhdl"]))
+            else:
+                jobs.append((name, hdl))
+
+    if len(jobs) == 1 and args.jobs <= 1:
+        name, hdl = jobs[0]
+        failed = run_one(name, suites[name], hdl, args)
+        return 1 if failed or broken_fails else 0
+
+    gha = os.environ.get("GITHUB_ACTIONS") == "true"
+    results = []
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        for name, hdl, rc, out, secs in pool.map(lambda j: _child(*j, args), jobs):
+            tag = f"{name} [{hdl}] {'PASS' if rc == 0 else 'FAIL'}"
+            print(f"::group::{tag}" if gha else f"\n##### {tag}", flush=True)
+            print(out, flush=True)
+            if gha:
+                print("::endgroup::", flush=True)
+            results.append((name, hdl, rc, secs))
+
+    print("\n[cocotb] Summary")
+    failed = []
+    for name, hdl, rc, secs in results:
+        print(f"  {name:<32} {hdl:<8} {secs:7.0f} s  {'PASS' if rc == 0 else 'FAIL'}")
+        if rc:
+            failed.append(f"{name} [{hdl}]")
+    for name, why in skipped:
+        print(f"  {name:<32} {'vhdl':<8} {'':>9}  SKIP ({why})")
+    for err in broken:
+        print(f"  not run: {err}")
+        if gha and broken_fails:
+            print(f"::error::cocotb {err}")
+    if failed:
+        print(f"\n[cocotb] {len(failed)} suite run(s) failed: {', '.join(failed)}")
+        if gha:
+            for f in failed:
+                print(f"::error::cocotb {f} failed")
+        return 1
+    print(f"\n[cocotb] all {len(results)} suite run(s) passed")
+    return 1 if broken_fails else 0
 
 
 if __name__ == "__main__":

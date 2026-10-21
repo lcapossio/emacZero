@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/axil_arb2.v (golden) vs rtl/vhdl/axil_arb2.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/axil_arb2/parity.yml --strict
+# Proves the configuration arty_a7_top instantiates (AW=8, DW=32, the
+# defaults) and a second width set that checks the generic plumbing.
+version: 1
+name: axil_arb2_parity
+description: axil_arb2 Verilog golden vs VHDL port (AW/DW 8/32 and 4/16)
+
+golden:
+  language: verilog
+  top: axil_arb2
+  sources: [../../../rtl/axil_arb2.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: axil_arb2
+  sources: [../../../rtl/vhdl/axil_arb2.vhd]
+
+interface:
+  top: axil_arb2
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 8
+  modules:
+    - name: axil_arb2
+      param_sets:
+        - {AW: 8, DW: 32}
+        - {AW: 4, DW: 16}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0

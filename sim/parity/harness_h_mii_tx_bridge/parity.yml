@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: cocotb harness sim/cocotb/hdl/h_mii_tx_bridge.v
+# (golden) vs h_mii_tx_bridge.vhd, flattened with mii_if and eth_mac_tx.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/harness_h_mii_tx_bridge/parity.yml --strict
+#
+# The harness is the DUT wiring of sim/tb/tb_mii_tx_bridge.v (cocotb suite
+# mii_tx_bridge, MII_DEBUG=0) and sim/tb/tb_mii_tx_burst_backpressure.v (suite
+# mii_tx_burst_backpressure, MII_DEBUG=1). Every submodule is proven on its
+# own in its sim/parity/<module>/ directory; this proof covers the harness's
+# own wiring (eth_mac_tx GMII -> mii_if, tx_start_ok = ~tx_busy, MII RX tied
+# idle, mii_clk on both MII clocks, the outputs read back) in composition,
+# with the stand-ins of sim/parity/eth_mac/parity.yml, identical on both sides:
+#   - async_fifo -> sim/parity/gmii_cdc/async_fifo_smallmem.{v,vhd}: the real
+#     FIFO with only the memory array clamped to 8 words.
+#   - mii_if -> sim/parity/mii_if/mii_if_smallram.{v,vhd}: the real files with
+#     the 4096x9 RX frame RAM cut to 8 words (the real RAM does not finish
+#     under yowasp-yosys).
+# Target: SIM on both sides.
+#
+# Config: MII_DEBUG 0 (mii_tx_bridge) and 1 (mii_tx_burst_backpressure). The
+# MII_DEBUG=1 set closes here although sim/parity/mii_if/parity.yml cannot
+# prove mii_if alone at MII_DEBUG=1 (its debug byte arrays do not pair by
+# name): the harness leaves those debug outputs unconnected, so synthesis
+# removes the arrays on both sides. What the MII_DEBUG=1 proof covers is the
+# logic the harness keeps, including the dbg_tx_len_wr_en / dbg_tx_wr_full
+# outputs the backpressure suite counts.
+version: 1
+name: harness_h_mii_tx_bridge_parity
+description: h_mii_tx_bridge cocotb harness, Verilog golden vs VHDL (flattened)
+
+golden:
+  language: verilog
+  top: h_mii_tx_bridge
+  sources:
+    - ../defines/sim.vh
+    - ../gmii_cdc/async_fifo_smallmem.v
+    - ../mii_if/mii_if_smallram.v
+    - ../../../rtl/eth_mac_tx.v
+    - ../../cocotb/hdl/h_mii_tx_bridge.v
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: h_mii_tx_bridge
+  sources:
+    - ../../../rtl/vhdl/target/emz_target_sim.vhd
+    - ../../../rtl/vhdl/emz_util_pkg.vhd
+    - ../gmii_cdc/async_fifo_smallmem.vhd
+    - ../mii_if/mii_if_smallram.vhd
+    - ../../../rtl/vhdl/eth_mac_tx.vhd
+    - ../../cocotb/hdl/h_mii_tx_bridge.vhd
+
+interface:
+  top: h_mii_tx_bridge
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 4
+  modules:
+    - name: h_mii_tx_bridge
+      param_sets:
+        - {MII_DEBUG: 0}
+        - {MII_DEBUG: 1}
+
+synth:
+  enabled: true
+  tolerance_pct: 15.0
+  param_sets:
+    - {MII_DEBUG: 0}
+    - {MII_DEBUG: 1}

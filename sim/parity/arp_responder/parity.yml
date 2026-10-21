@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: fpga/arty_a7/rtl/arp_responder.v (golden) vs
+# fpga/arty_a7/rtl/arp_responder.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/arp_responder/parity.yml --strict
+#
+# L0, L1 and L4 only. The L2 proof is prove_arp_responder.py in this directory:
+#   python3 sim/parity/arp_responder/prove_arp_responder.py <translateHDL>/skills/translate-hdl/scripts
+# It runs translateHDL's own L2 flow (clk2fflogic, equiv_induct, base case) and
+# only adds name aliases to the GHDL netlist. The Verilog's reset-in-a-loop
+# buffers `reg [7:0] cap [0:41]` / `reply [0:41]` become 84 registers named
+# cap[0]..reply[41] in Yosys, while GHDL makes one 336-bit register per VHDL
+# array; translateHDL pairs state by name only, so with this manifest alone the
+# 84 bytes of state stay unpaired and induction cannot close (9 unproven
+# points, no counterexample). See the script's docstring.
+version: 1
+name: arp_responder_parity
+description: arp_responder Verilog golden vs VHDL port (L2 in prove_arp_responder.py)
+
+golden:
+  language: verilog
+  top: arp_responder
+  sources: [../../../fpga/arty_a7/rtl/arp_responder.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: arp_responder
+  sources: [../../../fpga/arty_a7/rtl/arp_responder.vhd]
+
+interface:
+  top: arp_responder
+
+formal:
+  enabled: false
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0

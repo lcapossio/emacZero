@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: the bench's behavioural XPM models
+# sim/tb/xpm_fifo_async_model.v and sim/tb/xpm_memory_sdpram_model.v (golden)
+# vs their VHDL-93 twins sim/cocotb/hdl/xpm_fifo_async_model.vhd and
+# sim/cocotb/hdl/xpm_memory_sdpram_model.vhd (candidate).
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/harness_xpm_models/parity.yml --strict
+#
+# The cocotb suite mii_rx_replay_stress (sim/cocotb/tests/test_mii_rx_replay_stress.py)
+# builds rtl/vhdl/mii_if.vhd on XILINX_7SERIES against these VHDL models, as
+# the MII-RX-REPLAY-STRESS bench builds rtl/mii_if.v against the Verilog ones.
+# This proof shows the two model pairs equivalent, so both languages run the
+# same FIFO / RAM behaviour.
+#
+# Small depth: the FIFO at 8 words (mii_if uses 4096) and the RAM at 8 words
+# of 9 bits (mii_if: 4096x9). The other modelled parameters follow the two
+# FIFO shapes mii_if instantiates: data widths 10 (RX) and 9 (TX),
+# CDC_SYNC_STAGES 3, WR_DATA_COUNT_WIDTH equal to the occupancy width
+# clog2(depth)+1 (mii_if: 13 = clog2(4096)+1), RD_DATA_COUNT_WIDTH equal to
+# it (RX) or 1 (TX). PROG_EMPTY_THRESH must fit the 4-bit occupancy here, so
+# mii_if's RX value 64 becomes 12; the TX value 10 is kept. Count widths wider
+# than the occupancy (an X part-select in Verilog) are not proven.
+# The proof covers only the listed parameter sets.
+version: 1
+name: harness_xpm_models_parity
+description: XPM behavioural models (sim/tb Verilog) vs VHDL twins (sim/cocotb/hdl)
+
+golden:
+  language: verilog
+  top: xpm_fifo_async
+  sources:
+    - ../../tb/xpm_fifo_async_model.v
+    - ../../tb/xpm_memory_sdpram_model.v
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: xpm_fifo_async
+  sources:
+    - ../../cocotb/hdl/xpm_fifo_async_model.vhd
+    - ../../cocotb/hdl/xpm_memory_sdpram_model.vhd
+
+interface:
+  top: xpm_fifo_async
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  modules:
+    - name: xpm_fifo_async
+      param_sets:
+        # mii_if RX FIFO shape (10 bits, 13-bit counts), cut to 8 words
+        - {FIFO_WRITE_DEPTH: 8, WRITE_DATA_WIDTH: 10, READ_DATA_WIDTH: 10, CDC_SYNC_STAGES: 3,
+           PROG_EMPTY_THRESH: 12, RD_DATA_COUNT_WIDTH: 4, WR_DATA_COUNT_WIDTH: 4}
+        # mii_if TX FIFO shape (9 bits, rd count 1 bit), cut to 8 words
+        - {FIFO_WRITE_DEPTH: 8, WRITE_DATA_WIDTH: 9, READ_DATA_WIDTH: 9, CDC_SYNC_STAGES: 3,
+           PROG_EMPTY_THRESH: 10, RD_DATA_COUNT_WIDTH: 1, WR_DATA_COUNT_WIDTH: 4}
+    - name: xpm_memory_sdpram
+      param_sets:
+        # mii_if RX frame RAM shape (9 bits, wea 1 bit), cut to 8 words
+        - {MEMORY_SIZE: 72, ADDR_WIDTH_A: 3, ADDR_WIDTH_B: 3, WRITE_DATA_WIDTH_A: 9,
+           BYTE_WRITE_WIDTH_A: 9, READ_DATA_WIDTH_B: 9, READ_LATENCY_B: 1}
+
+synth:
+  enabled: true
+  tolerance_pct: 15.0
+  param_sets:
+    - {FIFO_WRITE_DEPTH: 8, WRITE_DATA_WIDTH: 10, READ_DATA_WIDTH: 10, CDC_SYNC_STAGES: 3,
+       PROG_EMPTY_THRESH: 12, RD_DATA_COUNT_WIDTH: 4, WR_DATA_COUNT_WIDTH: 4}

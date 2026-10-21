@@ -19,6 +19,16 @@ from lib.gmii_rx_cdc_driver import GmiiRxCdcDriver
 from lib.gmii_rx_cdc_monitor import GmiiRxCdcMonitor
 from lib.gmii_cdc_model import gmii_tx_expected, GmiiTxScoreboard
 
+
+# Suites this module backs (read by run.py; see its docstring).
+SUITES = {
+    "gmii_cdc": {
+        "toplevel": "gmii_cdc",
+        "sources": ["rtl/async_fifo.v", "rtl/gmii_cdc.v"],
+        "params": {},
+    },
+}
+
 SYS_NS = 10        # 100 MHz system clock
 MEDIA_NS = 8       # 125 MHz media clock
 SPEED = {"1G": 0b00, "100M": 0b01, "10M": 0b10}

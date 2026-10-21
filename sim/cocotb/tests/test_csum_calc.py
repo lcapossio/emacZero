@@ -16,6 +16,16 @@ from cocotb.triggers import RisingEdge
 from lib.csum import (Packet, random_packet, csum, UDP, TCP, ICMP, ICMPV6,
                       TPID_8021Q, LSRR, SSRR)
 
+
+# Suites this module backs (read by run.py; see its docstring).
+SUITES = {
+    "csum_calc": {
+        "toplevel": "csum_calc",
+        "sources": ["rtl/net/csum_calc.v"],
+        "params": {},
+    },
+}
+
 N_RANDOM = int(os.environ.get("CSUM_N_RANDOM", "400"))
 
 

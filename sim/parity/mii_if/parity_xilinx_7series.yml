@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/mii_if.v (golden) vs rtl/vhdl/mii_if.vhd,
+# XILINX_7SERIES branch (xpm_fifo_async x2 + xpm_memory_sdpram).
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/mii_if/parity_xilinx_7series.yml --strict
+#
+# ASSUMPTION: both sides use the same behavioural stubs of the XPM macros
+# (sim/parity/stubs/xpm_macros.{v,vhd}; read that header for what they model).
+# The proof shows mii_if.v == mii_if.vhd around identical macro behaviour, and
+# checks every port connection and every generic value the VHDL passes (the
+# stubs fingerprint all of them and refuse strings over 24 characters), even
+# the generics whose behaviour the stubs do not model. It says nothing about
+# the real XPMs. The stubs keep only a few words
+# of storage (FIFO 4, sdpram 8, data aliases past that) so the unbounded proof
+# fits; occupancy counters, flags, depth-dependent behaviour and every
+# address bit keep their real widths.
+#
+# Param sets: the two instantiated configurations (eth_mac: MII_DEBUG=0,
+# TX_ENABLE=1; eth_mac_sys MII path: MII_DEBUG=0, TX_ENABLE=0).
+# MII_DEBUG=1 is used only by simulation testbenches and is not proven; see
+# the note in parity.yml.
+version: 1
+name: mii_if_parity_xilinx_7series
+description: mii_if Verilog golden vs VHDL port (XILINX_7SERIES branch, XPM stubs)
+
+golden:
+  language: verilog
+  top: mii_if
+  sources: [../defines/xilinx_7series.vh, ../stubs/xpm_macros.v, ../../../rtl/mii_if.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: mii_if
+  sources: [../../../rtl/vhdl/target/emz_target_xilinx_7series.vhd, ../stubs/xpm_macros.vhd,
+            ../../../rtl/vhdl/async_fifo.vhd, ../../../rtl/vhdl/mii_if.vhd]
+
+interface:
+  top: mii_if
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  modules:
+    - name: mii_if
+      param_sets:
+        - {MII_DEBUG: 0, TX_ENABLE: 1}
+        - {MII_DEBUG: 0, TX_ENABLE: 0}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {MII_DEBUG: 0, TX_ENABLE: 1}

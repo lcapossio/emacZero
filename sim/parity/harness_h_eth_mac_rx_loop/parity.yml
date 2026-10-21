@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: cocotb harness sim/cocotb/hdl/h_eth_mac_rx_loop.v
+# (golden) vs h_eth_mac_rx_loop.vhd, flattened with eth_mac_tx and eth_mac_rx.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/harness_h_eth_mac_rx_loop/parity.yml --strict
+#
+# The harness backs the cocotb ports of tb_eth_mac_rx_mcast, _backpressure,
+# _byte0 and tb_eth_mac_sys_jumbo. eth_mac_tx and eth_mac_rx are proven on
+# their own in sim/parity/eth_mac_tx and sim/parity/eth_mac_rx; this proof
+# covers the harness wiring (port plumbing, tx_start_ok / s_axis_tkeep tied
+# high, generic pass-through) in composition.
+# Configs: TX_MAX_FRAME 9018 (both suites' value) and 1518, MCAST_HASH_FILTER
+# 0 and 1 (mcast_filter uses 1). AXIS_FIFO_ADDR_WIDTH is cut from 11 to 3 for
+# the solver, as in sim/parity/eth_mac_rx.
+version: 1
+name: harness_h_eth_mac_rx_loop_parity
+description: h_eth_mac_rx_loop cocotb harness, Verilog golden vs VHDL (flattened)
+
+golden:
+  language: verilog
+  top: h_eth_mac_rx_loop
+  sources:
+    - ../../../rtl/crc32.v
+    - ../../../rtl/sync_fifo.v
+    - ../../../rtl/net/csum_calc.v
+    - ../../../rtl/eth_mac_rx.v
+    - ../../../rtl/eth_mac_tx.v
+    - ../../cocotb/hdl/h_eth_mac_rx_loop.v
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: h_eth_mac_rx_loop
+  sources:
+    - ../../../rtl/vhdl/crc32.vhd
+    - ../../../rtl/vhdl/sync_fifo.vhd
+    - ../../../rtl/vhdl/csum_calc.vhd
+    - ../../../rtl/vhdl/eth_mac_rx.vhd
+    - ../../../rtl/vhdl/eth_mac_tx.vhd
+    - ../../cocotb/hdl/h_eth_mac_rx_loop.vhd
+
+interface:
+  top: h_eth_mac_rx_loop
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: h_eth_mac_rx_loop
+      param_sets:
+        - {TX_MAX_FRAME: 9018, MCAST_HASH_FILTER: 0, AXIS_FIFO_ADDR_WIDTH: 3}
+        - {TX_MAX_FRAME: 9018, MCAST_HASH_FILTER: 1, AXIS_FIFO_ADDR_WIDTH: 3}
+        - {TX_MAX_FRAME: 1518, MCAST_HASH_FILTER: 0, AXIS_FIFO_ADDR_WIDTH: 3}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {TX_MAX_FRAME: 9018, MCAST_HASH_FILTER: 1, AXIS_FIFO_ADDR_WIDTH: 11}

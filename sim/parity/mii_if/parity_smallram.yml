@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: mii_if, non-Xilinx branch, with the inline RX
+# frame RAM reduced to 8 words on BOTH sides.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/mii_if/parity_smallram.yml --strict
+#
+# PARITY MODELS: mii_if_smallram.v / mii_if_smallram.vhd are generated from
+# rtl/mii_if.v and rtl/vhdl/mii_if.vhd by gen_smallram.py with one identical
+# change (rx_frame_mem [0:4095] -> [0:7], indexed by the low three address
+# bits). build_and_test.py fails if they are out of date. The golden RAM size is a literal, so there is no parameter or
+# module boundary to shim. With the real RAM (parity.yml) equiv_induct does
+# not finish under yowasp-yosys 0.63. What this proves: every line of the
+# non-Xilinx branch other than the RAM depth - the sim-only TX read-pointer
+# synchronizer (tx_rd_sync1/2/3, tx_rd_toggle), tx_fifo_count, tx_fifo_level
+# and tx_busy, the async_fifo hookups and the RAM read/write idiom - with
+# clocks and async resets checked (clk2fflogic).
+#
+# FIFO MODEL: as in parity.yml, both sides read the 8-word async_fifo model
+# (sim/parity/gmii_cdc/async_fifo_smallmem.{v,vhd}); parity.yml proves that
+# pair at the two parameter sets mii_if uses.
+#
+# Param sets: eth_mac (MII_DEBUG=0, TX_ENABLE=1) and the eth_mac_sys MII path
+# (MII_DEBUG=0, TX_ENABLE=0).
+version: 1
+name: mii_if_parity_smallram
+description: mii_if Verilog vs VHDL, non-Xilinx branch, RX frame RAM cut to 8 words on both sides
+
+golden:
+  language: verilog
+  top: mii_if
+  sources: [../defines/sim.vh, mii_if_smallram.v, ../gmii_cdc/async_fifo_smallmem.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: mii_if
+  sources: [../../../rtl/vhdl/target/emz_target_sim.vhd, ../gmii_cdc/async_fifo_smallmem.vhd,
+            mii_if_smallram.vhd]
+
+interface:
+  top: mii_if
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  modules:
+    - name: mii_if
+      param_sets:
+        - {MII_DEBUG: 0, TX_ENABLE: 1}
+        - {MII_DEBUG: 0, TX_ENABLE: 0}

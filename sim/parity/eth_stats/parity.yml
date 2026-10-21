@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/eth_stats.v (golden) vs rtl/vhdl/eth_stats.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/eth_stats/parity.yml --strict
+# Proven at the instantiated width (STAT_CNT_W = 32, eth_mac_sys) and at a
+# narrow width where the saturation corner is a few increments away.
+version: 1
+name: eth_stats_parity
+description: eth_stats Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: eth_stats
+  sources: [../../../rtl/eth_stats.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: eth_stats
+  sources: [../../../rtl/vhdl/eth_stats.vhd]
+
+interface:
+  top: eth_stats
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: eth_stats
+      param_sets:
+        - {}
+        - {STAT_CNT_W: 3}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {}

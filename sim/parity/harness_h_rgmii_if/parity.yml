@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: cocotb harness sim/cocotb/hdl/h_rgmii_if.v
+# (golden) vs h_rgmii_if.vhd, flattened with two rgmii_if.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/harness_h_rgmii_if/parity.yml --strict
+#
+# The harness backs the cocotb port of tb_rgmii_if (suite rgmii_if). rgmii_if
+# is proven on its own in sim/parity/rgmii_if; this proof covers the harness
+# wiring (u_tx pins into u_rx, cfg_speed 00, the RXC choices clk_125 /
+# clk_125_90, the tie-offs) in composition. As in sim/parity/rgmii_if, the DDR
+# cells are the stateless stand-ins in sim/parity/stubs/ddr_standin.{v,vhd},
+# the same on both sides (the real cells sit in for-generates whose instance
+# names differ between Yosys and GHDL; they are proven per target in
+# sim/parity/ddr_output and sim/parity/ddr_input).
+version: 1
+name: harness_h_rgmii_if_parity
+description: h_rgmii_if cocotb harness, Verilog golden vs VHDL (flattened, DDR stand-ins)
+
+golden:
+  language: verilog
+  top: h_rgmii_if
+  sources:
+    - ../stubs/ddr_standin.v
+    - ../../../rtl/rgmii_if.v
+    - ../../cocotb/hdl/h_rgmii_if.v
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: h_rgmii_if
+  sources:
+    - ../stubs/ddr_standin.vhd
+    - ../../../rtl/vhdl/rgmii_if.vhd
+    - ../../cocotb/hdl/h_rgmii_if.vhd
+
+interface:
+  top: h_rgmii_if
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  modules:
+    - name: h_rgmii_if
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0

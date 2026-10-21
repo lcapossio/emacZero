@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: fpga/arty_a7/rtl/clk_gen.v (golden) vs
+# fpga/arty_a7/rtl/clk_gen.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/clk_gen/parity.yml --strict
+#
+# clk_gen is one MMCME2_BASE and two BUFGs. Both sides read the stand-ins in
+# ../stubs/xilinx_clk_standin.{v,vhd} in place of unisim: the MMCM is a
+# register on CLKIN1 that mixes RST, PWRDWN and a full-width fingerprint of all
+# 29 parameters, with every output its own register bit (CLKOUT0 also XOR
+# CLKFBIN); BUFG is a wire. So L2 covers the wiring (which net reaches which
+# primitive pin, the PWRDWN / RST tie-offs, the feedback BUFG and the output
+# BUFG) and every MMCM parameter value, not the primitives themselves.
+# STARTUP_WAIT is the boolean FALSE in VHDL, where the unisim VHDL component
+# declares it boolean and the Verilog passes "FALSE"; the stand-ins encode
+# both as one bit.
+version: 1
+name: clk_gen_parity
+description: clk_gen Verilog golden vs VHDL port, primitive wiring and MMCM parameters (stateful stand-ins)
+
+golden:
+  language: verilog
+  top: clk_gen
+  sources: [../stubs/xilinx_clk_standin.v, ../../../fpga/arty_a7/rtl/clk_gen.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: clk_gen
+  sources: [../stubs/xilinx_clk_standin.vhd, ../../../fpga/arty_a7/rtl/clk_gen.vhd]
+
+interface:
+  top: clk_gen
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 4
+  modules:
+    - name: clk_gen
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0

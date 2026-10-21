@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/net/udp_blast_trigger.v (golden) vs
+# rtl/vhdl/udp_blast_trigger.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/udp_blast_trigger/parity.yml --strict
+#
+# The parameters are 16- and 32-bit vectors (std_logic_vector generics in the
+# VHDL), which translateHDL cannot set from a manifest. Two proofs:
+#   - udp_blast_trigger at its defaults (TRIGGER_PORT 9997, IGNORE_SRC_PORT
+#     5001, DEFAULT_COUNT 1000000, DEFAULT_PAYLOAD 1472), which are exactly the
+#     values arty_a7_top, zcu106_eth_demo and the benches pass;
+#   - udp_blast_trigger_alt, a one-instance wrapper pair in this directory
+#     with every parameter set away from its default, so a generic that does
+#     not reach its logic (or a constant left in its place) shows up.
+version: 1
+name: udp_blast_trigger_parity
+description: udp_blast_trigger Verilog golden vs VHDL port (defaults, and all generics changed)
+
+golden:
+  language: verilog
+  top: udp_blast_trigger
+  sources: [../../../rtl/net/udp_blast_trigger.v, udp_blast_trigger_alt.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: udp_blast_trigger
+  sources: [../../../rtl/vhdl/udp_blast_trigger.vhd, udp_blast_trigger_alt.vhd]
+
+interface:
+  top: udp_blast_trigger
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 8
+  modules:
+    - name: udp_blast_trigger
+    - name: udp_blast_trigger_alt
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0

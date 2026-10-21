@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/ddr_output.v (golden) vs rtl/vhdl/ddr_output.vhd.
+# SIM target (`define SIM / emz_target_sim.vhd). parity_<target>.yml prove the other
+# EMZ_TARGET branches.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/ddr_output/parity.yml --strict
+version: 1
+name: ddr_output_parity_sim
+description: ddr_output Verilog golden vs VHDL port, SIM behavioural branch
+
+golden:
+  language: verilog
+  top: ddr_output
+  sources: [../defines/sim.vh, ../../../rtl/ddr_output.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: ddr_output
+  sources: [../../../rtl/vhdl/target/emz_target_sim.vhd, ../../../rtl/vhdl/ddr_output.vhd]
+
+interface:
+  top: ddr_output
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 8
+  modules:
+    - name: ddr_output
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0

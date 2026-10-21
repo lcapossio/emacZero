@@ -27,24 +27,28 @@ Recommended component coordinates:
 ## Inventory Scope
 
 The FuseSoC core file `emaczero.core` is the authoritative list of HDL files
-per configuration: the `default` target uses the `rtl_core` fileset, and
-`with_l3` adds the optional L3 helpers in `rtl_l3`. List the files of the
+per configuration: the `default` target uses the `rtl_core` fileset,
+`with_l3` adds the optional L3 helpers in `rtl_l3`, and `vhdl` uses the VHDL
+port (`rtl_vhdl_target` and `rtl_vhdl_core`) instead of `rtl_core`. List the files of the
 target you build, not the whole repository.
 
 | Area | Include | Notes |
 |------|---------|-------|
 | MAC RTL | `rtl/` per the `rtl_core` fileset, plus `rtl/version.vh` | Core MAC, PHY interfaces, CSR, CDC/FIFO, checksum offload. |
 | Optional L3 RTL | `rtl/net/` per the `rtl_l3` fileset | Demo ICMP/UDP helpers; only when built. |
+| VHDL port | `rtl/vhdl/` per the `rtl_vhdl_core` fileset, plus the one `rtl/vhdl/target/` package you build with | VHDL-93 translation of the MAC RTL; list it instead of `rtl_core` when you build the VHDL. |
 | Software | `sw/emaczero/` | C register map and driver helpers, if the product uses them. |
 | LiteX wrapper | `litex_emaczero/` | Only for LiteX-based products. |
 | Board ports | `fpga/arty_a7/`, `fpga/zcu106/` | Reference designs, not part of the core. The ZCU106 port generates AMD's 1G/2.5G Ethernet PCS/PMA IP at build time; list it as third-party IP if a product reuses that port. |
 | Debug submodule | `fcapz` (fpgacapZero, pinned by the submodule commit) | Used only by the board debug builds, never by the core. |
-| Verification | `build_and_test.py`, `sim/tb/`, `sim/cocotb/`, `tests/` | Executable verification intent and evidence. |
+| Verification | `build_and_test.py`, `sim/tb/`, `sim/cocotb/`, `sim/parity/`, `tests/` | Executable verification intent and evidence. `sim/parity/` holds the formal equivalence manifests of the VHDL port. |
 | Build scripts | `fpga/*/scripts/`, `fpga/scripts/` | Synthesis, implementation, and hardware-test flows. |
 | Documentation | `README.md`, `SECURITY.md`, `CHANGELOG.md`, `docs/` | Integration, security, register, and evidence guidance. |
 | Examples | `examples/` | Only examples used by the downstream product or evidence flow. |
 
-The core has no third-party HDL dependencies. On Xilinx targets the DDR I/O
+The core has no third-party HDL dependencies. The formal proofs of the VHDL
+port use [translateHDL](https://github.com/lcapossio/translateHDL), a
+verification tool that is not part of any build; CI pins its commit. On Xilinx targets the DDR I/O
 wrappers (`ddr_input`, `ddr_output`) instantiate vendor primitives (`IDDR`,
 `ODDR`, `IDDRE1`, `ODDRE1`) that come from the synthesis tool's library.
 

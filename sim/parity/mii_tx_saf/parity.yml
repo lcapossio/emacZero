@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/mii_tx_saf.v (golden) vs rtl/vhdl/mii_tx_saf.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/mii_tx_saf/parity.yml --strict
+# The async_fifo submodule is already proven; both sides compile their own
+# port of it, so this proof covers the whole mii_tx_saf hierarchy. Two clock
+# domains (clk, mii_tx_clk) are independent solver inputs under clk2fflogic.
+# Parameters are shrunk for the solver. The design instantiates
+# MAX_FRAME=1518/FIFO_ADDR_WIDTH=11 and MAX_FRAME=9018/FIFO_ADDR_WIDTH=14
+# (memory_map turns the FIFO RAM into flops, see sync_fifo/parity.yml).
+# FIFO_ADDR_WIDTH=5 is the smallest legal width: dbg_saf part-selects
+# frame_rd_ws2[5:0] / frame_wr_bin[5:0] out of FIFO_ADDR_WIDTH+1 bits.
+# MAX_FRAME must be < 2**FIFO_ADDR_WIDTH (elaboration guard).
+version: 1
+name: mii_tx_saf_parity
+description: mii_tx_saf Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: mii_tx_saf
+  sources: [../../../rtl/async_fifo.v, ../../../rtl/mii_tx_saf.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: mii_tx_saf
+  sources: [../../../rtl/vhdl/async_fifo.vhd, ../../../rtl/vhdl/mii_tx_saf.vhd]
+
+interface:
+  top: mii_tx_saf
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: mii_tx_saf
+      param_sets:
+        - {MAX_FRAME: 31, FIFO_ADDR_WIDTH: 5}
+        - {MAX_FRAME: 7, FIFO_ADDR_WIDTH: 5}
+        - {MAX_FRAME: 100, FIFO_ADDR_WIDTH: 7}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {MAX_FRAME: 1518, FIFO_ADDR_WIDTH: 11}

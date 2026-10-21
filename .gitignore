@@ -25,3 +25,10 @@ pytest-cache-files-*/
 # Tooling / project-local
 no_commit/
 .claude/
+
+# GHDL / translateHDL parity scratch
+work-obj*.cf
+sim/parity/**/*.o
+.formal_*/
+.synthcmp_*/
+_vhdl_netlist_*.v

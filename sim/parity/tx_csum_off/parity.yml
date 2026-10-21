@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/net/tx_csum_off.v (golden) vs rtl/vhdl/tx_csum_off.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/tx_csum_off/parity.yml --strict
+# Submodules sync_fifo and csum_calc (both proven on their own) are listed on
+# both sides, so the proof covers the whole flattened tx_csum_off.
+# L2 needs translateHDL 775a83d or later: before it, GHDL's undriven
+# u_calc_l3_end / u_calc_l4_field nets (outputs tx_csum_off never reads) took
+# the csum_calc registers' names and induction did not close.
+# The buffers are shrunk for the formal proof: eth_mac_sys instantiates
+# MAX_FRAME = 9018 (default) or 1518 (Arty) with BUF_ADDR_WIDTH =
+# clog2(MAX_FRAME + 8) = 14 / 11 and META_ADDR_WIDTH = 4, and memory_map turns
+# the byte buffer and the 16 x 62-bit metadata RAM into flops, out of SAT
+# reach. The RTL is parametric in all three. The sets below keep the
+# BUF > MAX_FRAME rule; the last one leaves BUF_ADDR_WIDTH and META_ADDR_WIDTH
+# at their defaults (clog2(20 + 8) = 5, and 4) to check the default
+# expression. L4 runs at the production sizes.
+version: 1
+name: tx_csum_off_parity
+description: tx_csum_off Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: tx_csum_off
+  sources: [../../../rtl/sync_fifo.v, ../../../rtl/net/csum_calc.v, ../../../rtl/net/tx_csum_off.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: tx_csum_off
+  sources: [../../../rtl/vhdl/emz_util_pkg.vhd, ../../../rtl/vhdl/sync_fifo.vhd,
+            ../../../rtl/vhdl/csum_calc.vhd, ../../../rtl/vhdl/tx_csum_off.vhd]
+
+interface:
+  top: tx_csum_off
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: tx_csum_off
+      param_sets:
+        - {MAX_FRAME: 6, BUF_ADDR_WIDTH: 3, META_ADDR_WIDTH: 1}
+        - {MAX_FRAME: 60, BUF_ADDR_WIDTH: 6, META_ADDR_WIDTH: 2}
+        - {MAX_FRAME: 20}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {}
+    - {MAX_FRAME: 1518}

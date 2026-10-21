@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/eth_mac_rx.v (golden) vs rtl/vhdl/eth_mac_rx.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/eth_mac_rx/parity.yml --strict
+# The sync_fifo, crc32 and csum_calc submodules are already proven; both sides
+# compile their own port of them (Verilog golden / VHDL candidate), so this
+# proof covers the whole eth_mac_rx hierarchy.
+# Both MCAST_HASH_FILTER values and both RX_CSUM_OFFLOAD values are proven
+# (eth_mac_sys passes 0 or 1 for each).
+# AXIS_FIFO_ADDR_WIDTH is shrunk for the solver (the design instantiates 11
+# or 14; memory_map turns the RAM into flops, see sync_fifo/parity.yml):
+# 3 is the smallest depth with a non-zero FIFO_HWM (8-4), 2 covers the
+# degenerate HWM=0 case, and 4 a second non-trivial depth.
+# MAX_FRAME_STD / MAX_FRAME_JUMBO stay at the defaults the design uses.
+version: 1
+name: eth_mac_rx_parity
+description: eth_mac_rx Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: eth_mac_rx
+  sources: [../../../rtl/crc32.v, ../../../rtl/sync_fifo.v, ../../../rtl/net/csum_calc.v,
+            ../../../rtl/eth_mac_rx.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: eth_mac_rx
+  sources: [../../../rtl/vhdl/crc32.vhd, ../../../rtl/vhdl/sync_fifo.vhd,
+            ../../../rtl/vhdl/csum_calc.vhd, ../../../rtl/vhdl/eth_mac_rx.vhd]
+
+interface:
+  top: eth_mac_rx
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: eth_mac_rx
+      param_sets:
+        - {MCAST_HASH_FILTER: 0, AXIS_FIFO_ADDR_WIDTH: 3, RX_CSUM_OFFLOAD: 0}
+        - {MCAST_HASH_FILTER: 1, AXIS_FIFO_ADDR_WIDTH: 3, RX_CSUM_OFFLOAD: 0}
+        - {MCAST_HASH_FILTER: 0, AXIS_FIFO_ADDR_WIDTH: 2, RX_CSUM_OFFLOAD: 0}
+        - {MCAST_HASH_FILTER: 1, AXIS_FIFO_ADDR_WIDTH: 4, RX_CSUM_OFFLOAD: 0}
+        - {MCAST_HASH_FILTER: 0, AXIS_FIFO_ADDR_WIDTH: 3, RX_CSUM_OFFLOAD: 1}
+        - {MCAST_HASH_FILTER: 1, AXIS_FIFO_ADDR_WIDTH: 4, RX_CSUM_OFFLOAD: 1}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {MCAST_HASH_FILTER: 1, AXIS_FIFO_ADDR_WIDTH: 11, RX_CSUM_OFFLOAD: 1}

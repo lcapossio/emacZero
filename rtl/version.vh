@@ -7,7 +7,8 @@
 // Any change here must be mirrored in:
 //   sw/emaczero/emaczero.h  (EMZ_VERSION_MAJOR / MINOR / ID)
 //   emaczero.core           (name: bard0:eth:emaczero:<MAJOR>.<MINOR>.0)
-// build_and_test.py runs a consistency check that fails if any of the three
+//   rtl/vhdl/emz_version_pkg.vhd (VHDL port)
+// build_and_test.py runs a consistency check that fails if any of them
 // disagree.
 // =============================================================================
 `ifndef EMACZERO_VERSION_VH

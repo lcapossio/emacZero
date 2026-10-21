@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: fpga/arty_a7/rtl/uart_tx.v (golden) vs
+# fpga/arty_a7/rtl/uart_tx.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/uart_tx/parity.yml --strict
+#
+# Proves the configuration arty_a7_top instantiates (CLK_FREQ 100 MHz, BAUD
+# 115200: DIVISOR 868) and a small divider (DIVISOR 10). The bit counter and
+# the 16-bit clk_cnt pair by name, so the full divider closes as easily as the
+# small one.
+version: 1
+name: uart_tx_parity
+description: uart_tx Verilog golden vs VHDL port (DIVISOR 868 and 10)
+
+golden:
+  language: verilog
+  top: uart_tx
+  sources: [../../../fpga/arty_a7/rtl/uart_tx.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: uart_tx
+  sources: [../../../fpga/arty_a7/rtl/uart_tx.vhd]
+
+interface:
+  top: uart_tx
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 8
+  modules:
+    - name: uart_tx
+      param_sets:
+        - {CLK_FREQ: 100000000, BAUD: 115200}
+        - {CLK_FREQ: 1000, BAUD: 100}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {CLK_FREQ: 100000000, BAUD: 115200}
+    - {CLK_FREQ: 1000, BAUD: 100}

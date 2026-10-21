@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/axilite_regs.v (golden) vs rtl/vhdl/axilite_regs.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/axilite_regs/parity.yml --strict
+# Proves the configuration eth_mac_sys instantiates (ADDR_WIDTH=8) with the
+# multicast hash filter both off and on. The golden pulls rtl/version.vh in via
+# `include (resolved next to the including file); the VHDL side gets the same
+# values from emz_version_pkg.
+version: 1
+name: axilite_regs_parity
+description: axilite_regs Verilog golden vs VHDL port (MCAST_HASH_FILTER off and on)
+
+golden:
+  language: verilog
+  top: axilite_regs
+  sources: [../../../rtl/axilite_regs.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: axilite_regs
+  sources: [../../../rtl/vhdl/emz_version_pkg.vhd, ../../../rtl/vhdl/axilite_regs.vhd]
+
+interface:
+  top: axilite_regs
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: axilite_regs
+      param_sets:
+        - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 0}
+        - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 1}
+
+# L4 is a sanity check, not proof. Flop counts match exactly ($adff 7, $adffe
+# 43); 59 of the 69 extra cells (MCAST=1, v0.2.0 map) are $eq. GHDL's netlist
+# writes each case target as its own `case` over a one-hot select vector, and
+# Yosys `proc` lowers every one-hot item to a second $eq, so each register-map
+# entry costs two $eq on the VHDL side and one on the Verilog side. The delta
+# therefore grows with the register map (+31.7% / +34.8% today); 40% leaves
+# headroom for a few more CSRs.
+synth:
+  enabled: true
+  tolerance_pct: 40.0
+  param_sets:
+    - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 0}
+    - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 1}

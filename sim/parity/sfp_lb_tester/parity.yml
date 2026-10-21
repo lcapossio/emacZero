@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: fpga/zcu106/rtl/sfp_lb_tester.v (golden) vs
+# fpga/zcu106/rtl/sfp_lb_tester.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/sfp_lb_tester/parity.yml --strict
+#
+# eth_mac_sys is NOT flattened in: it is proven on its own in
+# sim/parity/eth_mac_sys. Both sides read the stand-in eth_mac_sys_standin.{v,vhd}
+# instead (same name, generics and ports; a 128-bit register that mixes every
+# input and a fingerprint of every generic, with every output its own register
+# bit; see the .v for why an empty port-only stub is unusable). So this proof
+# covers sfp_lb_tester's own logic, the wiring of every eth_mac_sys port and
+# the generic values passed to it (including RX_AXIS_ADDR_WIDTH left at its
+# default: the VHDL 0-sentinel resolves to the Verilog default), not the MAC.
+# In the induction step the MAC outputs take arbitrary values.
+#
+# sfp_lb_tester has no parameters and no vendor `ifdef, so there is one
+# configuration and no target package. The TIMEOUT (17'h1FFFF) and NEG_WIN
+# (25000) timers are localparams and are proven at full width; equiv_induct
+# pairs them by name and does not unroll them.
+#
+# The stand-in is shared with sim/parity/gmii_lb_selftest.
+version: 1
+name: sfp_lb_tester_parity
+description: sfp_lb_tester Verilog golden vs VHDL port, eth_mac_sys replaced by a stand-in
+
+golden:
+  language: verilog
+  top: sfp_lb_tester
+  sources:
+    - eth_mac_sys_standin.v
+    - ../../../fpga/zcu106/rtl/sfp_lb_tester.v
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: sfp_lb_tester
+  sources:
+    - ../../../rtl/vhdl/emz_util_pkg.vhd
+    - eth_mac_sys_standin.vhd
+    - ../../../fpga/zcu106/rtl/sfp_lb_tester.vhd
+
+interface:
+  top: sfp_lb_tester
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  modules:
+    - name: sfp_lb_tester
+      param_sets:
+        - {}
+
+# L4: GHDL lowers the byte-index case tables (tx_byte, exp_byte) to one $eq
+# per choice (94 -> 254 $eq cells), +29% cells; flop bits are identical (894).
+synth:
+  enabled: true
+  tolerance_pct: 35.0
+  param_sets:
+    - {}

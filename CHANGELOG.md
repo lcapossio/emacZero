@@ -5,7 +5,71 @@ This project does not yet maintain long-lived release branches.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- VHDL-93 port of the MAC IP (`rtl/eth_mac_sys.f`) in `rtl/vhdl/`, with the
+  filelist `rtl/eth_mac_sys_vhdl.f` and FuseSoC target `vhdl`. Vendor
+  selection uses one target package per vendor in `rtl/vhdl/target/`. Every
+  module is formally proven equivalent to the v0.2.0 Verilog with translateHDL
+  (manifests in `sim/parity/`; see `docs/vhdl_port.md`). Generics whose Verilog
+  default is computed from `MAX_FRAME` default to 0 in VHDL, which selects
+  that same value. Not yet run on hardware.
+- VHDL-93 ports of the L3 helpers (`rtl/eth_mac_sys_l3_vhdl.f`, FuseSoC
+  fileset `rtl_vhdl_l3`; all but `net_rx`), `axil_arb2`, and the board
+  modules `clk_gen`, `uart_tx`, `arp_responder`, `test_sequencer`,
+  `gmii_lb_selftest` (Arty A7) and `i2c_init`, `sfp_lb_tester`, `zcu106_top`
+  (ZCU106; `zcu106_top_lb.vhd` is the `ZCU106_SFP1_LB` build). Each is
+  formally proven equivalent to its Verilog, the tops with their children
+  replaced by stateful stand-ins. `net_rx`, `arty_tx_arbiter`, `arty_a7_top`
+  and `zcu106_eth_demo` are not ported yet, so board builds stay mixed
+  language. `udp_blast`'s delay generics are VHDL integers: pass a delay of
+  2^31 cycles or more as its negative 32-bit equivalent.
+- `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
+  vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
+  The phase is skipped when GHDL is not installed. It also analyses and
+  elaborates the L3 and board VHDL, checks the generated parity models, and
+  fails on a VHDL process whose sensitivity list misses a signal it reads,
+  or, for a clocked process, its clock or asynchronous reset
+  (`sim/parity/sens_check.py`).
+- cocotb ports of all 44 core Verilog testbenches (`sim/cocotb/tests/`), with
+  the same DUT, parameters, timing and checks. Every cocotb suite runs on both
+  the Verilog (Icarus) and the VHDL port (GHDL): `sim/cocotb/run.py --hdl both
+  -j N`, phases 2 and 2b of `build_and_test.py`. All 53 suites pass on both
+  languages. Multi-instance benches use wiring harnesses in `sim/cocotb/hdl/`,
+  each proven equivalent across the languages (`sim/parity/harness_*`). The
+  `sim/tb/` benches are unchanged and still run.
+- Each test module declares its suites in a `SUITES` dict that `run.py` reads;
+  `run.py` runs suites in parallel (`-j`) and on both languages (`--hdl both`).
+- `build_and_test.py` phase 1c reruns the core Verilog testbenches against
+  the VHDL port in Vivado xsim (skipped without xsim on `PATH`). 43 of 44 pass;
+  `RGMII-LOOPBACK` forces DUT internals and stays Verilog-only.
+- CI installs GHDL 4.1, so the GHDL checks and the cocotb suites of the VHDL
+  port run on every push and pull request. A new `parity` workflow runs every
+  formal equivalence proof in `sim/parity/` in one job
+  (`sim/parity/run_all.py`), with translateHDL and yowasp-yosys pinned. CI runs on Ubuntu 24.04 instead of
+  `ubuntu-latest`.
+
+### Changed
+
+- `tb_gmii_cdc_rx_overflow.v` reads its FIFO-word probe through a wire, and
+  `tb_eth_stats.v` can leave out its force-based saturation test
+  (`TB_NO_HIER_FORCE`), so both also run against a VHDL DUT in xsim.
+
+### Known issues
+
+- `udp_echo` (Verilog, and the VHDL port, which reproduces it): at `BUF_SIZE`
+  1536 the received payload length wraps every 4096 bytes. A payload of
+  exactly 4096 or 8192 bytes is accepted with length 0, and the echo then
+  transmits until reset; payloads of 4097 to 5632 and 8193 to 8972 bytes get a
+  truncated reply. Only a build that can receive such a frame is affected:
+  the ZCU106 demo (MAX_FRAME 9018) once `jumbo_en` is set, not the Arty build
+  (MAX_FRAME 1518).
+
+### Fixed
+
+- `emaczero.core`: `rtl_core` did not list `rtl/mii_tx_saf.v`, so FuseSoC
+  builds of the `default` and `with_l3` targets could not elaborate
+  `eth_mac_sys` on its default MII path.
 
 ## v0.2.0 - 2026-10-16
 

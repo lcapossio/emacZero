@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/ddr_output.v (golden) vs rtl/vhdl/ddr_output.vhd.
+# INTEL_CYCLONE target (`define INTEL_CYCLONE / emz_target_intel_cyclone.vhd).
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/ddr_output/parity_intel_cyclone.yml --strict
+version: 1
+name: ddr_output_parity_intel_cyclone
+description: ddr_output Verilog golden vs VHDL port, INTEL_CYCLONE behavioural branch
+
+golden:
+  language: verilog
+  top: ddr_output
+  sources: [../defines/intel_cyclone.vh, ../../../rtl/ddr_output.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: ddr_output
+  sources: [../../../rtl/vhdl/target/emz_target_intel_cyclone.vhd, ../../../rtl/vhdl/ddr_output.vhd]
+
+interface:
+  top: ddr_output
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 8
+  modules:
+    - name: ddr_output
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0

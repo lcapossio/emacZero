@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/gmii_if.v (golden) vs rtl/vhdl/gmii_if.vhd,
+# with its ddr_output (u_txc) on the INTEL_CYCLONE target (`define INTEL_CYCLONE /
+# emz_target_intel_cyclone.vhd).
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/gmii_if/parity_intel_cyclone.yml --strict
+# gmii_if has no target-dependent logic of its own; only ddr_output's branch
+# changes with the target. The Xilinx branches are proven on ddr_output itself
+# (sim/parity/ddr_output/parity_xilinx_*.yml): here the VHDL generate label in
+# ddr_output sits mid-path (u_txc.gen_xilinx_*_u_oddr vs u_txc.u_oddr), so the
+# stub state cannot pair by name inside gmii_if (sim/parity/rgmii_if/prove_rgmii_if.py
+# shows the same composition closing for rgmii_if once labels are aligned).
+# L4 compares the top module's own cells (the ddr_output submodule is not counted).
+version: 1
+name: gmii_if_parity_intel_cyclone
+description: gmii_if Verilog golden vs VHDL port, ddr_output on INTEL_CYCLONE
+
+golden:
+  language: verilog
+  top: gmii_if
+  sources: [../defines/intel_cyclone.vh, ../../../rtl/ddr_output.v, ../../../rtl/gmii_if.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: gmii_if
+  sources: [../../../rtl/vhdl/target/emz_target_intel_cyclone.vhd, ../../../rtl/vhdl/ddr_output.vhd, ../../../rtl/vhdl/gmii_if.vhd]
+
+interface:
+  top: gmii_if
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 8
+  modules:
+    - name: gmii_if
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0

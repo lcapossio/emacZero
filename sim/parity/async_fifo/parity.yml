@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/async_fifo.v (golden) vs rtl/vhdl/async_fifo.vhd.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/async_fifo/parity.yml --strict
+# Both RAM_STYLE branches are proven. translateHDL passes integer params only,
+# so the BLOCK branch goes through a one-instance wrapper per side
+# (async_fifo_block.{v,vhd}) that pins RAM_STYLE="BLOCK".
+# Formal proves small depths (see sync_fifo/parity.yml for why).
+version: 1
+name: async_fifo_parity
+description: async_fifo Verilog golden vs VHDL port (DISTRIBUTED and BLOCK)
+
+golden:
+  language: verilog
+  top: async_fifo
+  sources: [../../../rtl/async_fifo.v, async_fifo_block.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: async_fifo
+  sources: [../../../rtl/vhdl/async_fifo.vhd, async_fifo_block.vhd]
+
+interface:
+  top: async_fifo
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: async_fifo
+      param_sets:
+        - {DATA_WIDTH: 4, ADDR_WIDTH: 2}
+        - {DATA_WIDTH: 10, ADDR_WIDTH: 3}
+    - name: async_fifo_block
+      param_sets:
+        - {DATA_WIDTH: 4, ADDR_WIDTH: 2}
+        - {DATA_WIDTH: 10, ADDR_WIDTH: 3}
+
+synth:
+  enabled: true
+  tolerance_pct: 10.0
+  param_sets:
+    - {DATA_WIDTH: 10, ADDR_WIDTH: 6}

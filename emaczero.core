@@ -30,6 +30,40 @@ filesets:
       - rtl/eth_mac_sys.v
     file_type: verilogSource
 
+  # VHDL port of rtl_core (docs/vhdl_port.md). The target package replaces the
+  # Verilog vendor define; swap this fileset's file for another target under
+  # rtl/vhdl/target/ (sim, xilinx_ultrascale_plus, intel_cyclone, none).
+  rtl_vhdl_target:
+    files:
+      - rtl/vhdl/target/emz_target_xilinx_7series.vhd
+    file_type: vhdlSource-93
+
+  rtl_vhdl_core:
+    files:
+      - rtl/vhdl/emz_util_pkg.vhd
+      - rtl/vhdl/emz_version_pkg.vhd
+      - rtl/vhdl/crc32.vhd
+      - rtl/vhdl/async_fifo.vhd
+      - rtl/vhdl/sync_fifo.vhd
+      - rtl/vhdl/mii_if.vhd
+      - rtl/vhdl/mii_tx_saf.vhd
+      - rtl/vhdl/csum_calc.vhd
+      - rtl/vhdl/eth_mac_rx.vhd
+      - rtl/vhdl/eth_mac_tx.vhd
+      - rtl/vhdl/eth_mac.vhd
+      - rtl/vhdl/mdio_master.vhd
+      - rtl/vhdl/eth_stats.vhd
+      - rtl/vhdl/eth_pause.vhd
+      - rtl/vhdl/axilite_regs.vhd
+      - rtl/vhdl/ddr_output.vhd
+      - rtl/vhdl/ddr_input.vhd
+      - rtl/vhdl/rgmii_if.vhd
+      - rtl/vhdl/gmii_if.vhd
+      - rtl/vhdl/gmii_cdc.vhd
+      - rtl/vhdl/tx_csum_off.vhd
+      - rtl/vhdl/eth_mac_sys.vhd
+    file_type: vhdlSource-93
+
   rtl_l3:
     files:
       - rtl/net/net_rx.v
@@ -40,6 +74,18 @@ filesets:
       - rtl/net/udp_iperf_sink.v
       - rtl/net/udp_stats_reply.v
     file_type: verilogSource
+
+  # VHDL port of rtl_l3 (rtl/eth_mac_sys_l3_vhdl.f), all but net_rx, which is
+  # not ported yet: use with rtl/net/net_rx.v in a mixed-language build.
+  rtl_vhdl_l3:
+    files:
+      - rtl/vhdl/icmp_echo.vhd
+      - rtl/vhdl/udp_echo.vhd
+      - rtl/vhdl/udp_blast.vhd
+      - rtl/vhdl/udp_blast_trigger.vhd
+      - rtl/vhdl/udp_iperf_sink.vhd
+      - rtl/vhdl/udp_stats_reply.vhd
+    file_type: vhdlSource-93
 
   fpga_arty_rtl:
     files:
@@ -62,6 +108,11 @@ targets:
     filesets: [rtl_core]
     toplevel: eth_mac_sys
     parameters: [PHY_INTERFACE, RGMII_SPEEDS, CLK_FREQ_HZ, MAX_FRAME, MCAST_HASH_FILTER]
+
+  vhdl:
+    description: eth_mac_sys VHDL port (MII, GMII or RGMII), no L3. Set generics in the tool flow.
+    filesets: [rtl_vhdl_target, rtl_vhdl_core]
+    toplevel: eth_mac_sys
 
   with_l3:
     description: eth_mac_sys plus L3 RX parser and ICMP echo responder

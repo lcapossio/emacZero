@@ -5,7 +5,8 @@
 """
 build_and_test.py — emacZero: lint and simulate Ethernet MAC
 ============================================================
-Runs version checks, Icarus lint, Verilator lint, and all Icarus testbenches.
+Runs version checks, Icarus lint, Verilator lint, GHDL lint of the VHDL port,
+and all Icarus testbenches.
 
 Usage:
   python build_and_test.py              # run all tests
@@ -73,6 +74,7 @@ def run_cmd(cmd, cwd=None, timeout=None):
 VERSION_VH       = os.path.join(PROJECT_DIR, "rtl", "version.vh")
 VERSION_C_HEADER = os.path.join(PROJECT_DIR, "sw", "emaczero", "emaczero.h")
 VERSION_FUSESOC  = os.path.join(PROJECT_DIR, "emaczero.core")
+VERSION_VHDL     = os.path.join(PROJECT_DIR, "rtl", "vhdl", "emz_version_pkg.vhd")
 
 _VH_DEFINE_RE = re.compile(
     r'`define\s+(EMZ_VERSION_MAJOR|EMZ_VERSION_MINOR|EMZ_VERSION_ID)\s+'
@@ -93,6 +95,10 @@ _C_VALUE_LITERAL_RE = re.compile(
 )
 _CORE_NAME_RE = re.compile(
     r"^name:\s*[^:]+:[^:]+:[^:]+:(\d+)\.(\d+)\.\d+", re.MULTILINE
+)
+_VHDL_CONST_RE = re.compile(
+    r"constant\s+(EMZ_VERSION_MAJOR|EMZ_VERSION_MINOR|EMZ_VERSION_ID)\s*:"
+    r"[^:]*:=\s*x\"([0-9A-Fa-f_]+)\"", re.IGNORECASE
 )
 
 
@@ -140,6 +146,11 @@ def _parse_c_version_value(text, cdef):
     return None
 
 
+def _parse_vhdl(text):
+    return {m.group(1).upper(): int(m.group(2).replace("_", ""), 16)
+            for m in _VHDL_CONST_RE.finditer(text)}
+
+
 def _parse_core(text):
     m = _CORE_NAME_RE.search(text)
     if not m:
@@ -153,12 +164,14 @@ def run_version_check():
         vh   = _parse_vh(_read(VERSION_VH))
         cdef = _parse_c(_read(VERSION_C_HEADER))
         core = _parse_core(_read(VERSION_FUSESOC))
+        vhdl = _parse_vhdl(_read(VERSION_VHDL))
     except (OSError, ValueError) as e:
         fail(f"Version check: {e}")
         return False
 
     keys = ("EMZ_VERSION_MAJOR", "EMZ_VERSION_MINOR", "EMZ_VERSION_ID")
-    missing = [(name, k) for name, src in (("version.vh", vh), ("emaczero.h", cdef))
+    others = (("emaczero.h", cdef), ("emz_version_pkg.vhd", vhdl))
+    missing = [(name, k) for name, src in (("version.vh", vh), *others)
                           for k in keys if k not in src]
     if missing:
         for src, k in missing:
@@ -168,11 +181,12 @@ def run_version_check():
         fail("Version check: could not parse package version from emaczero.core")
         return False
 
-    mismatches = [k for k in keys if vh[k] != cdef[k]]
+    mismatches = [(name, k, src[k]) for name, src in others
+                  for k in keys if vh[k] != src[k]]
     if mismatches:
-        for k in mismatches:
+        for name, k, val in mismatches:
             fail(f"Version check: {k} mismatch — version.vh=0x{vh[k]:X}, "
-                 f"emaczero.h=0x{cdef[k]:X}")
+                 f"{name}=0x{val:X}")
         return False
 
     c_value = _parse_c_version_value(_read(VERSION_C_HEADER), cdef)
@@ -356,6 +370,180 @@ def run_vivado_elab():
 
     ok("Vivado RTL elaboration: clean")
     return True
+
+
+VHDL_FILELIST = os.path.join(PROJECT_DIR, "rtl", "eth_mac_sys_vhdl.f")
+VHDL_TARGETS = ("sim", "xilinx_7series", "xilinx_ultrascale_plus",
+                "intel_cyclone", "none")
+VHDL_L3_FILELIST = os.path.join(PROJECT_DIR, "rtl", "eth_mac_sys_l3_vhdl.f")
+
+# Proof-only models in sim/parity/ generated from (or checked against) the
+# real RTL; each script exits 1 when its model is stale.
+PARITY_GEN_CHECKS = (
+    ("sim/parity/mii_if/gen_smallram.py", "mii_if small-RAM parity models"),
+    ("sim/parity/gmii_cdc/gen_smallmem.py", "async_fifo small-memory parity models"),
+    ("sim/parity/gen_goldens.py", "test_sequencer and udp_echo x-refined parity goldens"),
+    ("sim/parity/zcu106_top/gen_split.py", "zcu106_top split-pin parity models"),
+    ("sim/parity/i2c_init/check_rom.py", "Si5328 ROM: .vh table vs VHDL package"),
+)
+SENS_CHECK = os.path.join(PROJECT_DIR, "sim", "parity", "sens_check.py")
+
+# Board-support VHDL, analysed after the core and L3 lists. Each step is
+# (files to analyse, entities to elaborate). Xilinx primitives, vendor IP,
+# fcapz and the Verilog-only children are component declarations left unbound,
+# which GHDL accepts. zcu106_top.vhd and zcu106_top_lb.vhd both declare entity
+# zcu106_top (the two ZCU106_SFP1_LB builds), so each is analysed and
+# elaborated in turn.
+VHDL_BOARD_STEPS = (
+    (["rtl/vhdl/axil_arb2.vhd",
+      "fpga/arty_a7/rtl/clk_gen.vhd",
+      "fpga/arty_a7/rtl/uart_tx.vhd",
+      "fpga/arty_a7/rtl/arp_responder.vhd",
+      "fpga/arty_a7/rtl/test_sequencer.vhd",
+      "fpga/arty_a7/rtl/gmii_lb_selftest.vhd",
+      "fpga/zcu106/rtl/zcu106_si5328_rom_pkg.vhd",
+      "fpga/zcu106/rtl/i2c_init.vhd",
+      "fpga/zcu106/rtl/sfp_lb_tester.vhd"],
+     ["icmp_echo", "udp_echo", "udp_blast", "udp_blast_trigger", "udp_iperf_sink",
+      "udp_stats_reply", "axil_arb2", "clk_gen", "uart_tx", "arp_responder",
+      "test_sequencer", "gmii_lb_selftest", "i2c_init", "sfp_lb_tester"]),
+    (["fpga/zcu106/rtl/zcu106_top.vhd"], ["zcu106_top"]),
+    (["fpga/zcu106/rtl/zcu106_top_lb.vhd"], ["zcu106_top"]),
+)
+
+
+def _vhdl_sources(target):
+    """rtl/eth_mac_sys_vhdl.f with its target package swapped for `target`."""
+    srcs = []
+    with open(VHDL_FILELIST, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "/target/emz_target_" in line:
+                line = f"rtl/vhdl/target/emz_target_{target}.vhd"
+            srcs.append(line)
+    return srcs
+
+
+def run_ghdl_lint():
+    """Analyse the VHDL port (rtl/vhdl/) once per vendor target, then
+    elaborate eth_mac_sys. The proofs of equivalence with the Verilog live in
+    sim/parity/ (translateHDL); this phase only keeps the VHDL compiling.
+    Skipped (not failed) where GHDL is unavailable, natively or in WSL.
+    The generated parity models and the sensitivity lists of combinational
+    processes are checked first (no GHDL needed)."""
+    header("PHASE 0d: GHDL lint (VHDL port)")
+    all_ok = True
+    for script, what in PARITY_GEN_CHECKS:
+        gen = os.path.join(PROJECT_DIR, *script.split("/"))
+        rc, stdout, stderr = run_cmd(f'"{sys.executable}" "{gen}" --check',
+                                     cwd=PROJECT_DIR, timeout=60)
+        if rc != 0:
+            all_ok = False
+            fail(f"{what}: out of date ({script} --check)")
+            for line in (stdout.strip() + "\n" + stderr.strip()).strip().splitlines()[:5]:
+                print(f"    {line}")
+        else:
+            ok(f"{what}: in sync")
+
+    # An incomplete sensitivity list shows only in simulation; the proofs run
+    # on synthesised netlists and cannot see it.
+    rc, stdout, stderr = run_cmd(f'"{sys.executable}" "{SENS_CHECK}"', cwd=PROJECT_DIR, timeout=60)
+    if rc != 0:
+        all_ok = False
+        fail("VHDL sensitivity lists (sim/parity/sens_check.py)")
+        for line in (stdout.strip() + "\n" + stderr.strip()).strip().splitlines()[:10]:
+            print(f"    {line}")
+    else:
+        ok(f"VHDL sensitivity lists: {stdout.strip().splitlines()[-1]}")
+
+    ghdl = os.environ.get("GHDL") or shutil.which("ghdl")
+    wsl = None if ghdl else _find_wsl()
+    if wsl:
+        rc, _, _ = _wsl_run(wsl, "command -v ghdl")
+        if rc != 0:
+            wsl = None
+    if not ghdl and not wsl:
+        print(f"  {C.YELLOW}SKIP{C.END} GHDL not found (native PATH, $GHDL or WSL) - "
+              "the VHDL port is NOT checked by this run")
+        return all_ok
+
+    for target in VHDL_TARGETS:
+        rel = f"sim/.ghdl_{os.getpid()}_{target}"
+        workdir = os.path.join(PROJECT_DIR, rel)
+        os.makedirs(workdir, exist_ok=True)
+        flags = f"--std=93 --workdir={rel}"
+        script = (f"{{q}} -a {flags} {' '.join(_vhdl_sources(target))} && "
+                  f"{{q}} -e {flags} eth_mac_sys")
+        try:
+            if ghdl:
+                rc, stdout, stderr = run_cmd(script.format(q=f'"{ghdl}"'),
+                                             cwd=PROJECT_DIR, timeout=300)
+            else:
+                rc, stdout, stderr = _wsl_run(wsl, script.format(q="ghdl"), 300)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+            # Native GHDL drops the elaborated binary/object in the cwd.
+            for junk in ("eth_mac_sys", "eth_mac_sys.exe", "e~eth_mac_sys.o"):
+                p = os.path.join(PROJECT_DIR, junk)
+                if os.path.isfile(p):
+                    os.remove(p)
+        if rc != 0:
+            all_ok = False
+            fail(f"GHDL lint ({target})")
+            output = "\n".join(x for x in [stdout.strip(), stderr.strip()] if x)
+            for line in output.splitlines()[:20]:
+                print(f"    {line}")
+        else:
+            ok(f"GHDL lint ({target}): analyse + elaborate eth_mac_sys")
+
+    # L3 and board-support VHDL, on the 7-series target. The commands run from
+    # inside the work directory, so any binary or object an elaboration leaves
+    # behind is removed with it.
+    rel = f"sim/.ghdl_{os.getpid()}_boards"
+    workdir = os.path.join(PROJECT_DIR, rel)
+    os.makedirs(workdir, exist_ok=True)
+    up = "../../"
+    core = [up + s for s in _vhdl_sources("xilinx_7series")]
+    with open(VHDL_L3_FILELIST, "r", encoding="utf-8") as f:
+        l3 = [up + ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+    steps = [f"cd {rel}", "{q} -a --std=93 " + " ".join(core + l3)]
+    tops = []
+    for files, entities in VHDL_BOARD_STEPS:
+        steps.append("{q} -a --std=93 " + " ".join(up + s for s in files))
+        steps += ["{q} -e --std=93 " + e for e in entities]
+        tops += entities
+    script = " && ".join(steps)
+    try:
+        if ghdl:
+            rc, stdout, stderr = run_cmd(script.format(q=f'"{ghdl}"'),
+                                         cwd=PROJECT_DIR, timeout=600)
+        else:
+            rc, stdout, stderr = _wsl_run(wsl, script.format(q="ghdl"), 600)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    if rc != 0:
+        all_ok = False
+        fail("GHDL lint (L3 + board VHDL)")
+        output = "\n".join(x for x in [stdout.strip(), stderr.strip()] if x)
+        for line in output.splitlines()[:20]:
+            print(f"    {line}")
+    else:
+        ok(f"GHDL lint (L3 + board VHDL): analyse + elaborate {len(tops)} tops")
+    return all_ok
+
+
+def _wsl_run(wsl, cmd, timeout=120):
+    wsl_cmd = f"cd '{_windows_to_wsl_path(PROJECT_DIR)}' && {cmd}"
+    try:
+        r = subprocess.run([wsl, "-e", "bash", "-lc", wsl_cmd],
+                           cwd=PROJECT_DIR, timeout=timeout,
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        return r.returncode, r.stdout, r.stderr
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return -1, "", str(exc)
 
 
 def run_lint():
@@ -933,6 +1121,126 @@ def run_simulation():
     return all_pass
 
 
+# The Phase 1 testbenches rerun on the VHDL port (rtl/vhdl/) in Vivado's mixed-
+# language simulator: the Verilog bench drives the VHDL DUT. xsim reads VHDL
+# internals through hierarchical references (bit-selects excepted: read the
+# whole vector into a wire), but cannot force or write them.
+XSIM_VHDL_SKIP = {
+    "RGMII-LOOPBACK": "forces gmii_cdc internals (uut.gen_rgmii.u_gmii_cdc)",
+}
+# Extra defines for the VHDL run: benches that skip a force-based check.
+XSIM_VHDL_DEFINES = {
+    "ETH-STATS": ["TB_NO_HIER_FORCE"],
+}
+
+
+def _xsim_tool(name):
+    """xvlog/xvhdl/xelab/xsim are .bat files on Windows."""
+    for cand in (name, name + ".bat"):
+        found = shutil.which(cand)
+        if found:
+            return found
+    return None
+
+
+def _xsim_vhdl_plan():
+    """(test, vhdl target, defines, verilog sources) for every Phase 1 bench
+    whose RTL is all in the VHDL port, plus the list of skipped names."""
+    ported = {os.path.splitext(os.path.basename(s))[0]
+              for s in _vhdl_sources("sim") if "/target/" not in s}
+    plan, skipped = [], []
+    for t in TESTS:
+        rtl = [s for s in t["srcs"] if s.startswith("rtl/")]
+        bench = [s for s in t["srcs"] if not s.startswith("rtl/")]
+        if (any(os.path.splitext(os.path.basename(s))[0] not in ported for s in rtl)
+                or any(not s.startswith("sim/tb/") for s in bench)):
+            continue                            # L3 / FPGA benches: not ported
+        if t["name"] in XSIM_VHDL_SKIP:
+            skipped.append(t["name"])
+            continue
+        args = t.get("iverilog_args", "").split()
+        defines = (["SIM"] + [a[2:] for a in args if a.startswith("-D")]
+                   + XSIM_VHDL_DEFINES.get(t["name"], []))
+        target = "xilinx_7series" if "XILINX_7SERIES" in defines else "sim"
+        plan.append((t, target, defines, bench))
+    return plan, skipped
+
+
+def run_vhdl_xsim():
+    """Phase 1 testbenches against the VHDL port, in Vivado xsim. Skipped (not
+    failed) without Vivado's simulator on PATH."""
+    header("PHASE 1c: Simulation of the VHDL port (Vivado xsim, Verilog benches)")
+    tools = {n: _xsim_tool(n) for n in ("xvlog", "xvhdl", "xelab", "xsim")}
+    if not all(tools.values()):
+        print(f"  {C.YELLOW}SKIP{C.END} Vivado xsim not on PATH - "
+              "the VHDL port is NOT simulated by this run")
+        return True
+    q = {n: f'"{p}"' for n, p in tools.items()}
+
+    plan, skipped = _xsim_vhdl_plan()
+    run_root = os.path.join(PROJECT_DIR, "sim", f".xsim_vhdl_{os.getpid()}")
+    incdirs = " ".join(f'-i "{os.path.join(PROJECT_DIR, d)}"' for d in IVERILOG_INCDIRS)
+    compiled = {}
+    all_pass = True
+    try:
+        for t, target, defines, bench in plan:
+            run_dir = os.path.join(run_root, target)
+            if target not in compiled:
+                # The whole port once per target, into this directory's work.
+                os.makedirs(run_dir, exist_ok=True)
+                vhdl = " ".join(f'"{os.path.join(PROJECT_DIR, s)}"'
+                                for s in _vhdl_sources(target))
+                rc, out, err = run_cmd(f"{q['xvhdl']} {vhdl}", cwd=run_dir, timeout=600)
+                compiled[target] = rc == 0
+                if rc != 0:
+                    fail(f"xvhdl ({target}): VHDL port does not compile")
+                    for line in (out + err).splitlines():
+                        if "ERROR" in line:
+                            print(f"    {line.strip()[:200]}")
+            if not compiled[target]:
+                all_pass = False
+                continue
+
+            name = t["name"]
+            snap = "snap_" + re.sub(r"\W", "_", name.lower())
+            top = os.path.splitext(os.path.basename(bench[-1]))[0]
+            defs = " ".join(f"-d {d}" for d in defines)
+            srcs = " ".join(f'"{os.path.join(PROJECT_DIR, s)}"' for s in bench)
+            steps = [
+                (f"{q['xvlog']} {defs} {incdirs} {srcs}", 300),
+                (f"{q['xelab']} -debug off --relax -timescale 1ns/1ps work.{top} -s {snap}", 600),
+                (f"{q['xsim']} {snap} -R", max(300, 3 * t.get("sim_timeout", 60))),
+            ]
+            rc, out = 0, ""
+            for cmd, timeout in steps:
+                rc, stdout, stderr = run_cmd(cmd, cwd=run_dir, timeout=timeout)
+                out = stdout + stderr
+                if rc != 0:
+                    break
+            if rc != 0 and "ALL TESTS PASSED" not in out:
+                fail(f"{name} (VHDL): rc={rc}")
+                for line in out.splitlines():
+                    if "ERROR" in line or "FAIL" in line:
+                        print(f"    {line.strip()[:200]}")
+                all_pass = False
+                continue
+            label = f"{name} (VHDL" + (", without its force-based check"
+                                       if name in XSIM_VHDL_DEFINES else "") + ")"
+            if not _sim_result(label, rc, out):
+                all_pass = False
+    finally:
+        shutil.rmtree(run_root, ignore_errors=True)
+
+    for name in skipped:
+        print(f"  {C.YELLOW}SKIP{C.END} {name} (VHDL): {XSIM_VHDL_SKIP[name]}")
+    if all_pass:
+        print(f"\n  {C.GREEN}{C.BOLD}All VHDL simulations passed "
+              f"({len(plan)} benches, {len(skipped)} Verilog-only).{C.END}")
+    else:
+        print(f"\n  {C.RED}{C.BOLD}VHDL simulation failures detected.{C.END}")
+    return all_pass
+
+
 # RGMII testbenches rerun on the Xilinx simulation models of the DDR cells
 # (Vivado's unisims) instead of the behavioral SIM model in ddr_input.v /
 # ddr_output.v. That model was once wrong (it sampled d2 on the falling edge)
@@ -1053,13 +1361,29 @@ def run_rgmii_impl():
     return all_pass
 
 
+# Suites run in parallel, each in its own simulator process.
+COCOTB_JOBS = max(1, os.cpu_count() or 1)
+
+
+def _cocotb_report(combined):
+    """Print run.py's per-suite summary (and the failure lines after it)."""
+    lines = combined.splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("[cocotb] Summary")),
+                 None)
+    for line in lines[start + 1:] if start is not None else lines[-20:]:
+        if line.strip():
+            print(f"    {line.strip()[:160]}")
+
+
 def run_cocotb():
-    header("PHASE 2: cocotb (directed + randomized)")
+    """Every cocotb suite (sim/cocotb/tests/) against the Verilog RTL on Icarus:
+    the ports of the sim/tb/ benches plus the randomized suites."""
+    header("PHASE 2: cocotb on the Verilog RTL (Icarus)")
     try:
         import cocotb  # noqa: F401
     except Exception:
         print(f"  {C.YELLOW}SKIP{C.END} cocotb not installed "
-              "(pip install 'cocotb>=2.0') - randomized suite not run")
+              "(pip install 'cocotb>=2.0') - cocotb suites not run")
         return True
 
     runner = os.path.join(PROJECT_DIR, "sim", "cocotb", "run.py")
@@ -1068,21 +1392,50 @@ def run_cocotb():
         return False
 
     rc, stdout, stderr = run_cmd(
-        f'"{sys.executable}" "{runner}"', cwd=PROJECT_DIR, timeout=1800
+        f'"{sys.executable}" "{runner}" --hdl verilog -j {COCOTB_JOBS}',
+        cwd=PROJECT_DIR, timeout=3600
     )
-    combined = stdout + stderr
-    for line in combined.splitlines():
-        if re.search(r"TESTS=\d", line):
-            print(f"    {line.strip()}")
-
+    _cocotb_report(stdout + stderr)
     if rc == 0:
-        ok("cocotb suite (mii_tx_saf: directed + randomized)")
+        ok("cocotb suites on the Verilog RTL (Icarus)")
+        return True
+    fail(f"cocotb suites on the Verilog RTL (Icarus) rc={rc}")
+    return False
+
+
+def run_cocotb_vhdl():
+    """The same cocotb suites against the VHDL port (rtl/vhdl/) on GHDL.
+    Uses native GHDL + cocotb if both are present, else WSL; skipped (not
+    failed) when neither has them."""
+    header("PHASE 2b: cocotb on the VHDL port (GHDL)")
+    probe = "import cocotb_tools.runner"
+    native = bool(os.environ.get("GHDL") or shutil.which("ghdl"))
+    if native:
+        rc, _, _ = run_cmd(f'"{sys.executable}" -c "{probe}"', cwd=PROJECT_DIR, timeout=60)
+        native = rc == 0
+    wsl = None if native else _find_wsl()
+    if wsl:
+        rc, _, _ = _wsl_run(wsl, f"command -v ghdl && python3 -c '{probe}'")
+        if rc != 0:
+            wsl = None
+    if not native and not wsl:
+        print(f"  {C.YELLOW}SKIP{C.END} GHDL + cocotb not found (native or WSL) - "
+              "the VHDL port is NOT simulated by this run")
         return True
 
-    fail(f"cocotb suite (mii_tx_saf) rc={rc}")
-    for line in combined.splitlines():
-        if "failed" in line.lower() or "random seed =" in line.lower():
-            print(f"    {line.strip()[:160]}")  # seeds shown for deterministic replay
+    if native:
+        runner = os.path.join(PROJECT_DIR, "sim", "cocotb", "run.py")
+        rc, stdout, stderr = run_cmd(
+            f'"{sys.executable}" "{runner}" --hdl vhdl -j {COCOTB_JOBS}',
+            cwd=PROJECT_DIR, timeout=3600)
+    else:
+        rc, stdout, stderr = _wsl_run(
+            wsl, f"python3 sim/cocotb/run.py --hdl vhdl -j {COCOTB_JOBS}", 3600)
+    _cocotb_report(stdout + stderr)
+    if rc == 0:
+        ok("cocotb suites on the VHDL port (GHDL)")
+        return True
+    fail(f"cocotb suites on the VHDL port (GHDL) rc={rc}")
     return False
 
 
@@ -1104,13 +1457,17 @@ def main():
     lint_ok = run_lint()
     verilator_ok = run_verilator_lint()
     elab_ok = run_vivado_elab()
+    ghdl_ok = run_ghdl_lint()
     sim_ok = run_simulation()
+    vhdl_sim_ok = run_vhdl_xsim()
     vendor_ok = run_vendor_ddr_sims()
     cocotb_ok = run_cocotb()
+    cocotb_vhdl_ok = run_cocotb_vhdl()
     impl_ok = run_rgmii_impl() if args.impl else True
 
-    if (version_ok and lint_ok and verilator_ok and elab_ok
-            and sim_ok and vendor_ok and cocotb_ok and impl_ok):
+    if (version_ok and lint_ok and verilator_ok and elab_ok and ghdl_ok
+            and sim_ok and vhdl_sim_ok and vendor_ok and cocotb_ok and cocotb_vhdl_ok
+            and impl_ok):
         print(f"\n{C.GREEN}{C.BOLD}All tests passed.{C.END}")
         sys.exit(0)
     else:
