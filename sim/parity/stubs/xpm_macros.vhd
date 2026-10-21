@@ -410,6 +410,8 @@ architecture stub of xpm_memory_sdpram is
     -- the proof small. DEPTH still matters: writes at addra >= DEPTH are dropped.
     -- mem_tag keeps each word's full write address (see xpm_macros.v).
     constant SAW      : integer := min_int(ADDR_WIDTH_A, 3);
+    constant TAG_SAME : boolean := fp_guard(ADDR_WIDTH_A = ADDR_WIDTH_B,
+        "xpm stub: ADDR_WIDTH_A and ADDR_WIDTH_B differ");
     constant TAG_FITS : boolean := fp_guard(ADDR_WIDTH_B - SAW <= READ_DATA_WIDTH_B,
         "xpm stub: address high bits wider than the read data");
     constant RST_VAL  : std_logic_vector(READ_DATA_WIDTH_B-1 downto 0) :=

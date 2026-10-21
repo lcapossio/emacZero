@@ -8,7 +8,12 @@ it does not wake up when a signal it reads changes. Synthesis ignores the
 list, so the translateHDL proofs (which run on synthesised netlists) cannot
 see the mismatch; only simulation can, and only on the paths it drives. This
 script reports, for every process that has a sensitivity list and no clock
-edge, each signal or input port it reads but does not list.
+edge, each signal or input port it reads but does not list. For a clocked
+process it reports each edge-tested clock that is not listed and, when the
+edge test is an `elsif` after an asynchronous reset, each signal read
+before that `elsif` (the reset condition and its branch) that is not
+listed: a reset pulse between two clock events would otherwise be missed
+in simulation.
 
 It is a lexical heuristic, not a VHDL parser: it scopes names per
 architecture (that architecture's signals plus its entity's in/inout ports),
@@ -16,9 +21,10 @@ strips comments, drops names declared locally as constants, variables or
 loop indices, and treats a name as read when it appears anywhere other than
 the target of a signal assignment. It can over-report (then fix the list or
 rename). It misses signals read only inside an impure function or a
-procedure, or through an alias; it reads a record as its base name; and it
-skips a whole process that tests a clock edge, even one that also has
-combinational paths. The port has no impure functions or aliases, and its
+procedure, or through an alias; it reads a record as its base name; and in
+a clocked process it checks only the clocks and the part before the first
+`elsif <edge>`, so other combinational paths in such a process (none in
+this code base) go unchecked. The port has no impure functions or aliases, and its
 only procedures are local to a clocked process (test_sequencer).
 
     python sim/parity/sens_check.py               # every *.vhd in the repo
@@ -68,6 +74,24 @@ def architectures(t: str):
         yield m.group(1).lower(), m.end(), t[m.end():end]
 
 
+EDGE = re.compile(r"\b(?:rising_edge|falling_edge)\s*\(\s*(\w+)\s*\)|\b(\w+)'event\b", re.I)
+ASYNC_EDGE = re.compile(r"\belsif\s+\(?\s*(?:rising_edge|falling_edge)\s*\(|\belsif\s+\(?\s*\w+'event\b",
+                        re.I)
+
+
+def missing_reads(text: str, candidates: set) -> list:
+    """Names in candidates that text reads (uses other than as an assignment target)."""
+    missing = []
+    for s in sorted({i.lower() for i in ID.findall(text)} & candidates):
+        uses = len(re.findall(rf"\b{s}\b", text, re.I))
+        # A target starts a statement; "if a <= b" reads a.
+        targets = len(re.findall(rf"(?:^|;|\bthen\b|\belse\b|\bbegin\b|=>)\s*"
+                                 rf"{s}\s*(?:\([^)]*\))?\s*<=", text, re.I | re.M))
+        if uses > targets:
+            missing.append(s)
+    return missing
+
+
 def check_file(path: Path) -> list:
     t = strip_comments(path.read_text(encoding="utf-8"))
     ents = entity_inputs(t)
@@ -78,23 +102,28 @@ def check_file(path: Path) -> list:
             sigs |= split_names(m.group(1))
         for m in re.finditer(r"\bprocess\s*\(([^)]*)\)(.*?)\bend\s+process\b", arch, re.I | re.S):
             body = m.group(2)
-            # A real edge test, not just a name containing "rising_edge".
-            if re.search(r"\b(?:rising_edge|falling_edge)\s*\(|\w'event\b", body, re.I):
-                continue
             sens = split_names(m.group(1))
             local = set()
             for d in re.finditer(r"\b(?:variable|constant)\s+" + NAMES + r"\s*:", body, re.I):
                 local |= split_names(d.group(1))
             for d in re.finditer(r"\bfor\s+(\w+)\s+in\b", body, re.I):
                 local.add(d.group(1).lower())
-            missing = []
-            for s in sorted(({i.lower() for i in ID.findall(body)} & sigs) - sens - local):
-                uses = len(re.findall(rf"\b{s}\b", body, re.I))
-                # A target starts a statement; "if a <= b" reads a.
-                targets = len(re.findall(rf"(?:^|;|\bthen\b|\belse\b|\bbegin\b|=>)\s*"
-                                         rf"{s}\s*(?:\([^)]*\))?\s*<=", body, re.I | re.M))
-                if uses > targets:
-                    missing.append(s)
+            # A real edge test, not just a name containing "rising_edge".
+            edges = {(a or b).lower() for a, b in EDGE.findall(body)}
+            if edges:
+                # Clocked: every clock tested must be listed, and so must
+                # everything read before "elsif rising_edge(...)", i.e. the
+                # asynchronous reset condition and its branch.
+                missing = sorted(edges - sens)
+                async_end = ASYNC_EDGE.search(body)
+                if async_end:
+                    begin = re.search(r"\bbegin\b", body, re.I)
+                    start = begin.end() if begin else 0
+                    missing += [s for s in missing_reads(body[start:async_end.start()],
+                                                         sigs - sens - local)
+                                if s not in missing]
+            else:
+                missing = missing_reads(body, sigs - sens - local)
             if missing:
                 line = t[:base + m.start()].count("\n") + 1
                 name = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path

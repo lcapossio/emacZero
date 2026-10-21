@@ -28,8 +28,9 @@ This project does not yet maintain long-lived release branches.
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
   The phase is skipped when GHDL is not installed. It also analyses and
   elaborates the L3 and board VHDL, checks the generated parity models, and
-  fails on a combinational VHDL process whose sensitivity list misses a
-  signal it reads (`sim/parity/sens_check.py`).
+  fails on a VHDL process whose sensitivity list misses a signal it reads,
+  or, for a clocked process, its clock or asynchronous reset
+  (`sim/parity/sens_check.py`).
 - cocotb ports of all 44 core Verilog testbenches (`sim/cocotb/tests/`), with
   the same DUT, parameters, timing and checks. Every cocotb suite runs on both
   the Verilog (Icarus) and the VHDL port (GHDL): `sim/cocotb/run.py --hdl both

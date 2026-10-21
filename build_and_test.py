@@ -381,6 +381,7 @@ VHDL_L3_FILELIST = os.path.join(PROJECT_DIR, "rtl", "eth_mac_sys_l3_vhdl.f")
 # real RTL; each script exits 1 when its model is stale.
 PARITY_GEN_CHECKS = (
     ("sim/parity/mii_if/gen_smallram.py", "mii_if small-RAM parity models"),
+    ("sim/parity/gmii_cdc/gen_smallmem.py", "async_fifo small-memory parity models"),
     ("sim/parity/gen_goldens.py", "test_sequencer and udp_echo x-refined parity goldens"),
     ("sim/parity/zcu106_top/gen_split.py", "zcu106_top split-pin parity models"),
     ("sim/parity/i2c_init/check_rom.py", "Si5328 ROM: .vh table vs VHDL package"),

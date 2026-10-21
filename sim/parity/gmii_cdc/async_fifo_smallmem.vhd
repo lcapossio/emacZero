@@ -1,16 +1,27 @@
 -- SPDX-License-Identifier: Apache-2.0
 -- Copyright (c) 2026 Leonardo Capossio - bard0 design
+-- PARITY MODEL ONLY - not for synthesis or the core. GENERATED from
+-- rtl/vhdl/async_fifo.vhd by sim/parity/gmii_cdc/gen_smallmem.py; do not edit.
+-- The memory array is clamped to 2**MEM_AW words, MEM_AW = min(ADDR_WIDTH, 3),
+-- indexed with the low MEM_AW pointer bits. Everything else is the source
+-- verbatim. The real async_fifo is proven in sim/parity/async_fifo/.
 -- =============================================================================
--- async_fifo_smallmem.vhd - PARITY MODEL ONLY, not for synthesis or the core.
--- rtl/vhdl/async_fifo.vhd with exactly one mechanical change: the memory array is
--- clamped to 2**MEM_AW words, MEM_AW = min(ADDR_WIDTH, 3), and indexed with the
--- low MEM_AW pointer bits. Pointers, Gray synchronizers, full/empty and
--- wr_data_count keep the real ADDR_WIDTH+1 width, so every occupancy-dependent
--- branch of the parent stays reachable. gmii_cdc instantiates async_fifo by
--- name and hard-codes a 16K-word TX FIFO, too large for memory_map + SAT; this
--- model (paired with async_fifo_smallmem.v, proven equivalent to it in
--- sim/parity/gmii_cdc/parity.yml) stands in for both sides of that proof.
--- The real async_fifo is proven separately in sim/parity/async_fifo/.
+-- async_fifo.vhd - Asynchronous FIFO with Gray-code pointer CDC
+-- Parameterizable width and depth (depth must be power of 2).
+--
+-- Two storage implementations behind one first-word-fall-through interface
+-- (rd_data is valid whenever !rd_empty; rd_en && !rd_empty pops it):
+--   RAM_STYLE = "DISTRIBUTED"  combinational read of the memory array. Maps to
+--               LUTRAM on FPGAs; lowest latency. Right for shallow FIFOs - deep
+--               ones cost ~DEPTH*WIDTH/64 LUTs plus a wide write decode that
+--               will not close timing at 100+ MHz (16K words fails on Artix-7).
+--   RAM_STYLE = "BLOCK"        registered read into a one-word output stage,
+--               which is the FWFT head. Maps to block RAM. rd_empty deasserts
+--               one rd_clk later than DISTRIBUTED after a write lands; pops
+--               still sustain one word per rd_clk. The head word has left the
+--               memory, so once it is loaded the FIFO holds DEPTH+1 words
+--               before wr_full.
+-- VHDL port of rtl/async_fifo.v (formally proven equivalent; see sim/parity/).
 -- =============================================================================
 
 library ieee;

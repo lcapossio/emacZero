@@ -182,10 +182,12 @@ build keeps the Verilog core and `sfp_lb_tester.v`. The VHDL tops declare
 every child (primitives, IP, fcapz, Verilog modules) as a local component.
 
 `build_and_test.py` phase 0d analyses all of these files as strict VHDL-93
-and elaborates each top. It fails if `gen_goldens.py`, `gen_split.py` or
-`check_rom.py` find their models stale, or if `sim/parity/sens_check.py`
-finds a combinational process whose sensitivity list misses a signal it
-reads (which only simulation would show; the proofs run on netlists). The L3 and board VHDL is not
+and elaborates each top. It fails if `gen_smallram.py`, `gen_smallmem.py`,
+`gen_goldens.py`, `gen_split.py` or `check_rom.py` find their models stale,
+or if `sim/parity/sens_check.py` finds a process whose sensitivity list
+misses a signal it reads, or, in a clocked process, its clock or the
+signals of its asynchronous reset (which only simulation would show; the
+proofs run on netlists). The L3 and board VHDL is not
 simulated yet: its Verilog testbenches drive the Verilog only.
 
 ## Reproducing the proofs
@@ -239,8 +241,11 @@ that workflow. Bump them there, and rerun everything when you do.
   one-instance wrapper in `sim/parity/async_fifo/`.
 - **Stand-ins**, read identically by both sides:
   - `sim/parity/gmii_cdc/async_fifo_smallmem.{v,vhd}`: `async_fifo` with only
-    the memory clamped to 8 words. Pointers, Gray synchronisers and flags keep
-    their real widths. It is used where a 4K- or 16K-word FIFO would not fit
+    the memory clamped to 8 words, generated from the real files by
+    `gen_smallmem.py`, which also requires every memory access in them to be
+    the full-pointer index it rewrites (so an index bug in the real FIFO that
+    the small-depth `async_fifo` proofs might not reach stops the script).
+    Pointers, Gray synchronisers and flags keep their real widths. It is used where a 4K- or 16K-word FIFO would not fit
     the solver (`gmii_cdc`, `mii_if`, `eth_mac`, `eth_mac_sys`), and is itself
     proven equivalent across languages at those parameter sets.
   - `sim/parity/mii_if/mii_if_smallram.{v,vhd}`: `mii_if` with the RX frame

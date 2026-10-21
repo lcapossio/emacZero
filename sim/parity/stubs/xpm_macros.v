@@ -47,7 +47,8 @@
 //   by the low three address bits; each word keeps its full write address,
 //   and a read returns the word XOR the high bits of (that address XOR addrb),
 //   so a wrong address bit on either port changes the data read; elaboration
-//   is refused when those high bits are wider than the read data),
+//   is refused when the two address widths differ or the high bits are
+//   wider than the read data),
 //   port widths, CLOCKING_MODE (read port on clka for "common_clock"),
 //   READ_LATENCY_B (1, or 2 with regceb on the second stage; 0 behaves as 1
 //   and 3 or more as 2), READ_RESET_VALUE_B (rstb), WRITE_MODE_B
@@ -406,7 +407,12 @@ module xpm_memory_sdpram #(
     wire [ADDR_WIDTH_B-1:0]      tag_x  = mem_tag[addrb[SAW-1:0]] ^ addrb;
     wire [READ_DATA_WIDTH_B-1:0] tag_hi = tag_x >> SAW;
 
-    // The high address bits must fit in the read data, or tag_hi drops some.
+    // The tag must keep every address bit: both ports the same width (else
+    // tag_x drops write-address bits), and the high bits no wider than the
+    // read data (else tag_hi drops some).
+    generate if (ADDR_WIDTH_A != ADDR_WIDTH_B) begin : g_tag_widths_differ
+        xpm_stub_address_widths_differ u_err ();
+    end endgenerate
     generate if (ADDR_WIDTH_B - SAW > READ_DATA_WIDTH_B) begin : g_tag_too_wide
         xpm_stub_address_wider_than_data_plus_3 u_err ();
     end endgenerate
