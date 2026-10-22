@@ -223,8 +223,9 @@ exits 1 if anything does not pass.
 
 CI runs every manifest on every push and pull request to `main`
 ([.github/workflows/parity.yml](../.github/workflows/parity.yml), one job
-running `run_all.py -j 4`, Ubuntu 24.04's GHDL 4.1). translateHDL and yowasp-yosys are pinned in
-that workflow. Bump them there, and rerun everything when you do.
+running `run_all.py -j 4`, Ubuntu 24.04's GHDL 4.1). translateHDL is pinned in that workflow
+and yowasp-yosys in `.github/requirements/parity.txt`; the workflow fails if GHDL or Icarus is
+not the exact version it expects. Bump them there, and rerun everything when you do.
 
 ## Proof assumptions
 

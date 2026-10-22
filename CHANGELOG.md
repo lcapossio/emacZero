@@ -51,6 +51,12 @@ This project does not yet maintain long-lived release branches.
 
 ### Changed
 
+- CI is pinned for reproducible release evidence: GitHub Actions by commit
+  SHA, the Python version, and every Python package with its dependencies
+  (`.github/requirements/sim.txt` and `parity.txt`; cocotb 2.1.0, yowasp-yosys
+  0.63). Ubuntu's apt cannot be pinned, so the workflows check the exact
+  installed versions and fail on a change: `sim` checks Icarus, Verilator and
+  GHDL, `parity` (which needs no Verilator) Icarus and GHDL.
 - `tb_gmii_cdc_rx_overflow.v` reads its FIFO-word probe through a wire, and
   `tb_eth_stats.v` can leave out its force-based saturation test
   (`TB_NO_HIER_FORCE`), so both also run against a VHDL DUT in xsim.

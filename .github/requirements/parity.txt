@@ -1,0 +1,9 @@
+# Python packages for the parity workflow, pinned (with their dependencies) so
+# a proof result only changes when this repository changes. Bump together,
+# after a full rerun of sim/parity/run_all.py.
+yowasp-yosys==0.63.0.0.post1107
+yowasp-runtime==1.96
+wasmtime==47.0.1
+click==8.5.0
+platformdirs==4.13.5
+pyyaml==6.0.3

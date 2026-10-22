@@ -15,10 +15,10 @@ on:
   workflow_dispatch:
 
 env:
-  # translateHDL and Yosys are pinned so a proof result only changes when this
+  # translateHDL is pinned here, and Yosys (YoWASP) in
+  # .github/requirements/parity.txt, so a proof result only changes when this
   # repository changes. Bump them together with a full rerun.
   TRANSLATEHDL_REF: be0ba18db38cbba52af7343e4f9faeb5012eccd9
-  YOWASP_YOSYS_VERSION: 0.63.0.0.post1107
 
 jobs:
   parity:
@@ -28,9 +28,9 @@ jobs:
     # The modules run 4 at a time; eth_mac_sys alone takes about 11 minutes.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: lcapossio/translateHDL
           ref: ${{ env.TRANSLATEHDL_REF }}
@@ -44,13 +44,24 @@ jobs:
           ghdl --version | head -1
           iverilog -V 2>&1 | head -1
 
-      - uses: actions/setup-python@v5
+      - name: Check HDL tool versions
+        # apt cannot pin these reliably (an Ubuntu update drops the old
+        # version from the index), so fail loudly instead. If this fails,
+        # Ubuntu updated a tool: rerun the full regression and the parity
+        # proofs on the new version, then update the expected versions here.
+        run: |
+          for p in iverilog=12.0-2build2 ghdl=4.1.0+dfsg-0ubuntu2.1; do
+            got=$(dpkg-query -W -f='${Version}' "${p%%=*}")
+            [ "$got" = "${p#*=}" ] || { echo "::error::${p%%=*} is $got, expected ${p#*=}"; exit 1; }
+          done
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: '3.12'
+          python-version: '3.12.15'
 
       - name: Install Yosys (YoWASP) and pyyaml
         run: |
-          pip install "yowasp-yosys==${YOWASP_YOSYS_VERSION}" pyyaml
+          pip install -r .github/requirements/parity.txt
           yowasp-yosys -V
 
       - name: Prove every module
