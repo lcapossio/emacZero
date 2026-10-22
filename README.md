@@ -538,6 +538,9 @@ Two workflows run on every push and PR to `main`:
   port equivalent to the Verilog: one job runs every manifest in
   `sim/parity/` with `--strict` (`sim/parity/run_all.py`). translateHDL and
   Yosys are pinned, and GHDL is 4.1 from Ubuntu 24.04.
+- [.github/workflows/release.yml](.github/workflows/release.yml) attaches a
+  CycloneDX SBOM per FuseSoC target to each GitHub release when it is
+  published (see [docs/sbom.md](docs/sbom.md)).
 
 The Vivado phases (`PHASE 1b`, `PHASE 1c`, `--impl`) need a Vivado install and
 run locally only.

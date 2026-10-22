@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+#
+# Attach a CycloneDX SBOM per FuseSoC target (sw/gen_sbom.py) to a GitHub
+# release when it is published. Run it by hand (workflow_dispatch) to add the
+# SBOMs to an existing release. The generator comes from this workflow's
+# commit, the files it describes from the release tag, so older tags work too.
+
+name: release-sbom
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the SBOMs to (for example v0.2.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  sbom:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Check out the generator
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: tool
+
+      - name: Check out the release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          path: src
+          # gen_sbom.py names the version after the tag (git describe).
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.15'
+
+      - name: Install the CycloneDX schema validator
+        run: pip install -r tool/.github/requirements/sbom.txt
+
+      - name: Generate the SBOMs
+        run: python tool/sw/gen_sbom.py --root src --out sbom
+
+      - name: Validate them (CycloneDX 1.5, strict)
+        run: python tool/sw/validate_sbom.py sbom/*.cdx.json
+
+      - name: Attach them to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" sbom/*.cdx.json --clobber --repo "$GITHUB_REPOSITORY"

@@ -212,6 +212,22 @@ def run_version_check():
     return True
 
 
+
+def run_sbom_check():
+    """Every FuseSoC target's files exist and carry an SPDX licence, so the
+    SBOM published with each release (sw/gen_sbom.py) can be generated."""
+    header("PHASE 0e: SBOM inventory (emaczero.core)")
+    gen = os.path.join(PROJECT_DIR, "sw", "gen_sbom.py")
+    rc, stdout, stderr = run_cmd(f'"{sys.executable}" "{gen}" --check',
+                                 cwd=PROJECT_DIR, timeout=60)
+    if rc != 0:
+        fail("SBOM inventory: sw/gen_sbom.py --check failed")
+        for line in (stdout.strip() + "\n" + stderr.strip()).strip().splitlines()[:10]:
+            print(f"    {line}")
+        return False
+    ok("SBOM inventory: " + ", ".join(stdout.strip().splitlines()))
+    return True
+
 # =============================================================================
 # Lint
 # =============================================================================
@@ -1454,6 +1470,7 @@ def main():
     print(f"{C.END}")
 
     version_ok = run_version_check()
+    sbom_ok = run_sbom_check()
     lint_ok = run_lint()
     verilator_ok = run_verilator_lint()
     elab_ok = run_vivado_elab()
@@ -1465,7 +1482,7 @@ def main():
     cocotb_vhdl_ok = run_cocotb_vhdl()
     impl_ok = run_rgmii_impl() if args.impl else True
 
-    if (version_ok and lint_ok and verilator_ok and elab_ok and ghdl_ok
+    if (version_ok and sbom_ok and lint_ok and verilator_ok and elab_ok and ghdl_ok
             and sim_ok and vhdl_sim_ok and vendor_ok and cocotb_ok and cocotb_vhdl_ok
             and impl_ok):
         print(f"\n{C.GREEN}{C.BOLD}All tests passed.{C.END}")
