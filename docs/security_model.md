@@ -133,7 +133,10 @@ run for the exact commit and target.
 Before using emacZero in a product, integrators should close or explicitly
 accept these gaps:
 
-- No machine-readable SBOM is published with releases yet.
+- The SBOMs attached to each release cover the files of each FuseSoC target
+  only (`docs/sbom.md`): the core RTL, plus the Arty A7 board RTL and
+  constraints for `arty_a7`. Software, the LiteX wrapper, the ZCU106 port and
+  build scripts are not in them.
 - Releases (from `v0.2.0`) are published on GitHub but not signed, and no GHSA
   has been published yet.
 - No end-of-support date has been set; only the latest release receives fixes.

@@ -7,6 +7,13 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- SBOMs: `sw/gen_sbom.py` generates a CycloneDX 1.5 SBOM per FuseSoC target
+  (each file with the SHA-256 of its committed content and its SPDX licence;
+  deterministic per commit and tag), and the `release-sbom` workflow attaches
+  them, schema-checked (`sw/validate_sbom.py`), to each GitHub release when it
+  is published.
+  `build_and_test.py` phase 0e checks that every listed file exists and has an
+  SPDX header.
 - VHDL-93 port of the MAC IP (`rtl/eth_mac_sys.f`) in `rtl/vhdl/`, with the
   filelist `rtl/eth_mac_sys_vhdl.f` and FuseSoC target `vhdl`. Vendor
   selection uses one target package per vendor in `rtl/vhdl/target/`. Every
