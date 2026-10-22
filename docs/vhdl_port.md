@@ -327,6 +327,34 @@ The VHDL is also simulated at production sizes, which the proofs do not use
 Not covered: the vendor DDR reruns on the Xilinx unisim models, which run on
 Verilog only.
 
+## Hardware
+
+On 2026-10-21 the port ran on the Arty A7-100T (commit `3c19d91`, Vivado
+2025.2, FCAPZ_DEBUG build). Every module that has a VHDL version was read as
+VHDL: the `eth_mac_sys` filelist, the L3 helpers, `clk_gen`, `uart_tx`,
+`test_sequencer`, `arp_responder` and `axil_arb2`. `arty_a7_top`, `net_rx`,
+`arty_tx_arbiter` and fcapz stayed Verilog. Timing was met (WNS +0.787 ns).
+
+Results:
+
+- `serial_monitor.py`: the UART boot report passes (VERSION, scratch
+  register, PHY ID, BMCR, link, TX and RX), and ARP and ping answer.
+- `udp_echo_test.py`: 0% loss at 18, 64 and 1472-byte payloads.
+- `run_hw_regression.py`: both profiles pass with no gaps or reordering.
+- A 30-minute full-duplex soak (`udp_bidirectional_test.py --secs 1800`)
+  loses no packet in either direction at about 95.7 Mbps each way. After it,
+  the RX error, overflow and drop counters read 0, and `SAF_DBG` shows the
+  `mii_tx_saf` framer idle with its FIFO empty. On runs longer than about six
+  minutes, the script reports the host-to-FPGA direction as FAIL even with no
+  loss: the 32-bit iperf byte counter (the same in both languages) wraps after
+  about 4.3 GB. Judge long runs by the packet count and gaps.
+
+The ELA and EIO probes in `arty_a7_top.v` read `u_seq` and
+`u_mac_sys.gen_mii.u_mii_tx` internals by hierarchical name. Vivado synthesis
+cannot resolve a Verilog hierarchical reference into a VHDL entity, so the
+build used a copy of the top with those probes tied to 0. Porting
+`arty_a7_top` will need another way to reach them, such as debug ports.
+
 ## Translation conventions
 
 - Entity, generic and port names, order and widths match the Verilog exactly.

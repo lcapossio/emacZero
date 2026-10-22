@@ -11,8 +11,12 @@ Releases are published at https://github.com/lcapossio/emacZero/releases, each
 with the regression log of its commit. The latest release (currently `v0.2.0`)
 is the supported integration point; security fixes land on `main` and ship in
 the next release. There are no release branches, so older releases, including
-`v0.1.0`, are not patched; update to the latest release. No end-of-support date
-has been set yet.
+`v0.1.0`, are not patched; update to the latest release.
+
+Support period: only the latest release is supported. A release stops
+receiving fixes on the day the next release is published, and security fixes
+ship in a new release rather than as backports. There is no fixed
+end-of-support date.
 
 Integrators should pin a release tag and record the simulation, lint,
 synthesis, and hardware evidence used for their product. The `main` branch is
@@ -25,7 +29,7 @@ Please report suspected vulnerabilities privately before opening a public issue.
 - Email: hello@bard0.com
 - GitHub private vulnerability reporting:
   https://github.com/lcapossio/emacZero/security/advisories/new
-  (if the link does not open a report form, use email)
+  (enabled; a signed-in GitHub account is needed)
 - Include: affected commit or tag, configuration parameters, toolchain, target
   FPGA or integration context, reproduction steps, and expected impact.
 - Helpful artifacts: minimal testbench, waveform, packet capture, CSR trace, or

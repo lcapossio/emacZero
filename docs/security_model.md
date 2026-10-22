@@ -136,7 +136,8 @@ accept these gaps:
 - No machine-readable SBOM is published with releases yet.
 - Releases (from `v0.2.0`) are published on GitHub but not signed, and no GHSA
   has been published yet.
-- No end-of-support date has been set; only the latest release receives fixes.
+- Only the latest release is supported (see `SECURITY.md`); there is no fixed
+  end-of-support date.
 - The MAC leaves reset with TX and RX enabled on a placeholder MAC address
   (`02:00:00:00:00:01`), and `eth_mac_sys` defaults to `MAX_FRAME=9018`. Set
   both explicitly in a product.

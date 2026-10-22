@@ -5,7 +5,7 @@ Please report suspected vulnerabilities privately before opening a public issue.
 - Email: hello@bard0.com
 - GitHub private vulnerability reporting:
   https://github.com/lcapossio/emacZero/security/advisories/new
-  (if the link does not open a report form, use email)
+  (enabled; a signed-in GitHub account is needed)
 - Include: affected commit or tag, configuration parameters, toolchain, target
   FPGA or integration context, reproduction steps, and expected impact.
 
@@ -19,6 +19,7 @@ is available, a changelog entry or advisory should be published within 90 days
 unless coordinated disclosure with affected downstream integrators requires a
 different schedule.
 
-The latest release is the supported version; older releases are not patched.
+Only the latest release is supported: a release stops receiving fixes when the
+next one is published, and security fixes ship in a new release.
 See the repository root `SECURITY.md` for supported versions, scope, disclosure
 expectations, and hardening guidance.
