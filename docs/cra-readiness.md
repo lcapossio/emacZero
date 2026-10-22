@@ -63,7 +63,7 @@ supplied. The maintainer has not yet stated which of these applies:
 | Regression evidence | Good | `build_and_test.py` in CI on every push and pull request, including the cocotb suites on the VHDL port; log attached to each release |
 | Hardware evidence | Partial | Arty A7 and ZCU106 results in the READMEs and CHANGELOG, measured on development commits, not re-run per release |
 | Secure defaults | Partial | `promisc`, `jumbo_en`, PAUSE RX, checksum offload and `MII_DEBUG` are off at reset. `eth_mac_sys` defaults to `MAX_FRAME=9018` (the FuseSoC core uses 1518), and the MAC leaves reset with TX and RX enabled on placeholder MAC `02:00:00:00:00:01` and IP `192.168.137.200` |
-| Build reproducibility | Partial | CI pins GitHub Actions by major tag and the runner image (Ubuntu 24.04), and the parity workflow pins translateHDL and yowasp-yosys. `iverilog`, `verilator` and `ghdl` come from that image's apt, and `cocotb>=2.0` is unpinned |
+| Build reproducibility | Good | CI pins GitHub Actions by commit SHA, the Python version, every Python package (`.github/requirements/`, including cocotb and yowasp-yosys) and translateHDL. `iverilog`, `verilator` and `ghdl` come from Ubuntu 24.04's apt, which cannot be pinned, so CI fails if any is not the exact expected version. The hosted runner image itself still changes week to week |
 | Fuzzing / formal evidence | Partial | The VHDL port is formally proven equivalent to the Verilog in CI (`sim/parity/`, translateHDL). That shows the two languages agree, not that the design is correct. The design itself has directed and randomised simulation only (cocotb suites with a replayable seed), and no fuzzing or property proofs |
 | Release integrity | Gap | Tags and releases are not signed |
 | Product documentation | Integrator task | Depends on downstream product |
@@ -130,7 +130,6 @@ Recommended next steps, most important first:
   attach it to each release.
 - Make `MAX_FRAME=1518` the `eth_mac_sys` default, and consider leaving TX and
   RX disabled at reset until software has programmed the MAC address.
-- Pin CI tool and action versions so release evidence can be reproduced.
 - Add malformed-frame fuzz tests or a bounded formal harness for selected
   parser/FIFO properties.
 - Sign release tags.

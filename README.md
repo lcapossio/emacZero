@@ -539,6 +539,11 @@ Two workflows run on every push and PR to `main`:
   `sim/parity/` with `--strict` (`sim/parity/run_all.py`). translateHDL and
   Yosys are pinned, and GHDL is 4.1 from Ubuntu 24.04.
 
+Both workflows pin their GitHub Actions by commit SHA, the Python version, and
+every Python package (`.github/requirements/`). The HDL tools come from Ubuntu's
+apt, which cannot be pinned reliably, so each workflow checks their exact
+versions and fails if Ubuntu ships a different one.
+
 The Vivado phases (`PHASE 1b`, `PHASE 1c`, `--impl`) need a Vivado install and
 run locally only.
 
