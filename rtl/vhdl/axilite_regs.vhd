@@ -112,13 +112,13 @@ entity axilite_regs is
         -- Reported in CAPS only; the logic they select lives in eth_mac_sys.
         TX_CSUM_OFFLOAD   : integer := 0;
         RX_CSUM_OFFLOAD   : integer := 0;
-        MAX_FRAME         : integer := 9018;
+        MAX_FRAME         : integer := 1518;
         -- RX FIFO address width (eth_mac_rx AXIS_FIFO_ADDR_WIDTH): reported in
         -- CAPS and sets the PAUSE_XOFF / PAUSE_XON reset values.
         RX_AXIS_ADDR_WIDTH : integer := 11;
-        -- 1 = CTRL leaves reset with tx_en and rx_en set; 0 = both clear.
+        -- 0 (default) = CTRL leaves reset with tx_en and rx_en clear; 1 = both set.
         -- eth_mac_sys resets its TX/RX enable gates from the same generic.
-        TXRX_EN_AT_RESET  : integer := 1
+        TXRX_EN_AT_RESET  : integer := 0
     );
     port (
         s_axi_aclk    : in  std_logic;

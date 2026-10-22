@@ -2,7 +2,7 @@
 """eth_mac_sys TXRX_EN_AT_RESET: CTRL's tx_en/rx_en reset value, and the
 s_axis/m_axis enable gates that apply them per frame, leave reset together.
 
-eth_mac_sys, PHY_INTERFACE="MII", MAX_FRAME 1518, MII TX looped back to MII
+eth_mac_sys, PHY_INTERFACE="MII", MAX_FRAME 1518 (the default), MII TX looped back to MII
 RX (a one-cycle register on the MII clock), 100 MHz clk, 25 MHz MII clocks.
 A frame's first beat is offered on s_axis from before reset is released. A
 watcher reads s_axis_tvalid/tready settled in each low phase of clk (what
@@ -15,7 +15,7 @@ reset and in the low phase before the first rising edge out of it: they
 must equal TXRX_EN_AT_RESET (R0). An RX gate with the wrong reset value
 corrects itself on the first idle clock, so no frame could show it.
 
-Suite eth_mac_sys_reset_txrx_off (TXRX_EN_AT_RESET=0):
+Suite eth_mac_sys_reset_txrx_off (TXRX_EN_AT_RESET=0, the default):
   R1  CTRL reads 0x20 after reset
   R2  the frame offered across the reset release and for 2000 cycles after
       it: no s_axis handshake, mii_tx_en never high, TX_FRAME 0 (the gates
@@ -25,7 +25,7 @@ Suite eth_mac_sys_reset_txrx_off (TXRX_EN_AT_RESET=0):
       1) and loops back, but m_axis_tvalid never rises
   R4  CTRL = tx_en | rx_en (0x23): a second frame is delivered byte-exact,
       with TLAST and without terror
-Suite eth_mac_sys_reset_txrx_on (TXRX_EN_AT_RESET=1, the default):
+Suite eth_mac_sys_reset_txrx_on (TXRX_EN_AT_RESET=1):
   R1  CTRL reads 0x23 after reset
   R4  without any CTRL write, the frame offered across the reset release is
       delivered byte-exact
@@ -50,8 +50,9 @@ SUITES = {
                     "rtl/ddr_input.v", "rtl/rgmii_if.v", "rtl/gmii_if.v",
                     "rtl/gmii_cdc.v", "rtl/net/tx_csum_off.v", "rtl/mii_tx_saf.v",
                     "rtl/eth_mac_sys.v"],
-        "params": {"PHY_INTERFACE": "MII", "MAX_FRAME": 1518,
-                   "TXRX_EN_AT_RESET": 0},
+        # MAX_FRAME and TXRX_EN_AT_RESET left at their defaults (1518, 0),
+        # so this suite also checks what eth_mac_sys does out of the box.
+        "params": {"PHY_INTERFACE": "MII"},
         "env": {"TB_TXRX_EN_AT_RESET": "0"},
     },
     "eth_mac_sys_reset_txrx_on": {
@@ -63,12 +64,13 @@ SUITES = {
                     "rtl/ddr_input.v", "rtl/rgmii_if.v", "rtl/gmii_if.v",
                     "rtl/gmii_cdc.v", "rtl/net/tx_csum_off.v", "rtl/mii_tx_saf.v",
                     "rtl/eth_mac_sys.v"],
-        "params": {"PHY_INTERFACE": "MII", "MAX_FRAME": 1518},
+        "params": {"PHY_INTERFACE": "MII", "MAX_FRAME": 1518,
+                   "TXRX_EN_AT_RESET": 1},
         "env": {"TB_TXRX_EN_AT_RESET": "1"},
     },
 }
 
-TXRX_EN = int(os.environ.get("TB_TXRX_EN_AT_RESET", "1"))
+TXRX_EN = int(os.environ.get("TB_TXRX_EN_AT_RESET", "0"))
 
 A_CTRL = 0x04
 A_TX_FRAME = 0x28

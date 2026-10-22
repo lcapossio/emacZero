@@ -124,7 +124,9 @@ module sfp_lb_tester (
 
     eth_mac_sys #(
         .PHY_INTERFACE ("GMII"),
-        .CLK_FREQ_HZ   (125_000_000)
+        .MAX_FRAME     (9018),         // jumbo-capable (the old default)
+        .CLK_FREQ_HZ   (125_000_000),
+        .TXRX_EN_AT_RESET(1)           // TX/RX run from reset (the old default)
     ) u_mac (
         .clk            (clk),
         .rst_n          (rst_n),

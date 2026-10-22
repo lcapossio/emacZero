@@ -107,13 +107,13 @@ module axilite_regs #(
     // Reported in CAPS only; the logic they select lives in eth_mac_sys.
     parameter TX_CSUM_OFFLOAD   = 0,
     parameter RX_CSUM_OFFLOAD   = 0,
-    parameter MAX_FRAME         = 9018,
+    parameter MAX_FRAME         = 1518,
     // RX FIFO address width (eth_mac_rx AXIS_FIFO_ADDR_WIDTH): reported in
     // CAPS and sets the PAUSE_XOFF / PAUSE_XON reset values.
     parameter RX_AXIS_ADDR_WIDTH = 11,
-    // 1 = CTRL leaves reset with tx_en and rx_en set; 0 = both clear.
+    // 0 (default) = CTRL leaves reset with tx_en and rx_en clear; 1 = both set.
     // eth_mac_sys resets its TX/RX enable gates from the same parameter.
-    parameter TXRX_EN_AT_RESET  = 1
+    parameter TXRX_EN_AT_RESET  = 0
 )(
     input  wire                    s_axi_aclk,
     input  wire                    s_axi_aresetn,

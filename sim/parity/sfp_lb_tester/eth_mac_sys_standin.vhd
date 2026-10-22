@@ -20,7 +20,7 @@ entity eth_mac_sys is
     generic (
         PHY_INTERFACE      : string  := "MII";
         MCAST_HASH_FILTER  : integer := 0;
-        MAX_FRAME          : integer := 9018;
+        MAX_FRAME          : integer := 1518;
         RX_AXIS_ADDR_WIDTH : integer := 0;   -- 0 = max(clog2(MAX_FRAME), 11), as the Verilog default
         TX_CSUM_OFFLOAD    : integer := 0;
         RX_CSUM_OFFLOAD    : integer := 0;
@@ -28,7 +28,7 @@ entity eth_mac_sys is
         CLK_FREQ_HZ        : integer := 100_000_000;
         RGMII_SPEEDS       : string  := "ALL";
         MII_DEBUG          : integer := 0;
-        TXRX_EN_AT_RESET   : integer := 1
+        TXRX_EN_AT_RESET   : integer := 0
     );
     port (
         clk             : in  std_logic;

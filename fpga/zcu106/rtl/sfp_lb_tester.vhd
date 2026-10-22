@@ -261,7 +261,9 @@ begin
     u_mac : entity work.eth_mac_sys
         generic map (
             PHY_INTERFACE => "GMII",
-            CLK_FREQ_HZ   => 125_000_000
+            MAX_FRAME     => 9018,        -- jumbo-capable (the old default)
+            CLK_FREQ_HZ   => 125_000_000,
+            TXRX_EN_AT_RESET => 1         -- TX/RX run from reset (the old default)
         )
         port map (
             clk             => clk,

@@ -346,14 +346,14 @@ module tb_axilite_regs;
 
         // =================================================================
         // Test 1b: CAPS register (read-only; default parameters: MAX_FRAME
-        // 9018, RX FIFO address width 11, automatic PAUSE, no multicast
+        // 1518, RX FIFO address width 11, automatic PAUSE, no multicast
         // hash, no checksum offload)
         // =================================================================
         axi_read(A_CAPS, rd_result);
-        check32("CAPS", rd_result, 32'h233A_00B8);
+        check32("CAPS", rd_result, 32'h05EE_00B8);
         axi_write(A_CAPS, 32'hFFFF_FFFF);
         axi_read(A_CAPS, rd_result);
-        check32("CAPS after write", rd_result, 32'h233A_00B8);
+        check32("CAPS after write", rd_result, 32'h05EE_00B8);
 
         // =================================================================
         // Test 2: SCRATCH register (write/read)
@@ -380,13 +380,12 @@ module tb_axilite_regs;
         // =================================================================
         // Test 3: CTRL register + config outputs
         // =================================================================
-        // Default: tx_en=1, rx_en=1, promisc=0
+        // Default CTRL (TXRX_EN_AT_RESET=0): tx_en=0, rx_en=0, promisc=0,
+        // speed=00 (1G), full_duplex=1, jumbo_en=0, tx_csum_off=0  =>  0x20
         axi_read(A_CTRL, rd_result);
-        // Default CTRL: tx_en=1, rx_en=1, promisc=0, speed=00 (1G),
-        // full_duplex=1, jumbo_en=0, tx_csum_off=0  =>  0x23
-        check32("CTRL default", rd_result, 32'h0000_0023);
-        check1("cfg_tx_en default", cfg_tx_en, 1'b1);
-        check1("cfg_rx_en default", cfg_rx_en, 1'b1);
+        check32("CTRL default", rd_result, 32'h0000_0020);
+        check1("cfg_tx_en default", cfg_tx_en, 1'b0);
+        check1("cfg_rx_en default", cfg_rx_en, 1'b0);
         check1("cfg_promisc default", cfg_promisc, 1'b0);
 
         // Set promisc, clear tx_en

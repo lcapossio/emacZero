@@ -42,7 +42,7 @@ entity eth_mac_sys is
     generic (
         PHY_INTERFACE      : string  := "MII";   -- "MII", "GMII" or "RGMII"
         MCAST_HASH_FILTER  : integer := 0;       -- 1 = enable 64-bit multicast hash filter
-        MAX_FRAME          : integer := 9018;    -- jumbo MTU + headers; 1518 standard
+        MAX_FRAME          : integer := 1518;    -- standard; up to 9018 for jumbo (RGMII/GMII)
         -- RX AXIS buffer depth (address width). Defaults to hold one full
         -- MAX_FRAME frame so a jumbo frame can be absorbed under sustained
         -- downstream backpressure, with a 2048-byte (addr-width 11) floor for
@@ -65,9 +65,11 @@ entity eth_mac_sys is
         -- removes 1G, and with it the 125 MHz clk requirement.
         RGMII_SPEEDS       : string  := "ALL";
         MII_DEBUG          : integer := 0;
-        -- 1 = CTRL leaves reset with tx_en and rx_en set, so TX and RX run
-        -- without software; 0 = both clear until software sets them.
-        TXRX_EN_AT_RESET   : integer := 1
+        -- 0 (default) = CTRL resets with tx_en and rx_en clear: the core neither
+        -- sends nor delivers frames until software has programmed the MAC address
+        -- and set them. 1 = both set at reset, so TX and RX run without software
+        -- (the pre-0.3 behaviour, for designs with no CPU).
+        TXRX_EN_AT_RESET   : integer := 0
     );
     port (
         clk             : in  std_logic;   -- system clock, CLK_FREQ_HZ

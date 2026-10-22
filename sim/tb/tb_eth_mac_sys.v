@@ -60,8 +60,8 @@ module tb_eth_mac_sys;
         mii_rx_dv_r <= mii_tx_en;
     end
 
-    // 2 KiB RX FIFO (the MAX_FRAME=1518 size) so Test 10 can fill it with a
-    // few frames; the jumbo default would size it at 16 KiB.
+    // 2 KiB RX FIFO (the size MAX_FRAME=1518, the default, gives) so Test 10
+    // can fill it with a few frames.
     eth_mac_sys #(.PHY_INTERFACE("MII"), .RX_AXIS_ADDR_WIDTH(11)) uut (
         .clk            (clk),
         .rst_n          (rst_n),
