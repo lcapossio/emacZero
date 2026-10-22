@@ -2,7 +2,7 @@
 
 This document maps emacZero repository practices to EU Cyber Resilience Act
 (CRA) preparation tasks. It is not legal advice and it is not a declaration of
-conformity. Last reviewed 2026-10-16, against release `v0.2.0`.
+conformity. Last reviewed 2026-10-22, against release `v0.2.0` and `main`.
 
 Regulation (EU) 2024/2847 entered into force on 2024-12-10. The vulnerability
 and incident reporting obligations of Article 14 have applied since
@@ -55,13 +55,13 @@ supplied. The maintainer has not yet stated which of these applies:
 | Security assumptions and threat model | Partial | `docs/security_model.md`; not yet mapped item by item to Annex I |
 | Maintainer role under the CRA | Gap | Not yet stated (see above) |
 | Versions integrators can pin | Good | `v0.2.0` published as a GitHub release with its regression log; `v0.1.0` tag pushed for history |
-| Support period | Gap | No end-of-support date; only the latest release receives fixes |
-| Vulnerability reporting | Partial | `SECURITY.md` (email works); GitHub private vulnerability reporting was not enabled as of 2026-10-16, so the advisory link does not open a form |
+| Support period | Good | Stated in `SECURITY.md`: only the latest release is supported, and a release stops receiving fixes when the next one is published. No fixed end-of-support date |
+| Vulnerability reporting | Good | `SECURITY.md`: email, or GitHub private vulnerability reporting (enabled 2026-10-22) |
 | Handling of actively exploited issues | Partial | `SECURITY.md` asks reporters to flag them; no published turnaround for that case |
 | Published fixes | Partial | `CHANGELOG.md` has a Security section from `v0.2.0`; no CVE or GHSA has been issued |
 | Dependency inventory (SBOM) | Partial | `docs/sbom.md`; no generated SPDX/CycloneDX SBOM per release yet |
 | Regression evidence | Good | `build_and_test.py` in CI on every push and pull request, including the cocotb suites on the VHDL port; log attached to each release |
-| Hardware evidence | Partial | Arty A7 and ZCU106 results in the READMEs and CHANGELOG, measured on development commits, not re-run per release |
+| Hardware evidence | Partial | Arty A7 and ZCU106 results in the READMEs and CHANGELOG, measured on development commits, not re-run per release. The VHDL port ran on the Arty A7 (smoke, regression and a 30-minute soak) on 2026-10-21 |
 | Secure defaults | Partial | `promisc`, `jumbo_en`, PAUSE RX, checksum offload and `MII_DEBUG` are off at reset. `eth_mac_sys` defaults to `MAX_FRAME=9018` (the FuseSoC core uses 1518), and the MAC leaves reset with TX and RX enabled on placeholder MAC `02:00:00:00:00:01` and IP `192.168.137.200` |
 | Build reproducibility | Partial | CI pins GitHub Actions by major tag and the runner image (Ubuntu 24.04), and the parity workflow pins translateHDL and yowasp-yosys. `iverilog`, `verilator` and `ghdl` come from that image's apt, and `cocotb>=2.0` is unpinned |
 | Fuzzing / formal evidence | Partial | The VHDL port is formally proven equivalent to the Verilog in CI (`sim/parity/`, translateHDL). That shows the two languages agree, not that the design is correct. The design itself has directed and randomised simulation only (cocotb suites with a replayable seed), and no fuzzing or property proofs |
@@ -122,10 +122,8 @@ Before publishing a release for downstream product integration:
 
 Recommended next steps, most important first:
 
-- Enable GitHub private vulnerability reporting in repository Settings >
-  Security, and check the advisory link from a logged-out browser.
-- State the maintainer's role under the CRA (see Maintainer role) and a support
-  period, and add a turnaround for actively exploited reports to `SECURITY.md`.
+- State the maintainer's role under the CRA (see Maintainer role), and add a
+  turnaround for actively exploited reports to `SECURITY.md`.
 - Generate a CycloneDX or SPDX SBOM in CI from the `emaczero.core` filesets and
   attach it to each release.
 - Make `MAX_FRAME=1518` the `eth_mac_sys` default, and consider leaving TX and
