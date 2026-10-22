@@ -16,16 +16,32 @@ python sw/validate_sbom.py sbom/*.cdx.json        # CycloneDX 1.5 schema, strict
 
 Each SBOM lists the files of that target's filesets plus the files they
 `` `include `` (`rtl/version.vh`), each with its SHA-256 and the SPDX licence
-from its header. The version and package URL are the release tag, or the full
-commit hash when HEAD has no tag. The output is deterministic: the timestamp is
-the commit time and the serial number is derived from the package URL and
-target, so the same commit always gives the same files. `build_and_test.py`
-phase 0e runs `gen_sbom.py --check`, which fails when a listed file is missing
-or has no SPDX header.
+from its header. The `default`, `with_l3` and `vhdl` targets are the core
+RTL; the `arty_a7` target also lists the Arty A7 board RTL
+(`fpga/arty_a7/rtl/`) and its constraints (`arty_a7.xdc`). Files are read
+from the commit, not the working tree, so the hashes are those of the files
+as committed (LF line endings) whatever the checkout's line endings or local
+edits.
+
+The version is the tag given with `--version` (the release workflow passes the
+release tag, and the script fails if that tag does not point at the commit),
+else the tag on HEAD (the highest in version order if there are several),
+else the full commit hash. The package URL is
+`pkg:github/lcapossio/emaczero@<version>`, lowercase and with the version
+percent-encoded, as the purl spec asks. File names percent-encode the version
+too, so a tag such as `release/v1` stays one file name.
+
+The output is deterministic: the timestamp is the commit time in UTC and the
+serial number is derived from the package URL and target, so the same commit
+and version always give the same files. The generator records its own commit
+as the tool version, which differs from the described commit when it
+describes an older tag (`--root`). `build_and_test.py` phase 0e runs
+`gen_sbom.py --check`, which reads the working tree (so it also sees files not
+committed yet) and fails when a listed file is missing or has no SPDX header.
 
 The rest of this file is the component-inventory guide for what the generated
-SBOMs do not cover (software, board ports, verification and build scripts) and
-for integrators who build their own SBOM.
+SBOMs do not cover (software, the ZCU106 board port, verification and build
+scripts) and for integrators who build their own SBOM.
 
 ## Recommended Format
 
@@ -43,7 +59,7 @@ Recommended component coordinates:
   used. The VERSION CSR (`0x00`) reads `0x0002454D` for `v0.2.x`.
 - Licence: `Apache-2.0`
 - Primary package URL, if supported by the SBOM tool:
-  `pkg:github/lcapossio/emacZero@v0.2.0`
+  `pkg:github/lcapossio/emaczero@v0.2.0` (purl names are lowercase)
 - FuseSoC VLNV: `bard0:eth:emaczero:0.2.0`
 
 ## Inventory Scope
@@ -100,6 +116,7 @@ build of the default MII path also uses that file.
 
 - Define whether generated diagrams, logs, and vendor output products are
   included in release SBOMs or stored only as evidence artifacts.
-- The SBOMs cover the RTL of each FuseSoC target only. Software
-  (`sw/emaczero/`), the LiteX wrapper and the board debug submodule are not
-  in them.
+- The SBOMs cover the files of each FuseSoC target only: the core RTL, and for
+  `arty_a7` the Arty board RTL and constraints. Software (`sw/emaczero/`), the
+  LiteX wrapper, the ZCU106 port, build scripts and the board debug submodule
+  are not in them.

@@ -37,7 +37,7 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
           path: src
-          # gen_sbom.py names the version after the tag (git describe).
+          # All refs, so the tag itself is there for gen_sbom.py --version to check.
           fetch-depth: 0
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -48,7 +48,9 @@ jobs:
         run: pip install -r tool/.github/requirements/sbom.txt
 
       - name: Generate the SBOMs
-        run: python tool/sw/gen_sbom.py --root src --out sbom
+        # --version names the SBOMs after this tag and fails unless it points at
+        # the checked-out commit.
+        run: python tool/sw/gen_sbom.py --root src --version "$TAG" --out sbom
 
       - name: Validate them (CycloneDX 1.5, strict)
         run: python tool/sw/validate_sbom.py sbom/*.cdx.json
