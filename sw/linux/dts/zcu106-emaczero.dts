@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+/*
+ * ZCU106 with the emacZero 1000BASE-X shell in the PL: the stock board tree
+ * plus the PL nodes. Addresses and interrupts are those of the emacz_zephyr
+ * zcu106_r5 block design (PL behind M_AXI_HPM0_LPD at 0x8000_0000, PS DDR
+ * reached by the DMA through S_AXI_HP0_FPD, not cache coherent).
+ *
+ *   pl_ps_irq0[0] = SPI 89  PCS status GPIO (unused: link is polled)
+ *   pl_ps_irq0[1] = SPI 90  AXI DMA MM2S
+ *   pl_ps_irq0[2] = SPI 91  AXI DMA S2MM
+ *   pl_ps_irq0[3] = SPI 92  emacZero (unused by the driver)
+ *
+ * Build it inside the kernel tree, e.g. with Buildroot's
+ * BR2_LINUX_KERNEL_CUSTOM_DTS_PATH, so the include below resolves.
+ *
+ * Copyright (c) 2026 Leonardo Capossio - bard0 design
+ */
+
+#include "xilinx/zynqmp-zcu106-revA.dts"
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	amba_pl: bus@80000000 {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		interrupt-parent = <&gic>;
+
+		/* status_vector[15:0] of the PCS/PMA in bits 15:0; bit 0 is link */
+		pcs_gpio: gpio@80010000 {
+			compatible = "xlnx,xps-gpio-1.00.a";
+			reg = <0x0 0x80010000 0x0 0x10000>;
+			clocks = <&zynqmp_clk PL0_REF>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			xlnx,all-inputs = <0xffffffff>;
+			xlnx,gpio-width = <32>;
+		};
+
+		axi_dma: dma-controller@81e00000 {
+			compatible = "xlnx,axi-dma-1.00.a";
+			reg = <0x0 0x81e00000 0x0 0x10000>;
+			#dma-cells = <1>;
+			clocks = <&zynqmp_clk PL0_REF>, <&zynqmp_clk PL0_REF>,
+				 <&zynqmp_clk PL0_REF>, <&zynqmp_clk PL0_REF>;
+			clock-names = "s_axi_lite_aclk", "m_axi_mm2s_aclk",
+				      "m_axi_s2mm_aclk", "m_axi_sg_aclk";
+			xlnx,addrwidth = <32>;
+			xlnx,include-sg;
+			xlnx,sg-length-width = <16>;
+
+			/*
+			 * xilinx_dma raises a channel's interrupt only after as many
+			 * completions as it had descriptors pending when it started
+			 * them, unless the delay timer fires first: without a delay a
+			 * lone frame could wait forever. The unit is 125 SG clock
+			 * cycles (PG021), 0.83 us at 150 MHz: 12 = 10 us.
+			 */
+
+			dma-channel-mm2s {
+				compatible = "xlnx,axi-dma-mm2s-channel";
+				interrupts = <GIC_SPI 90 IRQ_TYPE_LEVEL_HIGH>;
+				xlnx,datawidth = <8>;
+				xlnx,irq-delay = /bits/ 8 <12>;
+			};
+
+			dma-channel-s2mm {
+				compatible = "xlnx,axi-dma-s2mm-channel";
+				interrupts = <GIC_SPI 91 IRQ_TYPE_LEVEL_HIGH>;
+				xlnx,datawidth = <8>;
+				xlnx,irq-delay = /bits/ 8 <12>;
+			};
+		};
+
+		ethernet@84a00000 {
+			compatible = "bard0,emaczero";
+			reg = <0x0 0x84a00000 0x0 0x1000>;
+			interrupts = <GIC_SPI 92 IRQ_TYPE_LEVEL_HIGH>;
+			dmas = <&axi_dma 0>, <&axi_dma 1>;
+			dma-names = "tx", "rx";
+			phy-mode = "1000base-x";
+			local-mac-address = [02 e7 00 00 01 06];
+
+			/*
+			 * 1000BASE-X is always 1000 full duplex. The PCS does its own
+			 * auto-negotiation (pause abilities only) and reports link,
+			 * after AN when AN is on, in status_vector[0].
+			 */
+			fixed-link {
+				speed = <1000>;
+				full-duplex;
+				link-gpios = <&pcs_gpio 0 GPIO_ACTIVE_HIGH>;
+			};
+		};
+	};
+};
