@@ -11,6 +11,8 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
 | [emaczero/Makefile](emaczero/Makefile) | Kbuild and out-of-tree build |
 | [bindings/bard0,emaczero.yaml](bindings/bard0,emaczero.yaml) | Device tree binding (draft) |
 | [dts/zcu106-emaczero.dts](dts/zcu106-emaczero.dts) | ZCU106 board tree plus the PL nodes of the 1G shell |
+| [scripts/linux_bench.py](scripts/linux_bench.py) | Host-side benchmark: iperf3 plus the board's counters |
+| [results/](results/) | Benchmark records, with their test conditions |
 
 ## Design
 
@@ -54,7 +56,8 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
   adds a group into 64-bit totals and clears it once any of its counters
   passes 2^31. The totals count from driver load (the probe clears the MAC's
   counters). A frame counted between the read and the clear is lost from
-  the totals.
+  the totals; the driver reads the busiest counters last to keep that
+  window short.
 
 The MAC comes out of reset with TX and RX enabled. The driver disables them
 at probe, enables them on `ifup` and disables them on `ifdown`.
@@ -87,6 +90,20 @@ make -C sw/linux/emaczero KDIR=<kernel tree> ARCH=arm64 CROSS_COMPILE=aarch64-li
 
 The kernel needs `CONFIG_PHYLINK`, `CONFIG_XILINX_DMA` and, for a
 `link-gpios` fixed link on an AXI GPIO, `CONFIG_GPIO_XILINX`.
+
+## Benchmark
+
+[scripts/linux_bench.py](scripts/linux_bench.py) runs iperf3 from a host
+against the board and reads the board's counters before and after each test
+(over its serial console or ssh), so every result comes with the MAC's and
+the interface's view of the same frames:
+
+```sh
+python sw/linux/scripts/linux_bench.py --board 192.168.237.50 --bind 192.168.237.1     --serial /dev/ttyUSB1 --tests tcp-rx,tcp-tx,udp-rx,udp-tx,bidir,soak     --conditions "<board, kernel, link, host>" --out results/<name>.md
+```
+
+The board needs `iperf3` and `ethtool`; the script starts `iperf3 -s` on it.
+Records are kept in [results/](results/).
 
 ## Status
 
@@ -175,7 +192,9 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
   setting the interrupt threshold above 255). Starting the ring in two
   halves made no measurable difference. A larger ring without the loss
   would most likely need changes in the provider.
-- Final build, after a review of the driver (same board and PC, 2026-10-24):
+- Final build, after a review of the driver (same board and PC, 2026-10-24;
+  all but the soak ran on the build before the last change, which only
+  reordered the counter reads of a fold):
   - Lifecycle: 20 `ifdown`/`ifup` cycles, unbind/bind and
     `rmmod`/`insmod`, no errors, both DMA channels keep their interrupt
     enables.
@@ -184,16 +203,17 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
     lost, all counted by the MAC (21 RX dropped for FIFO full, 1 RX
     overflow). UDP sent by the board: 743 to 887 Mb/s over three runs
     (sender limited, varies from run to run).
-  - Soak: TCP in both directions for 300 s (308 Mb/s received, 786 Mb/s
-    sent). Over the soak the MAC counted exactly as many TX frames as the
-    interface sent (20,945,704), and its RX frames (11,228,837) minus its RX
-    overflow count (504) matched the interface's RX packets (11,228,333)
-    exactly; no kernel messages, BQL drained to 0, memory flat. The MAC byte
-    counters passed 2^32 (33 GB sent), so the 64-bit totals were in use.
-    Counted from driver load, the MAC's RX total was one frame short
-    (12,991,705 RX frames and 505 overflows against 12,991,201 RX packets),
-    and after the later UDP runs its TX total was one frame short too: a
-    frame each lost to a fold under load, as described under Statistics.
+  - Soak: TCP in both directions for 300 s (289 Mb/s received, 803 Mb/s
+    sent), recorded with the benchmark script in
+    [results/zcu106-1000basex-2026-10-24.md](results/zcu106-1000basex-2026-10-24.md):
+    the MAC counted exactly as many TX frames as the interface sent
+    (21,468,821), and its RX frames minus its RX overflow count matched the
+    interface's RX packets (11,030,514); no kernel messages, BQL drained to
+    0, memory flat. The MAC's TX counters folded about 15 times and its RX
+    counters about 8 times, and the counts agreed in every test of the
+    record. An earlier
+    build, which read the busiest counters first, lost one to three frames
+    from its totals over similar runs.
   - TX stall: with the MAC's TX disabled by hand (CTRL TX_EN cleared) under
     1400-byte pings, the watchdog reported "TX DMA stalled, 2 frames in
     flight" and rebuilt the datapath within seconds; TCP ran at 941 / 937

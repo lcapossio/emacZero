@@ -714,7 +714,12 @@ static void emz_stats_fold(struct emz_priv *priv)
 	for (g = 0; g < EMZ_STAT_GROUPS; g++) {
 		if (!fold[g])
 			continue;
-		for (i = 0; i < EMZ_NR_STATS; i++)
+		/*
+		 * A counter loses what it takes between its read and the clear.
+		 * The table lists each group's busiest counters first: read the
+		 * group backwards, so they are read just before the clear.
+		 */
+		for (i = EMZ_NR_STATS; i-- > 0; )
 			if (emz_hw_stats[i].group == g)
 				priv->stats_acc[i] += emz_rd(priv, emz_hw_stats[i].reg);
 		emz_wr(priv, emz_stat_clear[g], 0);
