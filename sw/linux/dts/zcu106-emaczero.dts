@@ -85,8 +85,8 @@
 			local-mac-address = [02 e7 00 00 01 06];
 
 			/*
-			 * 1000BASE-X is always 1000 full duplex. The PCS does its own
-			 * auto-negotiation (pause abilities only) and reports link,
+			 * This shell runs 1000BASE-X at 1000 full duplex only. The PCS
+			 * runs the clause 37 auto-negotiation itself and reports link,
 			 * after AN when AN is on, in status_vector[0].
 			 */
 			fixed-link {

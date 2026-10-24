@@ -49,7 +49,8 @@ properties:
     description:
       The MAC build's interface. MII runs at 10/100 Mb/s, GMII at 1000 Mb/s
       only (also behind a separate PCS for SGMII or 1000BASE-X), RGMII at
-      10/100/1000 Mb/s.
+      10/100/1000 Mb/s. An RGMII build limited to 10/100 Mb/s needs
+      max-speed = <100>.
     enum:
       - mii
       - gmii

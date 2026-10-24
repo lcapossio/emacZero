@@ -55,6 +55,7 @@
 #define EMZ_MCAST_LO		0x44
 #define EMZ_MCAST_HI		0x48
 #define EMZ_RX_DROP		0x7c
+#define EMZ_PAUSE_CTRL		0x84
 
 #define EMZ_VERSION_ID		GENMASK(15, 0)
 #define EMZ_VERSION_ID_VAL	0x454d	/* "EM" */
@@ -163,7 +164,8 @@ struct emz_priv {
 	bool datapath_up;		/* channels held, rings allocated */
 	bool reset_pending;		/* rebuild requested: submit nothing more */
 
-	struct delayed_work watchdog;	/* RX and TX stall checks, stats folding */
+	struct delayed_work watchdog;	/* RX and TX stall checks */
+	struct delayed_work stats_work;	/* folds the MAC counters while bound */
 	unsigned int rx_progress;	/* RX completions taken by NAPI */
 	unsigned int wd_rx_progress;
 	u64 wd_rx_drop;
@@ -583,12 +585,12 @@ static netdev_tx_t emz_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 
 	cookie = dmaengine_submit(desc);
 	if (unlikely(dma_submit_error(cookie))) {
-		/* complete the slot as failed so NAPI reclaims it */
+		/* complete the slot as failed so NAPI reclaims it, gate first */
 		slot->status = -EIO;
+		emz_request_reset(priv);
 		/* pairs with the acquire in emz_tx_complete() */
 		smp_store_release(&slot->done, true);
 		napi_schedule(&priv->napi);
-		emz_request_reset(priv);
 	}
 
 	if (emz_tx_free(priv) == 0) {
@@ -661,9 +663,9 @@ static int emz_poll(struct napi_struct *napi, int budget)
 /*
  * The MAC's own counters are 32 bits and saturate; a write to any counter of
  * a group clears the whole group. Keep 64-bit totals in software: once a
- * counter of a group passes 2^31, the watchdog adds the group to the totals
- * and clears it. A frame counted between that read and the clear is lost
- * from the totals.
+ * counter of a group passes 2^31, emz_stats_work() adds the group to the
+ * totals and clears it. What a counter takes between that read and the clear
+ * is lost from the totals.
  */
 enum { EMZ_STAT_TX, EMZ_STAT_RX, EMZ_STAT_PAUSE, EMZ_STAT_GROUPS };
 
@@ -724,6 +726,21 @@ static void emz_stats_fold(struct emz_priv *priv)
 				priv->stats_acc[i] += emz_rd(priv, emz_hw_stats[i].reg);
 		emz_wr(priv, emz_stat_clear[g], 0);
 	}
+}
+
+/*
+ * The MAC counts received frames even with RX disabled, so fold for as long
+ * as the driver is bound, not only while the interface is up.
+ */
+static void emz_stats_work(struct work_struct *work)
+{
+	struct emz_priv *priv = container_of(to_delayed_work(work), struct emz_priv,
+					     stats_work);
+
+	mutex_lock(&priv->stats_lock);
+	emz_stats_fold(priv);
+	mutex_unlock(&priv->stats_lock);
+	schedule_delayed_work(&priv->stats_work, EMZ_WATCHDOG);
 }
 
 static u64 emz_stat_total(struct emz_priv *priv, unsigned int i)
@@ -881,7 +898,11 @@ static void emz_reset_work(struct work_struct *work)
 	int ret;
 
 	rtnl_lock();
-	if (netif_running(ndev) && priv->datapath_up) {
+	/*
+	 * A request made while the last rebuild ran queues the work again; the
+	 * rebuild cleared the gate, so that run finds nothing to do.
+	 */
+	if (netif_running(ndev) && priv->datapath_up && READ_ONCE(priv->reset_pending)) {
 		netdev_warn(ndev, "restarting the DMA datapath\n");
 		emz_datapath_down(priv);
 		ret = emz_datapath_up(priv);
@@ -902,7 +923,7 @@ static void emz_reset_work(struct work_struct *work)
  * TX, frames in flight with no completion for EMZ_TX_STALL_TICKS periods mean
  * the TX channel stopped (the stack's TX timeout only covers a stopped
  * queue). With the carrier off the TX check waits: the frames may only be
- * held up. The watchdog also folds the MAC counters before they saturate.
+ * held up.
  */
 static void emz_watchdog(struct work_struct *work)
 {
@@ -915,7 +936,6 @@ static void emz_watchdog(struct work_struct *work)
 	u64 drop;
 
 	mutex_lock(&priv->stats_lock);
-	emz_stats_fold(priv);
 	drop = emz_rx_drop_total(priv);
 	mutex_unlock(&priv->stats_lock);
 
@@ -1178,6 +1198,13 @@ static void emz_phylink_destroy(void *data)
 	phylink_destroy(data);
 }
 
+static void emz_cancel_stats(void *data)
+{
+	struct emz_priv *priv = data;
+
+	cancel_delayed_work_sync(&priv->stats_work);
+}
+
 static void emz_cancel_reset(void *data)
 {
 	struct emz_priv *priv = data;
@@ -1193,7 +1220,7 @@ static int emz_probe(struct platform_device *pdev)
 	const char *managed;
 	phy_interface_t iface;
 	unsigned int i;
-	u32 ver;
+	u32 ver, max_speed;
 	int ret;
 
 	ndev = devm_alloc_etherdev(dev, sizeof(*priv));
@@ -1209,6 +1236,7 @@ static int emz_probe(struct platform_device *pdev)
 	mutex_init(&priv->stats_lock);
 	INIT_WORK(&priv->reset_work, emz_reset_work);
 	INIT_DELAYED_WORK(&priv->watchdog, emz_watchdog);
+	INIT_DELAYED_WORK(&priv->stats_work, emz_stats_work);
 
 	priv->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->regs))
@@ -1222,9 +1250,19 @@ static int emz_probe(struct platform_device *pdev)
 	emz_wr(priv, EMZ_CTRL, EMZ_CTRL_FULL_DUPLEX);
 	emz_wr(priv, EMZ_IRQ_EN, 0);
 	emz_wr(priv, EMZ_IRQ_STATUS, EMZ_IRQ_ALL);
+	/*
+	 * The driver does not set up flow control (phylink resolves it off):
+	 * ignore PAUSE frames, or they could hold TX and trip the TX watchdog.
+	 */
+	emz_wr(priv, EMZ_PAUSE_CTRL, 0);
 	/* the MAC counters count from here; a reload starts them again */
 	for (i = 0; i < EMZ_STAT_GROUPS; i++)
 		emz_wr(priv, emz_stat_clear[i], 0);
+	/* devm actions run in reverse: this one before the registers go */
+	schedule_delayed_work(&priv->stats_work, EMZ_WATCHDOG);
+	ret = devm_add_action_or_reset(dev, emz_cancel_stats, priv);
+	if (ret)
+		return ret;
 
 	/* the multicast hash registers read 0 when the build leaves them out */
 	emz_wr(priv, EMZ_MCAST_LO, 1);
@@ -1274,6 +1312,17 @@ static int emz_probe(struct platform_device *pdev)
 		priv->phylink_config.mac_capabilities = MAC_10FD | MAC_100FD | MAC_1000FD;
 		phy_interface_set_rgmii(priv->phylink_config.supported_interfaces);
 		break;
+	}
+
+	/* a build with fewer speeds (RGMII_SPEEDS "10_100") sets max-speed */
+	if (!of_property_read_u32(dev->of_node, "max-speed", &max_speed)) {
+		if (max_speed < SPEED_1000)
+			priv->phylink_config.mac_capabilities &= ~MAC_1000FD;
+		if (max_speed < SPEED_100)
+			priv->phylink_config.mac_capabilities &= ~MAC_100FD;
+		if (!priv->phylink_config.mac_capabilities)
+			return dev_err_probe(dev, -EINVAL, "no speed left under max-speed %u\n",
+					     max_speed);
 	}
 
 	priv->phylink = phylink_create(&priv->phylink_config, dev_fwnode(dev), iface,
