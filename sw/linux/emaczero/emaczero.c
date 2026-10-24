@@ -25,6 +25,7 @@
 #include <linux/ethtool.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/of.h>
 #include <linux/of_mdio.h>
@@ -97,10 +98,19 @@
 #define EMZ_TX_BUF_LEN		EMZ_RX_BUF_LEN
 
 #define EMZ_TX_RING		64
+/*
+ * A larger RX ring tolerates more NAPI latency, but with xilinx_dma it lost
+ * frames at 1G line rate behind the ZCU106 shell's 6 KB of RX buffering, and
+ * 128 did not (measurements in sw/linux/README.md).
+ */
 #define EMZ_RX_RING		128
 #define EMZ_TX_WAKE		(EMZ_TX_RING / 4)
 #define EMZ_TX_TIMEOUT		(5 * HZ)
 #define EMZ_WATCHDOG		HZ
+#define EMZ_TX_STALL_TICKS	3	/* watchdog periods without a TX completion */
+#define EMZ_NR_STATS		21
+/* fold a counter group into the 64-bit totals once a counter passes this */
+#define EMZ_STAT_FOLD		BIT(31)
 
 #define EMZ_MDIO_TIMEOUT_US	10000
 
@@ -151,12 +161,17 @@ struct emz_priv {
 
 	struct work_struct reset_work;	/* DMA error, TX timeout, RX stall */
 	bool datapath_up;		/* channels held, rings allocated */
-	bool dma_err;			/* a channel failed: submit nothing more */
+	bool reset_pending;		/* rebuild requested: submit nothing more */
 
-	struct delayed_work watchdog;	/* RX stall check */
+	struct delayed_work watchdog;	/* RX and TX stall checks, stats folding */
 	unsigned int rx_progress;	/* RX completions taken by NAPI */
 	unsigned int wd_rx_progress;
-	u32 wd_rx_drop;
+	u64 wd_rx_drop;
+	unsigned int wd_tx_tail;
+	unsigned int wd_tx_stuck;
+
+	struct mutex stats_lock;	/* stats_acc and the counter clears */
+	u64 stats_acc[EMZ_NR_STATS];	/* counts folded out of the MAC */
 
 	struct phylink *phylink;
 	struct phylink_config phylink_config;
@@ -312,16 +327,19 @@ static int emz_mdio_register(struct emz_priv *priv)
 /* --------------------------------------------------------- DMA callbacks */
 
 /*
- * The provider calls these from its tasklet. On an error, stop feeding both
- * channels: a submit to a channel with an error resets the whole DMA core,
- * under the other direction's feet. The reset work rebuilds both.
+ * Stop feeding both channels and have the reset work rebuild them. After a
+ * DMA error this matters: a submit to a channel with an error resets the
+ * whole DMA core, under the other direction's feet. A channel can also halt
+ * without any failed completion, which no flag here can catch in time; see
+ * the known limits in sw/linux/README.md.
  */
-static void emz_dma_failed(struct emz_priv *priv)
+static void emz_request_reset(struct emz_priv *priv)
 {
-	WRITE_ONCE(priv->dma_err, true);
+	WRITE_ONCE(priv->reset_pending, true);
 	schedule_work(&priv->reset_work);
 }
 
+/* The provider calls the completion callbacks from its tasklet. */
 static void emz_tx_dma_done(void *param, const struct dmaengine_result *res)
 {
 	struct emz_cb *cb = param;
@@ -331,10 +349,11 @@ static void emz_tx_dma_done(void *param, const struct dmaengine_result *res)
 
 	/* once done is published NAPI may recycle the slot: decide from locals */
 	slot->status = failed ? -EIO : 0;
+	/* the gate before done, so whoever sees the failed slot sees the gate */
+	if (failed)
+		emz_request_reset(priv);
 	/* status before done: pairs with the acquire in emz_tx_complete() */
 	smp_store_release(&slot->done, true);
-	if (failed)
-		emz_dma_failed(priv);
 	napi_schedule(&priv->napi);
 }
 
@@ -348,10 +367,10 @@ static void emz_rx_dma_done(void *param, const struct dmaengine_result *res)
 	/* bytes written = buffer length - residue; a short frame is dropped in NAPI */
 	slot->len = EMZ_RX_BUF_LEN - min_t(u32, res->residue, EMZ_RX_BUF_LEN);
 	slot->status = failed ? -EIO : 0;
-	/* len and status before done: pairs with the acquire in emz_rx_poll() */
-	smp_store_release(&slot->done, true);
 	if (failed)
-		emz_dma_failed(priv);
+		emz_request_reset(priv);
+	/* len, status and gate before done: pairs with the acquire in emz_rx_poll() */
+	smp_store_release(&slot->done, true);
 	napi_schedule(&priv->napi);
 }
 
@@ -366,7 +385,7 @@ static int emz_rx_submit(struct emz_priv *priv, unsigned int idx)
 
 	/* the old completion is consumed whether or not this succeeds */
 	slot->done = false;
-	if (READ_ONCE(priv->dma_err))
+	if (READ_ONCE(priv->reset_pending))
 		return -EIO;
 	desc = dmaengine_prep_slave_single(priv->rx_chan, slot->dma, EMZ_RX_BUF_LEN,
 					   DMA_DEV_TO_MEM, DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
@@ -454,9 +473,9 @@ static int emz_rx_poll(struct emz_priv *priv, int budget)
 
 		/* stop at a slot that could not be posted again; the reset work rebuilds */
 		if (emz_rx_submit(priv, idx)) {
-			if (!READ_ONCE(priv->dma_err))
+			if (!READ_ONCE(priv->reset_pending))
 				netdev_err(ndev, "RX descriptor submit failed\n");
-			emz_dma_failed(priv);
+			emz_request_reset(priv);
 			break;
 		}
 		submitted++;
@@ -472,7 +491,11 @@ static int emz_rx_poll(struct emz_priv *priv, int budget)
 
 static unsigned int emz_tx_free(struct emz_priv *priv)
 {
-	return EMZ_TX_RING - (READ_ONCE(priv->tx_head) - READ_ONCE(priv->tx_tail));
+	/*
+	 * Acquire the tail: pairs with the release in emz_tx_complete(), so the
+	 * reset gate, set before a failed slot was published, is seen after it.
+	 */
+	return EMZ_TX_RING - (READ_ONCE(priv->tx_head) - smp_load_acquire(&priv->tx_tail));
 }
 
 static void emz_tx_complete(struct emz_priv *priv)
@@ -524,13 +547,15 @@ static netdev_tx_t emz_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		netif_stop_queue(ndev);
 		return NETDEV_TX_BUSY;
 	}
-	if (unlikely(len > EMZ_TX_BUF_LEN || READ_ONCE(priv->dma_err))) {
+	if (unlikely(len > EMZ_TX_BUF_LEN || READ_ONCE(priv->reset_pending))) {
 		DEV_STATS_INC(ndev, tx_dropped);
 		dev_kfree_skb_any(skb);
 		goto flush;
 	}
 
 	slot = &priv->tx[idx];
+	/* the slot stays mapped: take it back for the CPU before writing it */
+	dma_sync_single_for_cpu(priv->tx_dma_dev, slot->dma, len, DMA_TO_DEVICE);
 	skb_copy_bits(skb, 0, slot->buf, len);
 	dma_sync_single_for_device(priv->tx_dma_dev, slot->dma, len, DMA_TO_DEVICE);
 	skb_tx_timestamp(skb);
@@ -563,7 +588,7 @@ static netdev_tx_t emz_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		/* pairs with the acquire in emz_tx_complete() */
 		smp_store_release(&slot->done, true);
 		napi_schedule(&priv->napi);
-		emz_dma_failed(priv);
+		emz_request_reset(priv);
 	}
 
 	if (emz_tx_free(priv) == 0) {
@@ -631,6 +656,87 @@ static int emz_poll(struct napi_struct *napi, int budget)
 	return done;
 }
 
+/* ------------------------------------------------------------ statistics */
+
+/*
+ * The MAC's own counters are 32 bits and saturate; a write to any counter of
+ * a group clears the whole group. Keep 64-bit totals in software: once a
+ * counter of a group passes 2^31, the watchdog adds the group to the totals
+ * and clears it. A frame counted between that read and the clear is lost
+ * from the totals.
+ */
+enum { EMZ_STAT_TX, EMZ_STAT_RX, EMZ_STAT_PAUSE, EMZ_STAT_GROUPS };
+
+static const u16 emz_stat_clear[EMZ_STAT_GROUPS] = {
+	[EMZ_STAT_TX]		= 0x28,
+	[EMZ_STAT_RX]		= EMZ_RX_DROP,
+	[EMZ_STAT_PAUSE]	= 0x8c,
+};
+
+static const struct {
+	char name[ETH_GSTRING_LEN];
+	u16 reg;
+	u8 group;
+} emz_hw_stats[EMZ_NR_STATS] = {
+	{ "hw_tx_frames",		0x28, EMZ_STAT_TX },
+	{ "hw_tx_bytes",		0x2c, EMZ_STAT_TX },
+	{ "hw_rx_frames",		0x30, EMZ_STAT_RX },
+	{ "hw_rx_bytes",		0x34, EMZ_STAT_RX },
+	{ "hw_rx_errors",		0x38, EMZ_STAT_RX },
+	{ "hw_rx_err_rx_er",		0x4c, EMZ_STAT_RX },
+	{ "hw_rx_err_overflow",		0x50, EMZ_STAT_RX },
+	{ "hw_rx_err_oversize",		0x54, EMZ_STAT_RX },
+	{ "hw_rx_broadcast",		0x58, EMZ_STAT_RX },
+	{ "hw_rx_multicast",		0x5c, EMZ_STAT_RX },
+	{ "hw_rx_size_64",		0x60, EMZ_STAT_RX },
+	{ "hw_rx_size_65_127",		0x64, EMZ_STAT_RX },
+	{ "hw_rx_size_128_255",		0x68, EMZ_STAT_RX },
+	{ "hw_rx_size_256_511",		0x6c, EMZ_STAT_RX },
+	{ "hw_rx_size_512_1023",	0x70, EMZ_STAT_RX },
+	{ "hw_rx_size_1024_1518",	0x74, EMZ_STAT_RX },
+	{ "hw_rx_size_jumbo",		0x78, EMZ_STAT_RX },
+	{ "hw_rx_drop_fifo_full",	EMZ_RX_DROP, EMZ_STAT_RX },
+	{ "hw_rx_err_csum",		0x80, EMZ_STAT_RX },
+	{ "hw_pause_rx",		0x8c, EMZ_STAT_PAUSE },
+	{ "hw_pause_tx",		0x90, EMZ_STAT_PAUSE },
+};
+
+static void emz_stats_fold(struct emz_priv *priv)
+{
+	bool fold[EMZ_STAT_GROUPS] = { };
+	unsigned int i, g;
+
+	lockdep_assert_held(&priv->stats_lock);
+	for (i = 0; i < EMZ_NR_STATS; i++)
+		if (emz_rd(priv, emz_hw_stats[i].reg) >= EMZ_STAT_FOLD)
+			fold[emz_hw_stats[i].group] = true;
+
+	for (g = 0; g < EMZ_STAT_GROUPS; g++) {
+		if (!fold[g])
+			continue;
+		for (i = 0; i < EMZ_NR_STATS; i++)
+			if (emz_hw_stats[i].group == g)
+				priv->stats_acc[i] += emz_rd(priv, emz_hw_stats[i].reg);
+		emz_wr(priv, emz_stat_clear[g], 0);
+	}
+}
+
+static u64 emz_stat_total(struct emz_priv *priv, unsigned int i)
+{
+	lockdep_assert_held(&priv->stats_lock);
+	return priv->stats_acc[i] + emz_rd(priv, emz_hw_stats[i].reg);
+}
+
+static u64 emz_rx_drop_total(struct emz_priv *priv)
+{
+	unsigned int i;
+
+	for (i = 0; i < EMZ_NR_STATS; i++)
+		if (emz_hw_stats[i].reg == EMZ_RX_DROP)
+			return emz_stat_total(priv, i);
+	return 0;
+}
+
 /* ------------------------------------------------------- datapath up/down */
 
 static void emz_release_chans(struct emz_priv *priv)
@@ -646,8 +752,8 @@ static void emz_release_chans(struct emz_priv *priv)
 /*
  * The channels are requested at every datapath start and released at every
  * stop, as xilinx_axienet does. Stopping a channel resets the whole AXI DMA
- * core, which clears the other channel's interrupt enables, and only
- * allocating a channel turns them on again.
+ * core, which clears the interrupt enables of the channel stopped first;
+ * requesting both channels again turns both sets back on.
  */
 static int emz_request_chans(struct emz_priv *priv)
 {
@@ -681,7 +787,13 @@ static void emz_datapath_down(struct emz_priv *priv)
 	napi_disable(&priv->napi);
 	netif_tx_disable(ndev);
 
-	/* drain TX into the MAC while it still takes data, then stop RX at the MAC */
+	/*
+	 * Drain TX into the MAC, then stop RX at the MAC. The TX channel halts
+	 * only once its stream has taken the frame in progress, and xilinx_dma
+	 * polls for that for minutes without sleeping, so make sure the MAC
+	 * takes data.
+	 */
+	emz_ctrl_update(priv, 0, EMZ_CTRL_TX_EN);
 	dmaengine_terminate_sync(priv->tx_chan);
 	emz_ctrl_update(priv, EMZ_CTRL_TX_EN | EMZ_CTRL_RX_EN, 0);
 	dmaengine_terminate_sync(priv->rx_chan);
@@ -707,7 +819,7 @@ static int emz_datapath_up(struct emz_priv *priv)
 	priv->tx_head = 0;
 	priv->tx_tail = 0;
 	priv->rx_tail = 0;
-	priv->dma_err = false;
+	priv->reset_pending = false;
 
 	ret = emz_request_chans(priv);
 	if (ret)
@@ -721,21 +833,30 @@ static int emz_datapath_up(struct emz_priv *priv)
 			ret = -ENOMEM;
 			goto err;
 		}
-		ret = emz_rx_submit(priv, i);
-		if (ret)
-			goto err;
 	}
 
 	netdev_reset_queue(ndev);
 	/* before the first completion can call napi_schedule() */
 	napi_enable(&priv->napi);
+
+	for (i = 0; i < EMZ_RX_RING; i++) {
+		ret = emz_rx_submit(priv, i);
+		if (ret) {
+			napi_disable(&priv->napi);
+			goto err;
+		}
+	}
 	dma_async_issue_pending(priv->rx_chan);
 	emz_ctrl_update(priv, 0, EMZ_CTRL_TX_EN | EMZ_CTRL_RX_EN);
 	priv->datapath_up = true;
 	netif_wake_queue(ndev);
 
-	priv->wd_rx_drop = emz_rd(priv, EMZ_RX_DROP);
+	mutex_lock(&priv->stats_lock);
+	priv->wd_rx_drop = emz_rx_drop_total(priv);
+	mutex_unlock(&priv->stats_lock);
 	priv->wd_rx_progress = READ_ONCE(priv->rx_progress);
+	priv->wd_tx_tail = 0;
+	priv->wd_tx_stuck = 0;
 	schedule_delayed_work(&priv->watchdog, EMZ_WATCHDOG);
 	return 0;
 
@@ -759,32 +880,61 @@ static void emz_reset_work(struct work_struct *work)
 		netdev_warn(ndev, "restarting the DMA datapath\n");
 		emz_datapath_down(priv);
 		ret = emz_datapath_up(priv);
-		if (ret)
-			netdev_err(ndev, "datapath restart failed: %d\n", ret);
+		if (ret) {
+			/* no datapath: take the interface down rather than leave it up and dead */
+			netdev_err(ndev, "datapath restart failed (%d), closing the interface\n",
+				   ret);
+			dev_close(ndev);
+		}
 	}
 	rtnl_unlock();
 }
 
 /*
  * The provider reports a channel error only through a completion, and a
- * channel can halt with none. A halted TX ends in a TX timeout; for RX,
- * watch the MAC: frames dropped for lack of room while NAPI took nothing
- * mean the RX channel stopped.
+ * channel can halt with none. Every second: for RX, frames the MAC dropped
+ * for lack of room while NAPI took nothing mean the RX channel stopped; for
+ * TX, frames in flight with no completion for EMZ_TX_STALL_TICKS periods mean
+ * the TX channel stopped (the stack's TX timeout only covers a stopped
+ * queue). With the carrier off the TX check waits: the frames may only be
+ * held up. The watchdog also folds the MAC counters before they saturate.
  */
 static void emz_watchdog(struct work_struct *work)
 {
 	struct emz_priv *priv = container_of(to_delayed_work(work), struct emz_priv, watchdog);
-	u32 drop = emz_rd(priv, EMZ_RX_DROP);
+	struct net_device *ndev = priv->ndev;
 	unsigned int progress = READ_ONCE(priv->rx_progress);
+	/* pairs with the release in emz_tx_complete() */
+	unsigned int tx_tail = smp_load_acquire(&priv->tx_tail);
+	bool tx_busy = READ_ONCE(priv->tx_head) != tx_tail;
+	u64 drop;
+
+	mutex_lock(&priv->stats_lock);
+	emz_stats_fold(priv);
+	drop = emz_rx_drop_total(priv);
+	mutex_unlock(&priv->stats_lock);
 
 	if (drop != priv->wd_rx_drop && progress == priv->wd_rx_progress) {
-		netdev_warn(priv->ndev, "RX DMA stalled (MAC dropped %u frames)\n",
+		netdev_warn(ndev, "RX DMA stalled (MAC dropped %llu frames)\n",
 			    drop - priv->wd_rx_drop);
-		schedule_work(&priv->reset_work);
+		emz_request_reset(priv);
 		return;
 	}
 	priv->wd_rx_drop = drop;
 	priv->wd_rx_progress = progress;
+
+	if (tx_busy && tx_tail == priv->wd_tx_tail && netif_carrier_ok(ndev)) {
+		if (++priv->wd_tx_stuck >= EMZ_TX_STALL_TICKS) {
+			netdev_warn(ndev, "TX DMA stalled, %u frames in flight\n",
+				    EMZ_TX_RING - emz_tx_free(priv));
+			emz_request_reset(priv);
+			return;
+		}
+	} else {
+		priv->wd_tx_stuck = 0;
+	}
+	priv->wd_tx_tail = tx_tail;
+
 	schedule_delayed_work(&priv->watchdog, EMZ_WATCHDOG);
 }
 
@@ -825,7 +975,7 @@ static void emz_tx_timeout(struct net_device *ndev, unsigned int txqueue)
 	struct emz_priv *priv = netdev_priv(ndev);
 
 	netdev_warn(ndev, "TX timeout, %u frames in flight\n", EMZ_TX_RING - emz_tx_free(priv));
-	schedule_work(&priv->reset_work);
+	emz_request_reset(priv);
 }
 
 static int emz_set_mac_address(struct net_device *ndev, void *p)
@@ -902,34 +1052,6 @@ static const struct net_device_ops emz_netdev_ops = {
 
 /* --------------------------------------------------------- ethtool */
 
-/* The MAC's own counters: 32 bits, saturating, cleared only by a write. */
-static const struct {
-	char name[ETH_GSTRING_LEN];
-	u16 reg;
-} emz_hw_stats[] = {
-	{ "hw_tx_frames",		0x28 },
-	{ "hw_tx_bytes",		0x2c },
-	{ "hw_rx_frames",		0x30 },
-	{ "hw_rx_bytes",		0x34 },
-	{ "hw_rx_errors",		0x38 },
-	{ "hw_rx_err_rx_er",		0x4c },
-	{ "hw_rx_err_overflow",		0x50 },
-	{ "hw_rx_err_oversize",		0x54 },
-	{ "hw_rx_broadcast",		0x58 },
-	{ "hw_rx_multicast",		0x5c },
-	{ "hw_rx_size_64",		0x60 },
-	{ "hw_rx_size_65_127",		0x64 },
-	{ "hw_rx_size_128_255",		0x68 },
-	{ "hw_rx_size_256_511",		0x6c },
-	{ "hw_rx_size_512_1023",	0x70 },
-	{ "hw_rx_size_1024_1518",	0x74 },
-	{ "hw_rx_size_jumbo",		0x78 },
-	{ "hw_rx_drop_fifo_full",	0x7c },
-	{ "hw_rx_err_csum",		0x80 },
-	{ "hw_pause_rx",		0x8c },
-	{ "hw_pause_tx",		0x90 },
-};
-
 static void emz_get_drvinfo(struct net_device *ndev, struct ethtool_drvinfo *info)
 {
 	struct emz_priv *priv = netdev_priv(ndev);
@@ -942,7 +1064,7 @@ static void emz_get_drvinfo(struct net_device *ndev, struct ethtool_drvinfo *inf
 
 static int emz_get_sset_count(struct net_device *ndev, int sset)
 {
-	return sset == ETH_SS_STATS ? ARRAY_SIZE(emz_hw_stats) : -EOPNOTSUPP;
+	return sset == ETH_SS_STATS ? EMZ_NR_STATS : -EOPNOTSUPP;
 }
 
 static void emz_get_strings(struct net_device *ndev, u32 sset, u8 *data)
@@ -960,8 +1082,10 @@ static void emz_get_ethtool_stats(struct net_device *ndev, struct ethtool_stats 
 	struct emz_priv *priv = netdev_priv(ndev);
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(emz_hw_stats); i++)
-		data[i] = emz_rd(priv, emz_hw_stats[i].reg);
+	mutex_lock(&priv->stats_lock);
+	for (i = 0; i < EMZ_NR_STATS; i++)
+		data[i] = emz_stat_total(priv, i);
+	mutex_unlock(&priv->stats_lock);
 }
 
 static int emz_get_link_ksettings(struct net_device *ndev, struct ethtool_link_ksettings *cmd)
@@ -1061,7 +1185,9 @@ static int emz_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct net_device *ndev;
 	struct emz_priv *priv;
+	const char *managed;
 	phy_interface_t iface;
+	unsigned int i;
 	u32 ver;
 	int ret;
 
@@ -1075,6 +1201,7 @@ static int emz_probe(struct platform_device *pdev)
 	priv->ndev = ndev;
 	priv->dev = dev;
 	spin_lock_init(&priv->ctrl_lock);
+	mutex_init(&priv->stats_lock);
 	INIT_WORK(&priv->reset_work, emz_reset_work);
 	INIT_DELAYED_WORK(&priv->watchdog, emz_watchdog);
 
@@ -1090,6 +1217,9 @@ static int emz_probe(struct platform_device *pdev)
 	emz_wr(priv, EMZ_CTRL, EMZ_CTRL_FULL_DUPLEX);
 	emz_wr(priv, EMZ_IRQ_EN, 0);
 	emz_wr(priv, EMZ_IRQ_STATUS, EMZ_IRQ_ALL);
+	/* the MAC counters count from here; a reload starts them again */
+	for (i = 0; i < EMZ_STAT_GROUPS; i++)
+		emz_wr(priv, emz_stat_clear[i], 0);
 
 	/* the multicast hash registers read 0 when the build leaves them out */
 	emz_wr(priv, EMZ_MCAST_LO, 1);
@@ -1109,16 +1239,37 @@ static int emz_probe(struct platform_device *pdev)
 	ret = of_get_phy_mode(dev->of_node, &iface);
 	if (ret)
 		return dev_err_probe(dev, ret, "missing or bad phy-mode\n");
+	/* the driver has no PCS to resolve in-band status with */
+	if (!of_property_read_string(dev->of_node, "managed", &managed) &&
+	    !strcmp(managed, "in-band-status"))
+		return dev_err_probe(dev, -EINVAL, "in-band-status is not supported\n");
 
 	priv->phylink_config.dev = &ndev->dev;
 	priv->phylink_config.type = PHYLINK_NETDEV;
-	/* full duplex only: the MAC has no CSMA/CD */
-	priv->phylink_config.mac_capabilities = MAC_10FD | MAC_100FD | MAC_1000FD;
-	__set_bit(PHY_INTERFACE_MODE_MII, priv->phylink_config.supported_interfaces);
-	__set_bit(PHY_INTERFACE_MODE_GMII, priv->phylink_config.supported_interfaces);
-	phy_interface_set_rgmii(priv->phylink_config.supported_interfaces);
-	__set_bit(PHY_INTERFACE_MODE_SGMII, priv->phylink_config.supported_interfaces);
-	__set_bit(PHY_INTERFACE_MODE_1000BASEX, priv->phylink_config.supported_interfaces);
+	/*
+	 * The build fixes the interface: MII runs at 10/100, GMII only at 1000
+	 * (also behind a PCS for SGMII or 1000BASE-X), RGMII at all three. Full
+	 * duplex only: the MAC has no CSMA/CD.
+	 */
+	switch (iface) {
+	case PHY_INTERFACE_MODE_MII:
+		priv->phylink_config.mac_capabilities = MAC_10FD | MAC_100FD;
+		__set_bit(iface, priv->phylink_config.supported_interfaces);
+		break;
+	case PHY_INTERFACE_MODE_GMII:
+	case PHY_INTERFACE_MODE_SGMII:
+	case PHY_INTERFACE_MODE_1000BASEX:
+		priv->phylink_config.mac_capabilities = MAC_1000FD;
+		__set_bit(iface, priv->phylink_config.supported_interfaces);
+		break;
+	default:
+		if (!phy_interface_mode_is_rgmii(iface))
+			return dev_err_probe(dev, -EINVAL, "phy-mode %s is not supported\n",
+					     phy_modes(iface));
+		priv->phylink_config.mac_capabilities = MAC_10FD | MAC_100FD | MAC_1000FD;
+		phy_interface_set_rgmii(priv->phylink_config.supported_interfaces);
+		break;
+	}
 
 	priv->phylink = phylink_create(&priv->phylink_config, dev_fwnode(dev), iface,
 				       &emz_phylink_ops);

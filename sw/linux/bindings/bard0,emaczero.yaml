@@ -45,6 +45,28 @@ properties:
       - const: tx
       - const: rx
 
+  phy-mode:
+    description:
+      The MAC build's interface. MII runs at 10/100 Mb/s, GMII at 1000 Mb/s
+      only (also behind a separate PCS for SGMII or 1000BASE-X), RGMII at
+      10/100/1000 Mb/s.
+    enum:
+      - mii
+      - gmii
+      - rgmii
+      - rgmii-id
+      - rgmii-rxid
+      - rgmii-txid
+      - sgmii
+      - 1000base-x
+
+  managed:
+    description:
+      The MAC has no PCS of its own, so it cannot take the link state from
+      in-band signalling. Use a PHY, or a fixed-link (with link-gpios for a
+      PCS status line).
+    const: auto
+
   mdio:
     $ref: mdio.yaml#
     unevaluatedProperties: false

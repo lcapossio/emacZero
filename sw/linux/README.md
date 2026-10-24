@@ -2,8 +2,8 @@
 
 Out-of-tree netdev driver for `eth_mac_sys` on Linux 6.12 or later, first
 brought up on the ZCU106 (Cortex-A53, AMD AXI DMA, 1000BASE-X SFP). Work in
-progress: probe, link handling and the TX path are tested on hardware; the RX
-path is not yet (see [Status](#status)).
+progress: probe, link handling, TX and RX are tested on hardware against a PC
+(see [Status](#status)).
 
 | Path | Purpose |
 |------|---------|
@@ -15,9 +15,11 @@ path is not yet (see [Status](#status)).
 ## Design
 
 - **DMA through dmaengine.** The MAC has no DMA engine. The driver takes a
-  `tx` and an `rx` channel from any dmaengine provider (on AMD parts the AXI
-  DMA, `xilinx_dma`), one descriptor per frame. RX length is the buffer
-  length minus the residue the provider reports in `callback_result`.
+  `tx` and an `rx` channel from a dmaengine provider, one descriptor per
+  frame. RX length is the buffer length minus the residue the provider
+  reports in `callback_result`, so the provider must complete an RX
+  descriptor at the end of each frame, including a short one, and report an
+  accurate residue. Only the AXI DMA with `xilinx_dma` has been tested.
 - **NAPI.** DMA callbacks only record the result and schedule NAPI, which
   completes TX, delivers RX through GRO and refills the ring. TX uses BQL.
 - **TX bounce buffers.** Each frame is copied into an aligned per-slot buffer:
@@ -26,15 +28,18 @@ path is not yet (see [Status](#status)).
   scatter-gather and no checksum offload in this version.
 - **Channels per ifup.** The channels are requested on `ifup` and released
   on `ifdown`, as `xilinx_axienet` does. Stopping an AXI DMA channel resets the
-  whole core, which clears the other channel's interrupt enables, and
-  `xilinx_dma` turns them on again only when a channel is allocated.
+  whole core, so stopping the second channel clears the interrupt enables of
+  the first; requesting both channels again turns both sets back on.
 - **Recovery.** A DMA error halts the channel, and `xilinx_dma` recovers it
-  only by resetting the whole core, so the driver stops submitting to both
-  channels and rebuilds both, with fresh rings. The provider reports an error
-  only through a descriptor completion, and a channel can halt without one,
-  so two watchdogs back this up: the TX timeout, and an RX stall check (the
-  MAC drops frames for lack of room while NAPI receives nothing). Recovery
-  after a real DMA error has not been tested on hardware.
+  only by resetting the whole core, so on a failed completion the driver
+  stops submitting to both channels and rebuilds both, with fresh rings. The
+  provider can also halt a channel without a failed completion, so a
+  once-a-second watchdog backs this up. It rebuilds the datapath when the MAC
+  drops RX frames for lack of room while NAPI receives nothing, or when TX
+  frames are outstanding, the carrier is up and no TX completion arrives for
+  three seconds. The netdev TX timeout does the same. If the rebuild itself
+  fails (no memory, no channel), the driver logs it and closes the
+  interface. See [Known limits](#known-limits) for what this cannot cover.
 - **Link through phylink.** Copper PHYs on the MAC's MDIO master (an `mdio`
   child node, clause 22 and 45), or a `fixed-link`, for example with
   `link-gpios` on a GPIO that carries the PCS link status. `mac_link_up` sets
@@ -43,11 +48,16 @@ path is not yet (see [Status](#status)).
   core is built with `MCAST_HASH_FILTER=1` (the driver detects it). Without
   the hash, any multicast subscription (IPv6 needs one) turns on promiscuous
   mode.
-- **Statistics.** Software counters for the interface; the MAC's own
-  counters (32-bit, saturating) under `ethtool -S`.
+- **Statistics.** Software counters for the interface, and the MAC's own
+  counters under `ethtool -S`. The MAC's counters are 32-bit and saturate,
+  and writing one clears its whole group (TX, RX or pause), so the watchdog
+  adds a group into 64-bit totals and clears it once any of its counters
+  passes 2^31. The totals count from driver load (the probe clears the MAC's
+  counters). A frame counted between the read and the clear is lost from
+  the totals.
 
-The MAC starts with TX and RX disabled (`TXRX_EN_AT_RESET=0`); the driver
-enables them on `ifup` and disables them on `ifdown`.
+The MAC comes out of reset with TX and RX enabled. The driver disables them
+at probe, enables them on `ifup` and disables them on `ifdown`.
 
 ## Requirements on the hardware around the MAC
 
@@ -60,9 +70,11 @@ enables them on `ifup` and disables them on `ifdown`.
   does, through the descriptor status).
 - With `xilinx_dma`, set `xlnx,irq-delay` on the channel nodes. The provider
   sets a channel's interrupt threshold to the number of descriptors it starts
-  at once (the RX ring starts 128) and leaves the delay timer off by default,
-  so a lone frame could wait for completions that never come. The ZCU106 tree
-  uses 12 (10 us at a 150 MHz SG clock).
+  at once, when that is 255 or fewer (the driver starts its whole 128-entry
+  RX ring; above 255 the provider keeps the previous threshold). It leaves
+  the delay timer off by default, so a lone frame could wait for
+  completions that never come. The timer counts idle time on the stream; the
+  ZCU106 tree uses 12 (10 us at a 150 MHz SG clock).
 
 ## Build
 
@@ -105,8 +117,124 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
   Small frames are limited by the per-descriptor cost of `xilinx_dma` and the
   per-frame interrupts it ends up with (about one MM2S interrupt per 1.5
   frames), not by the MAC.
-- Not tested yet: RX (needs a link partner on the SFP), multicast, recovery
-  after a DMA error, a TX timeout.
+- Link partner: a PC's 1000BASE-X SFP port, fibre, iperf3 3.16 on the PC.
+  Phylink raised the carrier from the PCS link GPIO when the cable was
+  plugged in with the driver loaded.
+- Ping, including 1472-byte unfragmented: no loss.
+- iperf3 with the driver defaults (no RPS, NAPI in softirq), 10 s per run
+  unless stated:
+
+  | Test | Board receives | Board sends |
+  |---|---:|---:|
+  | TCP, one direction at a time | 941 Mb/s, 0 retransmits | 933 Mb/s, 0 retransmits |
+  | TCP, both directions, 20 s | 343 Mb/s | 762 Mb/s |
+  | UDP 1472-byte, 950 Mb/s offered, one direction | 946 Mb/s, 0 of 806,668 lost | 855 Mb/s (sender limited) |
+
+  In the UDP runs the MAC's frame counters matched the interface's packet
+  counts exactly in both directions, so the 0.11 % the PC reported lost when
+  the board sent was not lost between the board's TX queue and the MAC.
+
+- Soak: TCP in both directions for 300 s (292 Mb/s received, 787 Mb/s
+  sent). The MAC's TX_FRAME count matched the interface's TX packets exactly
+  (20,877,806); MAC RX frames minus the MAC's RX overflow count matched the
+  interface's RX packets exactly (11,294,911); no kernel messages, BQL drained
+  to 0, free memory and slab unchanged.
+- Multicast: the core has no hash filter, so the driver ran the MAC
+  promiscuous; IPv4 multicast to 224.0.0.1 was delivered.
+- With both directions busy the board receives less than it sends, and the
+  MAC drops RX frames for lack of room (about 0.1 % of the frames in the soak);
+  TCP recovers through retransmits. Each frame the MAC passed on reached the
+  driver (the MAC counts the rest as RX dropped for FIFO full, or RX
+  overflow); the counters do not cover the stack above the driver. One A53
+  core at 1.2 GHz runs the NAPI poll at close to 100 %, paying per frame for
+  a `xilinx_dma` descriptor, a callback, a buffer allocation and DMA
+  mapping, plus TCP, so the likely cause is NAPI falling behind until the
+  shell's RX buffering (about 6 KB, 50 us at 1G) fills. The RX stall
+  watchdog does not fire, since NAPI keeps making progress. Threaded NAPI
+  (`echo 1 > /sys/class/net/eth1/threaded`) raised what the board receives to
+  545 Mb/s (714 Mb/s sent); RPS to another core (`rps_cpus`) to 381 Mb/s
+  (785 Mb/s sent).
+- RX ring size, measured with each size started as one batch (three 10 s runs
+  of TCP towards the board, and one 20 s run in both directions):
+
+  | RX ring | TCP towards the board: retransmits per run | Longest S2MM stall | Both directions: received / sent |
+  |---:|---:|---:|---:|
+  | 128 | 0 | 50 us | 340 / 759 Mb/s |
+  | 192 | 0 to 6 | 84 us | 483 / 697 Mb/s |
+  | 256 | 70 to 143 | 98 us | 580 / 624 Mb/s |
+
+  A larger ring gives NAPI more slack when both directions are busy, but at
+  line rate in one direction it loses frames, so the driver uses 128. The
+  stall (the longest run of S2MM back-pressure, from the shell's stream
+  counters) grows with the ring. A hypothesis, not traced: `xilinx_dma`
+  gives the hardware new descriptors only from its interrupt handler, after
+  walking the completed ones, so when the hardware runs out first the gap
+  before the restart grows with the number of descriptors to walk. Neither
+  the batch sizes in steady state nor what an interrupt finds have been
+  measured, and a 256-entry start is a special case (the provider skips
+  setting the interrupt threshold above 255). Starting the ring in two
+  halves made no measurable difference. A larger ring without the loss
+  would most likely need changes in the provider.
+- Final build, after a review of the driver (same board and PC, 2026-10-24):
+  - Lifecycle: 20 `ifdown`/`ifup` cycles, unbind/bind and
+    `rmmod`/`insmod`, no errors, both DMA channels keep their interrupt
+    enables.
+  - TCP one direction at a time: 941 Mb/s received, 942 Mb/s sent, 0
+    retransmits. UDP 950 Mb/s towards the board: 940 Mb/s, 22 of 820,035
+    lost, all counted by the MAC (21 RX dropped for FIFO full, 1 RX
+    overflow). UDP sent by the board: 743 to 887 Mb/s over three runs
+    (sender limited, varies from run to run).
+  - Soak: TCP in both directions for 300 s (308 Mb/s received, 786 Mb/s
+    sent). Over the soak the MAC counted exactly as many TX frames as the
+    interface sent (20,945,704), and its RX frames (11,228,837) minus its RX
+    overflow count (504) matched the interface's RX packets (11,228,333)
+    exactly; no kernel messages, BQL drained to 0, memory flat. The MAC byte
+    counters passed 2^32 (33 GB sent), so the 64-bit totals were in use.
+    Counted from driver load, the MAC's RX total was one frame short
+    (12,991,705 RX frames and 505 overflows against 12,991,201 RX packets),
+    and after the later UDP runs its TX total was one frame short too: a
+    frame each lost to a fold under load, as described under Statistics.
+  - TX stall: with the MAC's TX disabled by hand (CTRL TX_EN cleared) under
+    1400-byte pings, the watchdog reported "TX DMA stalled, 2 frames in
+    flight" and rebuilt the datapath within seconds; TCP ran at 941 / 937
+    Mb/s afterwards. Before the stop path enabled the MAC's TX, the same test
+    held a CPU for about 320 s in `xilinx_dma` (see
+    [Known limits](#known-limits)).
+  - RX stall: with the S2MM channel halted by hand (DMACR RS cleared) under
+    500 Mb/s of UDP, the watchdog reported "RX DMA stalled (MAC dropped
+    43058 frames)" at its next tick and rebuilt the datapath; iperf3 lost
+    52,511 frames over the stall and the rebuild. TCP (941 Mb/s) and UDP at
+    950 Mb/s (0 of 409,997 lost) ran afterwards.
+- Not tested yet: IPv6 (the PC port had IPv6 off), the link going down with
+  traffic running, the multicast hash filter (needs a core built with
+  `MCAST_HASH_FILTER=1`), recovery after an error the DMA reports, a netdev
+  TX timeout, a failed rebuild, PHY-managed (copper) links.
+
+## Known limits
+
+These come from the `xilinx_dma` provider in Linux 6.12 and cannot be fixed
+in the driver alone:
+
+- A DMA error that only raises the error interrupt produces no completion,
+  so the driver does not see it. The next submit to that channel makes the
+  provider reset the whole DMA core, under the other channel's feet. The
+  watchdog then catches the stall of whichever direction stops, after a few
+  seconds.
+- When the provider cannot stop or reset a channel during `ifdown` or a
+  rebuild, it logs "Cannot stop channel" but still reports success, and the
+  driver frees the buffers. If the hardware really keeps running, it can
+  write into freed memory.
+- When a submit hits a failed core reset, the provider leaks that
+  descriptor.
+- Stopping a channel waits, without sleeping, for its stream to finish the
+  frame in progress. The driver enables the MAC's TX before stopping TX for
+  this reason. If something outside the MAC blocks a stream, a stop can hold
+  a CPU for minutes.
+
+The driver accepts only `fixed-link` or PHY-managed links; it has no PCS of
+its own, so it rejects `managed = "in-band-status"`. It offers the speeds
+the PHY interface allows (MII: 10/100; GMII, SGMII, 1000BASE-X: 1000;
+RGMII: 10/100/1000), full duplex only.
 
 ## Licence
 

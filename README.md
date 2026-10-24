@@ -504,8 +504,9 @@ read/write, MAC-address setter, IRQ ack. Two files (`emaczero.h` +
 Out-of-tree netdev driver in [sw/linux/](sw/linux/) for Linux 6.12 or later:
 frames move through a dmaengine provider (the AMD AXI DMA on the ZCU106),
 with NAPI, BQL, phylink (MDIO PHYs or a fixed link) and the MAC counters in
-`ethtool -S`. Work in progress: TX is tested on a ZCU106 at 99.9 % of 1G line
-rate with 1514-byte frames, RX not yet. See [sw/linux/README.md](sw/linux/README.md).
+`ethtool -S`. Work in progress: tested on a ZCU106 against a PC at 1G line
+rate in each direction (TCP 941 Mb/s received, 933 Mb/s sent); with both
+directions busy the A53 is the limit. See [sw/linux/README.md](sw/linux/README.md).
 
 ### Minimal instantiation template
 

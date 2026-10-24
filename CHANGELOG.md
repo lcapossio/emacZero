@@ -9,9 +9,10 @@ This project does not yet maintain long-lived release branches.
 
 - Linux netdev driver (work in progress) in `sw/linux/`: an out-of-tree
   module for Linux 6.12 or later that moves frames through dmaengine channels
-  (AMD AXI DMA), with NAPI, BQL, phylink and the MAC counters in `ethtool -S`,
-  plus a draft device tree binding (`bard0,emaczero`) and a ZCU106 device tree
-  for the 1000BASE-X shell. TX is tested on a ZCU106; RX is not yet.
+  (AMD AXI DMA), with NAPI, BQL, phylink, the MAC counters as 64-bit totals
+  in `ethtool -S` and a watchdog that rebuilds a stalled DMA datapath, plus a
+  draft device tree binding (`bard0,emaczero`) and a ZCU106 device tree
+  for the 1000BASE-X shell. TX and RX are tested on a ZCU106 against a PC.
 - VHDL-93 port of the MAC IP (`rtl/eth_mac_sys.f`) in `rtl/vhdl/`, with the
   filelist `rtl/eth_mac_sys_vhdl.f` and FuseSoC target `vhdl`. Vendor
   selection uses one target package per vendor in `rtl/vhdl/target/`. Every

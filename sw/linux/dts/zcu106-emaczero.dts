@@ -53,9 +53,11 @@
 			/*
 			 * xilinx_dma raises a channel's interrupt only after as many
 			 * completions as it had descriptors pending when it started
-			 * them, unless the delay timer fires first: without a delay a
-			 * lone frame could wait forever. The unit is 125 SG clock
-			 * cycles (PG021), 0.83 us at 150 MHz: 12 = 10 us.
+			 * them (up to 255; above that it keeps the old threshold),
+			 * unless the delay timer fires first: without a delay a lone
+			 * frame could wait forever. The timer counts idle time on the
+			 * stream in units of 125 SG clock cycles (PG021), 0.83 us at
+			 * 150 MHz: 12 = 10 us.
 			 */
 
 			dma-channel-mm2s {
