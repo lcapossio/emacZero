@@ -499,6 +499,15 @@ C99 driver in [sw/emaczero/](sw/emaczero/) — register offsets, MDIO
 read/write, MAC-address setter, IRQ ack. Two files (`emaczero.h` +
 `emaczero.c`), no malloc, no OS calls. See [sw/README.md](sw/README.md).
 
+### Linux driver
+
+Out-of-tree netdev driver in [sw/linux/](sw/linux/) for Linux 6.12 or later:
+frames move through a dmaengine provider (the AMD AXI DMA on the ZCU106),
+with NAPI, BQL, phylink (MDIO PHYs or a fixed link) and the MAC counters in
+`ethtool -S`. Work in progress: tested on a ZCU106 against a PC at 1G line
+rate in each direction (TCP 941 Mb/s received, 933 Mb/s sent); with both
+directions busy the A53 is the limit. See [sw/linux/README.md](sw/linux/README.md).
+
 ### Minimal instantiation template
 
 [examples/eth_mac_sys_minimal/](examples/eth_mac_sys_minimal/) is a
