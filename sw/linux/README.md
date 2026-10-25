@@ -39,17 +39,42 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
   `skb_checksum_help()` would, a zero result as 0xffff (a zero UDP checksum
   means "none" over IPv4 and is invalid over IPv6). The buffers come from
   `dma_alloc_noncoherent()`, within the DMA channel's address mask.
-- **No checksum offload in the MAC yet.** `eth_mac_sys` can insert TX
-  checksums (`TX_CSUM_OFFLOAD`, CTRL bit 7) and drop RX frames with bad ones
-  (`RX_CSUM_OFFLOAD`, CTRL bit 9), but the driver uses neither: the CTRL bits
-  read back as written whether or not the core was built with the logic, so
-  the driver cannot tell. (The emacz_zephyr ZCU106 shell builds without
-  both.) Using them needs a way to discover them (a capability register or
-  a device tree property). On RX the driver could then only mark frames as
-  checked (`CHECKSUM_UNNECESSARY`) when it has parsed them as within the
-  checker's scope (Ethernet II with at most one VLAN tag, IPv4 or the IPv6
-  fixed header, TCP, UDP or ICMP; not IPv4 fragments or IPv6 extension
-  headers).
+- **Checksum offload in the MAC, when the core has it.** `eth_mac_sys` can
+  be built with a TX checksum inserter (`TX_CSUM_OFFLOAD`, CTRL bit 7) and an
+  RX checksum checker (`RX_CSUM_OFFLOAD`, CTRL bit 9). The CTRL bits read
+  back as written in every build, so the driver reads the CAPS register
+  (0x98) at probe; cores that predate it read 0 there and get no offload.
+  The probe message says what it found.
+  - TX: with the inserter on (`tx-checksumming`, on by default), a frame
+    that asks for a TCP or UDP checksum is copied as it is, and the inserter
+    writes the checksum, when the driver's parse finds the frame inside the
+    inserter's scope: at most one VLAN tag, then IPv4 without options and not
+    a fragment, or TCP or UDP right after the IPv6 fixed header; the
+    checksum the stack asks for is that header's; the datagram ends with the
+    frame; and for UDP the Length field covers the rest of the frame. The
+    driver sums any other frame in software, as on cores without the
+    inserter. The inserter is on for every frame, not only those that ask
+    for a checksum: it rewrites the IPv4 header, TCP, UDP, ICMP and ICMPv6
+    checksums of every frame in its scope, whatever they held. Frames whose
+    checksums were right go out unchanged, but a frame sent with a wrong
+    checksum on purpose (a raw socket) leaves with a right one, and an IPv4
+    UDP datagram sent without a checksum (0) leaves with one.
+  - RX: with the checker on (`rx-checksumming`, on by default), the MAC ends
+    a frame whose IPv4 header, TCP, UDP, ICMP or ICMPv6 checksum is wrong
+    with `terror`, so it is dropped before the DMA (see the requirements
+    below) and counted in `hw_rx_err_csum` (and `hw_rx_errors`); tcpdump on
+    the board does not see it. A frame that arrives was right, if the checker
+    looked at it: the driver marks it `CHECKSUM_UNNECESSARY` when its parse
+    finds a TCP or UDP datagram inside the checker's scope, with the same
+    header limits as on TX and the whole datagram inside the frame. The stack
+    checks every other frame itself. The checker also drops IPv6 UDP with a
+    zero checksum, which RFC 6936 allows for some tunnels.
+  - The MAC takes the CTRL bits as each frame starts, so turning either
+    offload on or off with `ethtool -K` while the interface is up restarts
+    the DMA datapath, as a stall rebuild does, and loses the frames in
+    flight. Otherwise a frame left to the inserter could leave without its
+    checksum, or a frame received before the checker was on be passed up as
+    checked.
 - **RX page pool.** Each RX buffer is a 2 KB fragment of a page from a page
   pool (two per page with 4 KB pages), which maps the page once, recycles
   it when all its fragments come back and syncs it for the device then.
@@ -103,7 +128,9 @@ at probe, enables them on `ifup` and disables them on `ifdown`.
   inside a frame as an underrun). The emacz_zephyr shells use a TX
   store-and-forward FIFO.
 - RX: frames that end with `m_axis_terror` dropped before the DMA, since the
-  error arrives with the last byte, after the data is in memory.
+  error arrives with the last byte, after the data is in memory. With the
+  RX checksum checker on, the driver also relies on this to mark frames as
+  checked.
 - The DMA channels' completion must report the received length (`xilinx_dma`
   does, through the descriptor status).
 - With `xilinx_dma`, set `xlnx,irq-delay` on the channel nodes. The provider
@@ -314,8 +341,8 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
   allocation, prep, submit, `issue_pending`) about a quarter, the TCP
   checksum of received segments in GRO plus the TX checksum about 12 %,
   and the TX bounce copy. The first needs a lighter provider path or a
-  driver-owned DMA ring; the second, the MAC's checksum offload (see
-  above).
+  driver-owned DMA ring; the second, the MAC's checksum offload, which the
+  driver now uses when the core has it (see above).
 - Final build, after the throughput work (same board and PC, 2026-10-25,
   the kernel with `CONFIG_PAGE_POOL`). The lifecycle, benchmark, counter
   and stall results ran before the zero checksum fix below, which changes

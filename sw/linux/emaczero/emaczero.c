@@ -23,7 +23,9 @@
 #include <linux/dmaengine.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
+#include <linux/if_vlan.h>
 #include <linux/iopoll.h>
+#include <linux/ipv6.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
@@ -37,8 +39,11 @@
 #include <linux/skbuff.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
 #include <linux/unaligned.h>
 #include <linux/workqueue.h>
+#include <net/ip.h>
 #include <net/page_pool/helpers.h>
 
 #define DRV_NAME "emaczero"
@@ -58,6 +63,7 @@
 #define EMZ_MCAST_HI		0x48
 #define EMZ_RX_DROP		0x7c
 #define EMZ_PAUSE_CTRL		0x84
+#define EMZ_CAPS		0x98
 
 #define EMZ_VERSION_ID		GENMASK(15, 0)
 #define EMZ_VERSION_ID_VAL	0x454d	/* "EM" */
@@ -71,6 +77,13 @@
 #define EMZ_CTRL_SPEED_100	1
 #define EMZ_CTRL_SPEED_10	2
 #define EMZ_CTRL_FULL_DUPLEX	BIT(5)
+#define EMZ_CTRL_TX_CSUM	BIT(7)
+#define EMZ_CTRL_RX_CSUM	BIT(9)
+
+/* build options; reads 0 on cores that predate the register */
+#define EMZ_CAPS_TX_CSUM	BIT(1)
+#define EMZ_CAPS_RX_CSUM	BIT(2)
+#define EMZ_CAPS_MAX_FRAME	GENMASK(31, 16)
 
 #define EMZ_STATUS_MDIO_BUSY	BIT(2)
 
@@ -174,6 +187,12 @@ struct emz_priv {
 
 	spinlock_t ctrl_lock;		/* CTRL read-modify-write */
 	bool has_mcast_hash;
+	bool has_tx_csum;		/* the build has the checksum inserter */
+	bool has_rx_csum;		/* ... and the checker */
+	unsigned int max_frame;		/* longest frame the inserter patches */
+	/* the inserter / checker is on; changed only with the datapath down */
+	bool tx_csum_hw;
+	bool rx_csum_hw;
 
 	struct work_struct reset_work;	/* DMA error, TX timeout, RX stall */
 	bool datapath_up;		/* channels held, rings allocated */
@@ -475,6 +494,60 @@ static int emz_rx_pool_create(struct emz_priv *priv)
 	return 0;
 }
 
+/*
+ * Find the TCP or UDP header of a frame as the MAC's checksum engine does
+ * (rtl/net/csum_calc.v), within a narrower scope: at most one VLAN tag, then
+ * IPv4 without options and not a fragment, or IPv6 with TCP or UDP right
+ * after its fixed header, and the whole datagram inside the frame. Returns
+ * the offset of the L4 header and sets *proto and *l4_len (the IP payload
+ * length), or returns 0 for a frame outside that scope.
+ */
+static unsigned int emz_csum_parse(const u8 *buf, unsigned int len, u8 *proto,
+				   unsigned int *l4_len)
+{
+	unsigned int l3 = ETH_HLEN, l4, end;
+	__be16 type;
+
+	if (len < VLAN_ETH_HLEN)
+		return 0;
+	type = get_unaligned((const __be16 *)(buf + ETH_ALEN * 2));
+	if (type == htons(ETH_P_8021Q) || type == htons(ETH_P_8021AD)) {
+		l3 = VLAN_ETH_HLEN;
+		type = get_unaligned((const __be16 *)(buf + ETH_HLEN + 2));
+	}
+	if (type == htons(ETH_P_IP)) {
+		const struct iphdr *ip = (const void *)(buf + l3);
+
+		l4 = l3 + sizeof(*ip);
+		if (len < l4 || ip->version != 4 || ip->ihl != 5 || ip_is_fragment(ip))
+			return 0;
+		end = l3 + ntohs(ip->tot_len);
+		*proto = ip->protocol;
+	} else if (type == htons(ETH_P_IPV6)) {
+		const struct ipv6hdr *ip6 = (const void *)(buf + l3);
+
+		l4 = l3 + sizeof(*ip6);
+		if (len < l4 || ip6->version != 6)
+			return 0;
+		end = l4 + ntohs(ip6->payload_len);
+		*proto = ip6->nexthdr;
+	} else {
+		return 0;
+	}
+	if (end < l4 || end > len)
+		return 0;
+	*l4_len = end - l4;
+
+	if (*proto == IPPROTO_TCP)
+		return *l4_len >= sizeof(struct tcphdr) ? l4 : 0;
+	if (*proto == IPPROTO_UDP && *l4_len >= sizeof(struct udphdr)) {
+		unsigned int ulen = ntohs(((const struct udphdr *)(buf + l4))->len);
+
+		return ulen >= sizeof(struct udphdr) && ulen <= *l4_len ? l4 : 0;
+	}
+	return 0;
+}
+
 static int emz_rx_poll(struct emz_priv *priv, int budget)
 {
 	struct net_device *ndev = priv->ndev;
@@ -484,7 +557,8 @@ static int emz_rx_poll(struct emz_priv *priv, int budget)
 		unsigned int idx = priv->rx_tail;
 		struct emz_rx_slot *slot = &priv->rx[idx];
 		struct sk_buff *skb;
-		unsigned int len, offset;
+		unsigned int len, offset, l4_len;
+		u8 proto;
 		struct page *page;
 
 		/* pairs with the release in emz_rx_dma_done() */
@@ -516,6 +590,15 @@ static int emz_rx_poll(struct emz_priv *priv, int budget)
 				skb_mark_for_recycle(skb);
 				skb_reserve(skb, EMZ_RX_HEADROOM);
 				skb_put(skb, len);
+				/*
+				 * With the checker on, a frame whose checksum
+				 * it found wrong ends with terror and the
+				 * stream before the DMA discards it: one inside
+				 * its scope that gets here was right.
+				 */
+				if (priv->rx_csum_hw &&
+				    emz_csum_parse(skb->data, len, &proto, &l4_len))
+					skb->ip_summed = CHECKSUM_UNNECESSARY;
 				skb->protocol = eth_type_trans(skb, ndev);
 				dev_sw_netstats_rx_add(ndev, len);
 				napi_gro_receive(&priv->napi, skb);
@@ -595,13 +678,37 @@ static void emz_tx_complete(struct emz_priv *priv)
 }
 
 /*
- * Copy a frame into its bounce buffer. NETIF_F_HW_CSUM is done here: the
- * checksum of a CHECKSUM_PARTIAL frame is summed piece by piece as it is
- * copied, and stored as skb_checksum_help() stores it, with a zero result
- * sent as 0xffff (a zero UDP checksum means "none" over IPv4 and is invalid
- * over IPv6).
+ * Whether the MAC's inserter writes the checksum the stack asks for at
+ * csum_start + csum_offset: the frame's own TCP or UDP checksum, over the
+ * bytes from csum_start to the end of the frame, and short enough not to be
+ * cut. The inserter ignores what the field holds.
  */
-static int emz_tx_copy(struct sk_buff *skb, u8 *buf)
+static bool emz_tx_csum_by_mac(struct emz_priv *priv, const u8 *buf, unsigned int len,
+			       unsigned int start, unsigned int offset)
+{
+	unsigned int l4, l4_len;
+	u8 proto;
+
+	l4 = emz_csum_parse(buf, len, &proto, &l4_len);
+	if (!l4 || l4 != start || l4 + l4_len != len || len > priv->max_frame)
+		return false;
+	if (proto == IPPROTO_TCP)
+		return offset == offsetof(struct tcphdr, check);
+	/* UDP: the inserter sums the Length field's bytes, the stack the rest of the frame */
+	return offset == offsetof(struct udphdr, check) &&
+	       ntohs(((const struct udphdr *)(buf + l4))->len) == l4_len;
+}
+
+/*
+ * Copy a frame into its bounce buffer. NETIF_F_HW_CSUM is done here: with
+ * the MAC's inserter on, a CHECKSUM_PARTIAL frame it covers is copied as it
+ * is and the inserter writes its checksum; the checksum of any other is
+ * summed in software and stored as skb_checksum_help() stores it, with a zero
+ * result sent as 0xffff (a zero UDP checksum means "none" over IPv4 and is
+ * invalid over IPv6). The inserter also rewrites the checksums of frames
+ * that are not CHECKSUM_PARTIAL, to the same values when they were right.
+ */
+static int emz_tx_copy(struct emz_priv *priv, struct sk_buff *skb, u8 *buf)
 {
 	unsigned int len = skb->len, start, field;
 	__wsum csum;
@@ -610,10 +717,20 @@ static int emz_tx_copy(struct sk_buff *skb, u8 *buf)
 		return skb_copy_bits(skb, 0, buf, len);
 	start = skb_checksum_start_offset(skb);
 	field = start + skb->csum_offset;
-	if (unlikely(start >= len || field + sizeof(__sum16) > len ||
-		     skb_copy_bits(skb, 0, buf, start)))
+	if (unlikely(start >= len || field + sizeof(__sum16) > len))
 		return -EINVAL;
-	csum = skb_copy_and_csum_bits(skb, start, buf + start, len - start);
+	if (priv->tx_csum_hw) {
+		if (unlikely(skb_copy_bits(skb, 0, buf, len)))
+			return -EINVAL;
+		if (likely(emz_tx_csum_by_mac(priv, buf, len, start, skb->csum_offset)))
+			return 0;
+		/* the field holds the stack's pseudo-header sum, as below */
+		csum = csum_partial(buf + start, len - start, 0);
+	} else {
+		if (unlikely(skb_copy_bits(skb, 0, buf, start)))
+			return -EINVAL;
+		csum = skb_copy_and_csum_bits(skb, start, buf + start, len - start);
+	}
 	put_unaligned(csum_fold(csum) ?: CSUM_MANGLED_0, (__sum16 *)(buf + field));
 	return 0;
 }
@@ -638,7 +755,7 @@ static netdev_tx_t emz_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	slot = &priv->tx[idx];
 	/* the slot stays mapped: take it back for the CPU before writing it */
 	dma_sync_single_for_cpu(priv->tx_dma_dev, slot->dma, len, DMA_TO_DEVICE);
-	if (unlikely(emz_tx_copy(skb, slot->buf)))
+	if (unlikely(emz_tx_copy(priv, skb, slot->buf)))
 		goto drop;
 	dma_sync_single_for_device(priv->tx_dma_dev, slot->dma, len, DMA_TO_DEVICE);
 	skb_tx_timestamp(skb);
@@ -1142,6 +1259,45 @@ static void emz_set_rx_mode(struct net_device *ndev)
 	emz_ctrl_update(priv, EMZ_CTRL_PROMISC, promisc ? EMZ_CTRL_PROMISC : 0);
 }
 
+static void emz_csum_apply(struct emz_priv *priv, netdev_features_t features)
+{
+	priv->tx_csum_hw = priv->has_tx_csum && (features & NETIF_F_HW_CSUM);
+	priv->rx_csum_hw = priv->has_rx_csum && (features & NETIF_F_RXCSUM);
+	emz_ctrl_update(priv, EMZ_CTRL_TX_CSUM | EMZ_CTRL_RX_CSUM,
+			(priv->tx_csum_hw ? EMZ_CTRL_TX_CSUM : 0) |
+			(priv->rx_csum_hw ? EMZ_CTRL_RX_CSUM : 0));
+}
+
+/*
+ * The MAC takes the CTRL checksum bits as each frame starts. Changed with
+ * frames in flight, a TX frame left to the inserter could leave without its
+ * checksum, or an RX frame received before the checker was on be passed up
+ * as checked: change them with the datapath down. Frames in flight are lost.
+ */
+static int emz_set_features(struct net_device *ndev, netdev_features_t features)
+{
+	struct emz_priv *priv = netdev_priv(ndev);
+	bool tx = priv->has_tx_csum && (features & NETIF_F_HW_CSUM);
+	bool rx = priv->has_rx_csum && (features & NETIF_F_RXCSUM);
+	int ret;
+
+	if (tx == priv->tx_csum_hw && rx == priv->rx_csum_hw)
+		return 0;
+	if (!priv->datapath_up) {
+		emz_csum_apply(priv, features);
+		return 0;
+	}
+	emz_datapath_down(priv);
+	emz_csum_apply(priv, features);
+	ret = emz_datapath_up(priv);
+	if (ret) {
+		/* as in emz_reset_work(): no datapath, so no interface */
+		netdev_err(ndev, "datapath restart failed (%d), closing the interface\n", ret);
+		dev_close(ndev);
+	}
+	return 0;
+}
+
 static int emz_ioctl(struct net_device *ndev, struct ifreq *rq, int cmd)
 {
 	struct emz_priv *priv = netdev_priv(ndev);
@@ -1157,6 +1313,7 @@ static const struct net_device_ops emz_netdev_ops = {
 	.ndo_set_mac_address	= emz_set_mac_address,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_rx_mode	= emz_set_rx_mode,
+	.ndo_set_features	= emz_set_features,
 	.ndo_eth_ioctl		= emz_ioctl,
 	.ndo_get_stats64	= dev_get_tstats64,
 };
@@ -1306,7 +1463,7 @@ static int emz_probe(struct platform_device *pdev)
 	const char *managed;
 	phy_interface_t iface;
 	unsigned int i;
-	u32 ver, max_speed;
+	u32 ver, caps, max_speed;
 	int ret;
 
 	ndev = devm_alloc_etherdev(dev, sizeof(*priv));
@@ -1354,6 +1511,12 @@ static int emz_probe(struct platform_device *pdev)
 	emz_wr(priv, EMZ_MCAST_LO, 1);
 	priv->has_mcast_hash = emz_rd(priv, EMZ_MCAST_LO) == 1;
 	emz_wr(priv, EMZ_MCAST_LO, 0);
+
+	/* CTRL's checksum bits read back as written whatever the build: ask CAPS */
+	caps = emz_rd(priv, EMZ_CAPS);
+	priv->has_tx_csum = caps & EMZ_CAPS_TX_CSUM;
+	priv->has_rx_csum = caps & EMZ_CAPS_RX_CSUM;
+	priv->max_frame = FIELD_GET(EMZ_CAPS_MAX_FRAME, caps);
 
 	/* the channels are taken at ifup; here only defer until they exist */
 	ret = emz_request_chans(priv);
@@ -1435,14 +1598,16 @@ static int emz_probe(struct platform_device *pdev)
 	ndev->min_mtu = ETH_MIN_MTU;
 	ndev->max_mtu = ETH_DATA_LEN;
 	/*
-	 * Every frame is copied into a bounce buffer, so take fragments and
-	 * sum the checksum during that copy: the stack then skips its own
-	 * linearising copy and checksum pass. The MAC's checksum inserter
-	 * (TX_CSUM_OFFLOAD) is not used: the driver cannot tell whether a core
-	 * was built with it.
+	 * Every frame is copied into a bounce buffer, so take fragments and do
+	 * NETIF_F_HW_CSUM there: the stack then skips its own linearising copy
+	 * and checksum pass. A build with the MAC's inserter writes most TX
+	 * checksums itself, and one with the checker verifies RX checksums.
 	 */
 	ndev->hw_features = NETIF_F_SG | NETIF_F_HW_CSUM;
+	if (priv->has_rx_csum)
+		ndev->hw_features |= NETIF_F_RXCSUM;
 	ndev->features = ndev->hw_features;
+	emz_csum_apply(priv, ndev->features);
 	netif_napi_add(ndev, &priv->napi, emz_poll);
 
 	/* devm actions run in reverse: this one after the netdev is unregistered */
@@ -1465,9 +1630,10 @@ static int emz_probe(struct platform_device *pdev)
 	if (ret)
 		netdev_warn(ndev, "no NAPI thread (%d), NAPI runs in softirq\n", ret);
 
-	netdev_info(ndev, "emacZero rev %lu at %pa, %s, multicast hash %s\n",
+	netdev_info(ndev, "emacZero rev %lu at %pa, %s, multicast hash %s, checksum offload TX %s RX %s\n",
 		    FIELD_GET(EMZ_VERSION_REV, ver), &pdev->resource[0].start,
-		    phy_modes(iface), priv->has_mcast_hash ? "yes" : "no");
+		    phy_modes(iface), priv->has_mcast_hash ? "yes" : "no",
+		    priv->has_tx_csum ? "yes" : "no", priv->has_rx_csum ? "yes" : "no");
 	return 0;
 }
 

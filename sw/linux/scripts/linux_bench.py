@@ -59,8 +59,8 @@ BEGIN, END = "__EMZ_BENCH_BEGIN__", "__EMZ_BENCH_END__"
 
 # Counters the accounting needs in every snapshot.
 REQUIRED = ("hw_tx_frames", "hw_rx_frames", "hw_rx_errors", "hw_rx_err_overflow",
-            "hw_rx_drop_fifo_full", "if_tx_packets", "if_rx_packets", "if_rx_dropped",
-            "if_rx_errors", "if_rx_length_errors", "dmesg_lines")
+            "hw_rx_err_csum", "hw_rx_drop_fifo_full", "if_tx_packets", "if_rx_packets",
+            "if_rx_dropped", "if_rx_errors", "if_rx_length_errors", "dmesg_lines")
 
 
 class BoardError(RuntimeError):
@@ -232,6 +232,7 @@ def accounting(before, after, board):
     notes = [f"TX: MAC {mac_tx:,}, interface {if_tx:,}" + diff(mac_tx, if_tx),
              f"RX: MAC {mac_rx:,} - bad {bad:,} = {mac_rx - bad:,}, interface {if_rx:,}"
              + diff(mac_rx - bad, if_rx),
+             f"MAC RX bad checksum (in bad above) {delta['hw_rx_err_csum']:,}",
              f"MAC RX overflow {delta['hw_rx_err_overflow']:,}, dropped for FIFO full "
              f"{delta['hw_rx_drop_fifo_full']:,}; interface RX dropped "
              f"{delta['if_rx_dropped']:,}, errors {delta['if_rx_errors']:,}, length errors "
