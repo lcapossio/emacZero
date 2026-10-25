@@ -451,6 +451,15 @@ in the driver alone:
   frame in progress. The driver enables the MAC's TX before stopping TX for
   this reason. If something outside the MAC blocks a stream, a stop can hold
   a CPU for minutes.
+- The provider's completion interrupt starts a channel's pending
+  descriptors without the lock its stop path takes. Run just after a stop
+  cleared RUN/STOP, it sets it again, the channel goes idle while running,
+  and the stop polls for a halt that never comes: about 320 s with a CPU
+  held, then "Cannot stop channel" and a reset. The driver lets the TX
+  frames in flight complete (up to 100 ms) before it stops TX, and waits
+  1-2 ms after turning the MAC's RX off before it stops RX, so no completion
+  arrives during a stop. Seen once in 40 datapath restarts under TCP in
+  both directions before the driver did this, never in 140 after.
 
 The driver accepts only `fixed-link` or PHY-managed links; it has no PCS of
 its own, so it rejects `managed = "in-band-status"`. It offers the speeds

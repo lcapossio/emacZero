@@ -20,6 +20,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/dma-mapping.h>
+#include <linux/delay.h>
 #include <linux/dmaengine.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
@@ -134,6 +135,7 @@
 #define EMZ_TX_TIMEOUT		(5 * HZ)
 #define EMZ_WATCHDOG		HZ
 #define EMZ_TX_STALL_TICKS	3	/* watchdog periods without a TX completion */
+#define EMZ_DRAIN_MS		100	/* wait for TX in flight before a stop */
 #define EMZ_NR_STATS		21
 /* fold a counter group into the 64-bit totals once a counter passes this */
 #define EMZ_STAT_FOLD		BIT(31)
@@ -998,6 +1000,32 @@ static int emz_request_chans(struct emz_priv *priv)
 	return 0;
 }
 
+/*
+ * xilinx_dma's completion interrupt starts the channel's pending descriptors,
+ * setting RUN/STOP, without the lock terminate takes: run just after
+ * terminate cleared RUN/STOP, it leaves the channel idle but running, and
+ * terminate polls for minutes for a halt that never comes. Let the frames
+ * in flight complete first, so nothing is left to start. A channel that
+ * really stopped (a TX stall rebuild) times out here and is stopped anyway.
+ */
+static void emz_tx_drain(struct emz_priv *priv)
+{
+	unsigned long end = jiffies + msecs_to_jiffies(EMZ_DRAIN_MS);
+	unsigned int i;
+
+	/* descriptors submitted under xmit_more may not have been started */
+	dma_async_issue_pending(priv->tx_chan);
+	/* NAPI is off, so the tail stays put; the DMA callbacks still run */
+	for (i = priv->tx_tail; i != priv->tx_head; i++) {
+		/* pairs with the release in emz_tx_dma_done() */
+		while (!smp_load_acquire(&priv->tx[i % EMZ_TX_RING].done)) {
+			if (time_after(jiffies, end))
+				return;
+			usleep_range(100, 200);
+		}
+	}
+}
+
 static void emz_datapath_down(struct emz_priv *priv)
 {
 	struct net_device *ndev = priv->ndev;
@@ -1018,8 +1046,11 @@ static void emz_datapath_down(struct emz_priv *priv)
 	 * takes data.
 	 */
 	emz_ctrl_update(priv, 0, EMZ_CTRL_TX_EN);
+	emz_tx_drain(priv);
 	dmaengine_terminate_sync(priv->tx_chan);
 	emz_ctrl_update(priv, EMZ_CTRL_TX_EN | EMZ_CTRL_RX_EN, 0);
+	/* the same race on RX: let the last frame's completion come in first */
+	usleep_range(1000, 2000);
 	dmaengine_terminate_sync(priv->rx_chan);
 
 	netdev_reset_queue(ndev);
