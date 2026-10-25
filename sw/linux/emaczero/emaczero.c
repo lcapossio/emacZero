@@ -38,6 +38,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
+#include <net/page_pool/helpers.h>
 
 #define DRV_NAME "emaczero"
 
@@ -90,6 +91,15 @@
  * to whole cache lines so cache maintenance never touches a neighbour.
  */
 #define EMZ_RX_BUF_LEN		1536
+/*
+ * Each RX buffer is a fragment of a page-pool page: headroom for the stack,
+ * the frame, then the skb's shared info. Cache-line headroom keeps the frame
+ * aligned for the AXI DMA without its data realignment engine. Two buffers
+ * share a 4 KB page, which halves what each frame charges to a socket.
+ */
+#define EMZ_RX_HEADROOM		NET_SKB_PAD
+#define EMZ_RX_FRAG_LEN		roundup_pow_of_two(EMZ_RX_HEADROOM + EMZ_RX_BUF_LEN + \
+						   SKB_DATA_ALIGN(sizeof(struct skb_shared_info)))
 #define EMZ_MAX_TX_LEN		(VLAN_ETH_HLEN + ETH_DATA_LEN)
 /*
  * TX goes through per-slot bounce buffers: the AXI DMA without its data
@@ -105,6 +115,7 @@
  * 128 did not (measurements in sw/linux/README.md).
  */
 #define EMZ_RX_RING		128
+#define EMZ_RX_KICK		16	/* RX descriptors handed over at a time */
 #define EMZ_TX_WAKE		(EMZ_TX_RING / 4)
 #define EMZ_TX_TIMEOUT		(5 * HZ)
 #define EMZ_WATCHDOG		HZ
@@ -124,8 +135,9 @@ struct emz_tx_slot {
 };
 
 struct emz_rx_slot {
-	struct sk_buff *skb;
-	dma_addr_t dma;
+	struct page *page;
+	unsigned int offset;	/* of the fragment in the page */
+	dma_addr_t dma;		/* of the frame, past the headroom */
 	unsigned int len;
 	int status;
 	bool done;
@@ -155,6 +167,8 @@ struct emz_priv {
 
 	struct emz_rx_slot rx[EMZ_RX_RING];
 	struct emz_cb rx_cb[EMZ_RX_RING];
+	struct page_pool *rx_pool;
+	gfp_t rx_gfp;			/* zone the RX channel can reach */
 	unsigned int rx_tail;		/* next slot to complete */
 
 	spinlock_t ctrl_lock;		/* CTRL read-modify-write */
@@ -399,35 +413,65 @@ static int emz_rx_submit(struct emz_priv *priv, unsigned int idx)
 	return dma_submit_error(cookie) ? -EIO : 0;
 }
 
-/* A new RX buffer, mapped for the RX channel's device */
-static struct sk_buff *emz_rx_new(struct emz_priv *priv, dma_addr_t *dma, gfp_t gfp)
+/* Give slot a buffer from the pool, mapped for the RX channel's device */
+static int emz_rx_new(struct emz_priv *priv, struct emz_rx_slot *slot, gfp_t gfp)
 {
-	struct sk_buff *skb;
+	unsigned int offset;
+	struct page *page;
 
-	skb = __netdev_alloc_skb(priv->ndev, EMZ_RX_BUF_LEN, gfp);
-	if (!skb)
-		return NULL;
-	*dma = dma_map_single(priv->rx_dma_dev, skb->data, EMZ_RX_BUF_LEN, DMA_FROM_DEVICE);
-	if (dma_mapping_error(priv->rx_dma_dev, *dma)) {
-		dev_kfree_skb_any(skb);
-		return NULL;
-	}
-	return skb;
+	page = page_pool_alloc_frag(priv->rx_pool, &offset, EMZ_RX_FRAG_LEN,
+				    gfp | __GFP_NOWARN | priv->rx_gfp);
+	if (!page)
+		return -ENOMEM;
+	slot->page = page;
+	slot->offset = offset;
+	slot->dma = page_pool_get_dma_addr(page) + offset + EMZ_RX_HEADROOM;
+	return 0;
 }
 
 static void emz_rx_free_all(struct emz_priv *priv)
 {
 	unsigned int i;
 
+	if (!priv->rx_pool)
+		return;
 	for (i = 0; i < EMZ_RX_RING; i++) {
 		struct emz_rx_slot *slot = &priv->rx[i];
 
-		if (!slot->skb)
+		if (!slot->page)
 			continue;
-		dma_unmap_single(priv->rx_dma_dev, slot->dma, EMZ_RX_BUF_LEN, DMA_FROM_DEVICE);
-		dev_kfree_skb_any(slot->skb);
-		slot->skb = NULL;
+		page_pool_put_full_page(priv->rx_pool, slot->page, false);
+		slot->page = NULL;
 	}
+	page_pool_destroy(priv->rx_pool);
+	priv->rx_pool = NULL;
+}
+
+static int emz_rx_pool_create(struct emz_priv *priv)
+{
+	struct page_pool_params pp = {
+		.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
+		.pool_size = EMZ_RX_RING / (PAGE_SIZE / EMZ_RX_FRAG_LEN),
+		.nid = NUMA_NO_NODE,
+		.dev = priv->rx_dma_dev,
+		.napi = &priv->napi,
+		.netdev = priv->ndev,
+		.dma_dir = DMA_FROM_DEVICE,
+		/* fragments: the whole page is synced back for the device */
+		.max_len = PAGE_SIZE,
+	};
+	struct page_pool *pool;
+
+	pool = page_pool_create(&pp);
+	if (IS_ERR(pool))
+		return PTR_ERR(pool);
+	priv->rx_pool = pool;
+	/*
+	 * An AXI DMA with a 32-bit address width cannot reach all of memory on
+	 * many boards: take pages it can reach, not ones bounced by SWIOTLB.
+	 */
+	priv->rx_gfp = dma_addressing_limited(priv->rx_dma_dev) ? GFP_DMA32 : 0;
+	return 0;
 }
 
 static int emz_rx_poll(struct emz_priv *priv, int budget)
@@ -438,9 +482,9 @@ static int emz_rx_poll(struct emz_priv *priv, int budget)
 	while (done < budget) {
 		unsigned int idx = priv->rx_tail;
 		struct emz_rx_slot *slot = &priv->rx[idx];
-		struct sk_buff *skb, *fresh;
-		unsigned int len;
-		dma_addr_t dma;
+		struct sk_buff *skb;
+		unsigned int len, offset;
+		struct page *page;
 
 		/* pairs with the release in emz_rx_dma_done() */
 		if (!smp_load_acquire(&slot->done))
@@ -452,23 +496,29 @@ static int emz_rx_poll(struct emz_priv *priv, int budget)
 			break;
 		}
 		len = slot->len;
+		page = slot->page;
+		offset = slot->offset;
 
-		fresh = len < ETH_HLEN ? NULL : emz_rx_new(priv, &dma, GFP_ATOMIC);
 		if (len < ETH_HLEN) {
 			DEV_STATS_INC(ndev, rx_length_errors);
-		} else if (!fresh) {
+		} else if (emz_rx_new(priv, slot, GFP_ATOMIC)) {
 			/* no new buffer: drop this frame and post its buffer again */
 			DEV_STATS_INC(ndev, rx_dropped);
 		} else {
-			skb = slot->skb;
-			dma_unmap_single(priv->rx_dma_dev, slot->dma, EMZ_RX_BUF_LEN,
-					 DMA_FROM_DEVICE);
-			slot->skb = fresh;
-			slot->dma = dma;
-			skb_put(skb, len);
-			skb->protocol = eth_type_trans(skb, ndev);
-			dev_sw_netstats_rx_add(ndev, len);
-			napi_gro_receive(&priv->napi, skb);
+			page_pool_dma_sync_for_cpu(priv->rx_pool, page,
+						   offset + EMZ_RX_HEADROOM, len);
+			skb = napi_build_skb(page_address(page) + offset, EMZ_RX_FRAG_LEN);
+			if (unlikely(!skb)) {
+				page_pool_recycle_direct(priv->rx_pool, page);
+				DEV_STATS_INC(ndev, rx_dropped);
+			} else {
+				skb_mark_for_recycle(skb);
+				skb_reserve(skb, EMZ_RX_HEADROOM);
+				skb_put(skb, len);
+				skb->protocol = eth_type_trans(skb, ndev);
+				dev_sw_netstats_rx_add(ndev, len);
+				napi_gro_receive(&priv->napi, skb);
+			}
 		}
 		WRITE_ONCE(priv->rx_progress, priv->rx_progress + 1);
 		done++;
@@ -482,9 +532,16 @@ static int emz_rx_poll(struct emz_priv *priv, int budget)
 		}
 		submitted++;
 		priv->rx_tail = (idx + 1) % EMZ_RX_RING;
+		/*
+		 * The provider starts new descriptors on an idle channel only
+		 * from issue_pending: hand them over in steps, so a channel that
+		 * ran dry does not wait for the whole poll.
+		 */
+		if (submitted % EMZ_RX_KICK == 0)
+			dma_async_issue_pending(priv->rx_chan);
 	}
 
-	if (submitted)
+	if (submitted % EMZ_RX_KICK)
 		dma_async_issue_pending(priv->rx_chan);
 	return done;
 }
@@ -549,7 +606,11 @@ static netdev_tx_t emz_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		netif_stop_queue(ndev);
 		return NETDEV_TX_BUSY;
 	}
-	if (unlikely(len > EMZ_TX_BUF_LEN || READ_ONCE(priv->reset_pending))) {
+	/* skb_copy_and_csum_dev() needs the checksum start in the linear part */
+	if (unlikely(len > EMZ_TX_BUF_LEN || READ_ONCE(priv->reset_pending) ||
+		     (skb->ip_summed == CHECKSUM_PARTIAL &&
+		      skb_checksum_start_offset(skb) > skb_headlen(skb) &&
+		      skb_checksum_help(skb)))) {
 		DEV_STATS_INC(ndev, tx_dropped);
 		dev_kfree_skb_any(skb);
 		goto flush;
@@ -558,7 +619,10 @@ static netdev_tx_t emz_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	slot = &priv->tx[idx];
 	/* the slot stays mapped: take it back for the CPU before writing it */
 	dma_sync_single_for_cpu(priv->tx_dma_dev, slot->dma, len, DMA_TO_DEVICE);
-	skb_copy_bits(skb, 0, slot->buf, len);
+	if (skb->ip_summed == CHECKSUM_PARTIAL)
+		skb_copy_and_csum_dev(skb, slot->buf);
+	else
+		skb_copy_bits(skb, 0, slot->buf, len);
 	dma_sync_single_for_device(priv->tx_dma_dev, slot->dma, len, DMA_TO_DEVICE);
 	skb_tx_timestamp(skb);
 	dev_consume_skb_any(skb);
@@ -617,16 +681,11 @@ static int emz_tx_alloc_all(struct emz_priv *priv)
 	for (i = 0; i < EMZ_TX_RING; i++) {
 		struct emz_tx_slot *slot = &priv->tx[i];
 
-		slot->buf = kmalloc(EMZ_TX_BUF_LEN, GFP_KERNEL);
+		/* within the DMA mask, so no bounce buffer behind this one */
+		slot->buf = dma_alloc_noncoherent(priv->tx_dma_dev, EMZ_TX_BUF_LEN, &slot->dma,
+						  DMA_TO_DEVICE, GFP_KERNEL);
 		if (!slot->buf)
 			return -ENOMEM;
-		slot->dma = dma_map_single(priv->tx_dma_dev, slot->buf, EMZ_TX_BUF_LEN,
-					   DMA_TO_DEVICE);
-		if (dma_mapping_error(priv->tx_dma_dev, slot->dma)) {
-			kfree(slot->buf);
-			slot->buf = NULL;
-			return -ENOMEM;
-		}
 	}
 	return 0;
 }
@@ -640,8 +699,8 @@ static void emz_tx_free_all(struct emz_priv *priv)
 
 		if (!slot->buf)
 			continue;
-		dma_unmap_single(priv->tx_dma_dev, slot->dma, EMZ_TX_BUF_LEN, DMA_TO_DEVICE);
-		kfree(slot->buf);
+		dma_free_noncoherent(priv->tx_dma_dev, EMZ_TX_BUF_LEN, slot->buf, slot->dma,
+				     DMA_TO_DEVICE);
 		slot->buf = NULL;
 	}
 }
@@ -706,6 +765,7 @@ static const struct {
 static void emz_stats_fold(struct emz_priv *priv)
 {
 	bool fold[EMZ_STAT_GROUPS] = { };
+	unsigned long flags;
 	unsigned int i, g;
 
 	lockdep_assert_held(&priv->stats_lock);
@@ -719,12 +779,15 @@ static void emz_stats_fold(struct emz_priv *priv)
 		/*
 		 * A counter loses what it takes between its read and the clear.
 		 * The table lists each group's busiest counters first: read the
-		 * group backwards, so they are read just before the clear.
+		 * group backwards, so they are read just before the clear, and
+		 * keep interrupts (and NAPI behind them) out of that window.
 		 */
+		local_irq_save(flags);
 		for (i = EMZ_NR_STATS; i-- > 0; )
 			if (emz_hw_stats[i].group == g)
 				priv->stats_acc[i] += emz_rd(priv, emz_hw_stats[i].reg);
 		emz_wr(priv, emz_stat_clear[g], 0);
+		local_irq_restore(flags);
 	}
 }
 
@@ -849,12 +912,13 @@ static int emz_datapath_up(struct emz_priv *priv)
 	ret = emz_tx_alloc_all(priv);
 	if (ret)
 		goto err;
+	ret = emz_rx_pool_create(priv);
+	if (ret)
+		goto err;
 	for (i = 0; i < EMZ_RX_RING; i++) {
-		priv->rx[i].skb = emz_rx_new(priv, &priv->rx[i].dma, GFP_KERNEL);
-		if (!priv->rx[i].skb) {
-			ret = -ENOMEM;
+		ret = emz_rx_new(priv, &priv->rx[i], GFP_KERNEL);
+		if (ret)
 			goto err;
-		}
 	}
 
 	netdev_reset_queue(ndev);
@@ -1348,6 +1412,13 @@ static int emz_probe(struct platform_device *pdev)
 	ndev->pcpu_stat_type = NETDEV_PCPU_STAT_TSTATS;
 	ndev->min_mtu = ETH_MIN_MTU;
 	ndev->max_mtu = ETH_DATA_LEN;
+	/*
+	 * Every frame is copied into a bounce buffer, so take fragments and
+	 * fill in the checksum during that copy: the stack then skips its own
+	 * linearising copy and checksum pass.
+	 */
+	ndev->hw_features = NETIF_F_SG | NETIF_F_HW_CSUM;
+	ndev->features = ndev->hw_features;
 	netif_napi_add(ndev, &priv->napi, emz_poll);
 
 	/* devm actions run in reverse: this one after the netdev is unregistered */
