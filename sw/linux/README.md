@@ -32,12 +32,12 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
   (`skb_copy_and_csum_dev()`), so the stack skips its own linearising copy
   and checksum pass. The buffers come from `dma_alloc_noncoherent()`, within
   the DMA channel's address mask.
-- **RX page pool.** Each RX buffer is half of a 4 KB page from a page pool,
-  which maps the page once, recycles it when both halves come back and
-  syncs it for the device then. When the DMA channel cannot address all of
-  memory (an AXI DMA with a 32-bit address width on a board with RAM above
-  4 GB, as on the ZCU106), the pages come from `GFP_DMA32`, so SWIOTLB
-  never bounces them. NAPI hands
+- **RX page pool.** Each RX buffer is a 2 KB fragment of a page from a page
+  pool (two per page with 4 KB pages), which maps the page once, recycles
+  it when all its fragments come back and syncs it for the device then.
+  When the DMA channel cannot address all of memory (an AXI DMA with a
+  32-bit address width on a board with RAM above 4 GB, as on the ZCU106),
+  the pages come from `GFP_DMA32`, so SWIOTLB never bounces them. NAPI hands
   refilled descriptors to the provider every 16, so a channel that ran out
   restarts without waiting for the end of the poll.
 - **Channels per ifup.** The channels are requested on `ifup` and released
@@ -131,6 +131,9 @@ the readings. `--raw` saves the counter snapshots. Records are kept in
 [results/](results/).
 
 ## Status
+
+Results are from before the throughput work of 2026-10-25 unless stated;
+that work and the final build's results are at the end of this section.
 
 Tested on 2026-10-24 on a ZCU106 (xczu7ev, A53 at the Buildroot default
 clocks), Linux 6.12.60 (linux-xlnx `xlnx_rebase_v6.12_LTS`, Buildroot
