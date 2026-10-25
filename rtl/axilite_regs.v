@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
 // axilite_regs.v - AXI4-Lite slave register block for Ethernet MAC
-// 32-bit registers at byte addresses 0x00-0x90.
+// 32-bit registers at byte addresses 0x00-0x98.
 // Verilog 2001
 // =============================================================================
 //
@@ -83,13 +83,22 @@
 //                                 that predate it (unmapped CSRs read 0).
 //   0x80 RX_ERR_CSUM       RO/WC  frames flagged for a wrong IP / L4 checksum
 //                                 (CTRL[9]); otherwise sound frames only
+//   --- Build capabilities (always present; unmapped, so 0, on older cores) ---
+//   0x98 CAPS       RO    [0] MCAST_HASH_FILTER  [1] TX_CSUM_OFFLOAD
+//                         [2] RX_CSUM_OFFLOAD  [15:3] reserved (0)
+//                         [31:16] MAX_FRAME (bytes; never 0, so a nonzero
+//                         read means the core has CAPS)
 // =============================================================================
 
 `include "version.vh"
 
 module axilite_regs #(
     parameter ADDR_WIDTH        = 8,    // 8 bits gives 256-byte CSR space
-    parameter MCAST_HASH_FILTER = 0
+    parameter MCAST_HASH_FILTER = 0,
+    // Reported in CAPS only; the logic they select lives in eth_mac_sys.
+    parameter TX_CSUM_OFFLOAD   = 0,
+    parameter RX_CSUM_OFFLOAD   = 0,
+    parameter MAX_FRAME         = 9018
 )(
     input  wire                    s_axi_aclk,
     input  wire                    s_axi_aresetn,
@@ -197,6 +206,11 @@ module axilite_regs #(
     localparam [31:0] VERSION = {`EMZ_VERSION_MAJOR,
                                  `EMZ_VERSION_MINOR,
                                  `EMZ_VERSION_ID};
+    localparam [15:0] CAPS_MAX_FRAME = MAX_FRAME;
+    localparam [31:0] CAPS = {CAPS_MAX_FRAME, 13'd0,
+                              (RX_CSUM_OFFLOAD   != 0) ? 1'b1 : 1'b0,
+                              (TX_CSUM_OFFLOAD   != 0) ? 1'b1 : 1'b0,
+                              (MCAST_HASH_FILTER != 0) ? 1'b1 : 1'b0};
 
     // Register address offsets (word-aligned, using bits [ADDR_WIDTH-1:2])
     localparam [5:0] A_VERSION    = 6'h00;  // 0x00
@@ -240,6 +254,7 @@ module axilite_regs #(
     localparam [5:0] A_PAUSE_RX_CNT  = 6'h23;  // 0x8C
     localparam [5:0] A_PAUSE_TX_CNT  = 6'h24;  // 0x90
     localparam [5:0] A_SAF_DBG       = 6'h25;  // 0x94 (RO, mii_tx_saf debug)
+    localparam [5:0] A_CAPS          = 6'h26;  // 0x98 (RO, build capabilities)
 
     // =========================================================================
     // Responses always OKAY
@@ -512,6 +527,7 @@ module axilite_regs #(
                     A_RX_ERR:     s_axi_rdata <= stat_rx_err_cnt;
                     A_SCRATCH:    s_axi_rdata <= reg_scratch;
                     A_VERSION:    s_axi_rdata <= VERSION;
+                    A_CAPS:       s_axi_rdata <= CAPS;
                     A_MCAST_LO:   s_axi_rdata <= MCAST_HASH_FILTER ? reg_mcast_lo : 32'd0;
                     A_MCAST_HI:   s_axi_rdata <= MCAST_HASH_FILTER ? reg_mcast_hi : 32'd0;
                     A_RX_ERR_ALIGN:      s_axi_rdata <= stat_rx_err_align_cnt;

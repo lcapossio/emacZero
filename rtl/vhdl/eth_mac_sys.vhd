@@ -70,7 +70,7 @@ entity eth_mac_sys is
         clk             : in  std_logic;   -- system clock, CLK_FREQ_HZ
         rst_n           : in  std_logic;
 
-        -- ---- AXI4-Lite CSR slave (8-bit address: 0x00-0x90 used) ----
+        -- ---- AXI4-Lite CSR slave (8-bit address: 0x00-0x98 used) ----
         s_axi_awaddr    : in  std_logic_vector(7 downto 0);
         s_axi_awvalid   : in  std_logic;
         s_axi_awready   : out std_logic;
@@ -964,7 +964,13 @@ begin
     -- AXI4-Lite CSR
     -- =========================================================================
     u_csr : entity work.axilite_regs
-        generic map (ADDR_WIDTH => 8, MCAST_HASH_FILTER => MCAST_HASH_FILTER)
+        generic map (
+            ADDR_WIDTH        => 8,
+            MCAST_HASH_FILTER => MCAST_HASH_FILTER,
+            TX_CSUM_OFFLOAD   => TX_CSUM_OFFLOAD,
+            RX_CSUM_OFFLOAD   => RX_CSUM_OFFLOAD,
+            MAX_FRAME         => MAX_FRAME
+        )
         port map (
             s_axi_aclk                 => clk,
             s_axi_aresetn              => rst_n,

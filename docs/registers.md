@@ -51,6 +51,7 @@ dropped.
 | `0x8C` | PAUSE_RX_CNT | RO/WC | `0x00000000` | Received PAUSE frames |
 | `0x90` | PAUSE_TX_CNT | RO/WC | `0x00000000` | Transmitted PAUSE frames |
 | `0x94` | SAF_DBG | RO | `0x00000000` | `mii_tx_saf` framer/FIFO debug snapshot (MII path; `0` on RGMII) |
+| `0x98` | CAPS | RO | build | Build parameters software needs: optional features, `MAX_FRAME` |
 
 `*` Present only when `MCAST_HASH_FILTER == 1`. When disabled, both multicast
 hash registers read 0 and writes are ignored.
@@ -255,6 +256,26 @@ quiescent. Reads `0` on the RGMII build (no `mii_tx_saf`). Layout:
 A healthy idle read has `committed == drained`, `rd_empty = 1`, `state = IDLE`.
 `committed == drained` with `rd_empty = 0` while idle indicates uncommitted data
 stuck in the FIFO (the failure mode fixed by the oversized-frame guard).
+
+## 0x98 - CAPS
+
+Read-only. Reports the build parameters that change what software may use,
+so a driver need not be told them separately. Writes are ignored.
+
+| Bits | Field | Meaning |
+|-----:|-------|---------|
+| `[0]` | mcast_hash | `MCAST_HASH_FILTER=1`: MCAST_LO / MCAST_HI exist |
+| `[1]` | tx_csum | `TX_CSUM_OFFLOAD=1`: `CTRL[7]` turns the TX checksum inserter on |
+| `[2]` | rx_csum | `RX_CSUM_OFFLOAD=1`: `CTRL[9]` turns the RX checksum checker on |
+| `[15:3]` | reserved | `0` |
+| `[31:16]` | max_frame | `MAX_FRAME`, in bytes (low 16 bits) |
+
+`CTRL[7]` and `CTRL[9]` read back as written whether or not the logic behind
+them was built, so CAPS is the only way for software to tell. `max_frame` is
+never 0, so a nonzero CAPS means the core has the register. Cores built
+before it read 0 here (unmapped offsets read 0): software should then assume
+no checksum offload and find out about the multicast hash filter by writing
+MCAST_LO and reading it back.
 
 ## Arty UDP Demo Sideband Ports
 

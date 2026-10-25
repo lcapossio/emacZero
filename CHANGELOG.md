@@ -16,6 +16,12 @@ This project does not yet maintain long-lived release branches.
   device tree for the 1000BASE-X shell, and a host-side benchmark script
   (`sw/linux/scripts/linux_bench.py`) that checks iperf3 runs against the
   board's counters. TX and RX are tested on a ZCU106 against a PC.
+- CAPS register at `0x98` (read-only): whether the core was built with the
+  multicast hash filter, the TX checksum inserter and the RX checksum
+  checker, and its `MAX_FRAME`. `CTRL[7]` and `CTRL[9]` read back as written
+  in every build, so software could not tell. Older cores read 0 there.
+  VERSION is unchanged. Added to the Verilog and the VHDL port, proven
+  equivalent.
 - VHDL-93 port of the MAC IP (`rtl/eth_mac_sys.f`) in `rtl/vhdl/`, with the
   filelist `rtl/eth_mac_sys_vhdl.f` and FuseSoC target `vhdl`. Vendor
   selection uses one target package per vendor in `rtl/vhdl/target/`. Every

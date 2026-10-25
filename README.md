@@ -278,6 +278,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0x8C | PAUSE_RX_CNT | RO/WC | Received PAUSE frames |
 | 0x90 | PAUSE_TX_CNT | RO/WC | Transmitted PAUSE frames |
 | 0x94 | SAF_DBG | RO | `mii_tx_saf` framer/FIFO debug snapshot (MII path; 0 on RGMII). See [docs/registers.md](docs/registers.md). |
+| 0x98 | CAPS | RO | Build options: [0] multicast hash filter, [1] TX checksum inserter, [2] RX checksum checker, [31:16] `MAX_FRAME`. 0 on older cores. See [docs/registers.md](docs/registers.md). |
 
 Default CTRL: tx_en=1, rx_en=1, promisc=0, speed=00 (1G), full_duplex=1,
 jumbo_en=0, tx_csum_off=0, passthrough=0, rx_csum_off=0  ->  0x23.
