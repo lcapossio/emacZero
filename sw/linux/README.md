@@ -373,6 +373,44 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
     frames in the soak for lack of room. Counters as below: TX exact in
     every test, RX exact in all but the soak, where the MAC's totals came
     out 1 frame short.
+  - Checksum offload, 2026-10-26: the same block design rebuilt with
+    `TX_CSUM_OFFLOAD=1` and `RX_CSUM_OFFLOAD=1` (CAPS reads 0x05EE0006;
+    timing met with 1.6 ns of setup slack), the driver with checksum
+    offload and the TX drain before a stop:
+    - Benchmark,
+      [results/zcu106-1000basex-2026-10-26-csum.md](results/zcu106-1000basex-2026-10-26-csum.md)
+      (conditions in the record): TCP one direction at a time at 941 Mb/s
+      received and 968 Mb/s sent with no retransmits; UDP towards the board
+      at 933 Mb/s with no gaps; TCP in both directions for 10 s at 828 / 936
+      Mb/s and for 300 s at 826 / 936 Mb/s (the threaded run before:
+      799 / 931). In the soak the MAC dropped 445 of 26.1 million RX frames
+      for lack of room, the interface dropped 1 for want of a buffer, and
+      the MAC's totals came out 1 frame short, as before.
+    - CPU (/proc/stat over 10 s at line rate, four alternating runs per
+      build, same bitstream): sending TCP, 19.3 % of four CPUs against
+      20.5 % without the offload; receiving, 11.2 % against 12.2 % (one
+      run without the offload at 21.2 % left out). A profile with both
+      directions busy has no `do_csum` left; parsing the headers for the
+      offload costs 1.4 % of the samples.
+    - TX: IPv4 UDP datagrams built to sum to zero carried 0xffff, written
+      by the inserter, and every checksum of 60 zero-sum and random
+      datagrams was right at the PC. 3000-byte pings and UDP datagrams
+      (fragmented, so summed in software and left alone by the inserter)
+      got through both ways without loss.
+    - RX: 100 UDP frames with a wrong checksum from the PC were dropped by
+      the MAC and counted in `hw_rx_err_csum`, with no stall rebuild;
+      with `rx-checksumming` off the same frames reached the stack, which
+      counted them as UDP checksum errors. Frames with a wrong IPv4 header
+      checksum never left the PC, so that case is covered only in
+      simulation.
+    - Restarts: 40 offload toggles under TCP in both directions held a CPU
+      for 320 s once (see [Known limits](#known-limits)) before the TX
+      drain; after it, 140 toggles under the same load, each under 10 ms,
+      with iperf3 running through all of them. 20 `ifdown`/`ifup`,
+      unbind/bind and `rmmod`/`insmod` cycles, a TX stall (50 frames in
+      flight) and an RX stall each recovered as before; the RX stall
+      injection also made the DMA report an error once, and the driver
+      rebuilt on that completion.
   - Counters: in every test the MAC's TX frames equalled the interface's TX
     packets, and in all but the soak the MAC's good RX frames equalled the
     interface's RX packets. Over the soak (about 14 folds of the RX group)
