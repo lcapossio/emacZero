@@ -1454,6 +1454,17 @@ static int emz_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "netdev registration failed\n");
 
+	/*
+	 * Threaded NAPI by default: on a ZCU106 with both directions busy it
+	 * received about 100 Mb/s more than NAPI in softirq (see the README).
+	 * /sys/class/net/<if>/threaded switches it back.
+	 */
+	rtnl_lock();
+	ret = dev_set_threaded(ndev, true);
+	rtnl_unlock();
+	if (ret)
+		netdev_warn(ndev, "no NAPI thread (%d), NAPI runs in softirq\n", ret);
+
 	netdev_info(ndev, "emacZero rev %lu at %pa, %s, multicast hash %s\n",
 		    FIELD_GET(EMZ_VERSION_REV, ver), &pdev->resource[0].start,
 		    phy_modes(iface), priv->has_mcast_hash ? "yes" : "no");

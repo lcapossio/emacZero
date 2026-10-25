@@ -24,6 +24,10 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
   accurate residue. Only the AXI DMA with `xilinx_dma` has been tested.
 - **NAPI.** DMA callbacks only record the result and schedule NAPI, which
   completes TX, delivers RX through GRO and refills the ring. TX uses BQL.
+  NAPI runs in its own kernel thread by default (threaded NAPI), which
+  received about 100 Mb/s more with both directions busy on the ZCU106
+  (see [Status](#status)); `echo 0 > /sys/class/net/<if>/threaded` moves it
+  back to softirq.
 - **TX bounce buffers.** Each frame is copied into an aligned per-slot buffer:
   an AXI DMA built without its realignment engine needs buffers aligned to
   its memory bus width, and an skb's Ethernet header usually is not. Since
@@ -302,8 +306,7 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
   against 941 and 963 to 970 with NAPI in softirq (one run each, so the
   sending side may cost something). Pinning the thread showed no further
   gain in these runs, and sharing a core with both DMA interrupts took the
-  gain away.
-  The driver leaves the choice to the user. RX copybreak (frames up to 256
+  gain away. The driver now turns threaded NAPI on at probe. RX copybreak (frames up to 256
   bytes copied into a small skb, the page posted again) made no difference
   measurable against the run-to-run spread and is not in the driver.
 - What the NAPI core still spends its time on with the page pool, both
@@ -332,6 +335,17 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
     300 s at 679 Mb/s received and 911 Mb/s sent, with NAPI in softirq.
     With both directions busy the MAC still drops a few RX frames for lack
     of room (987 of 19.6 million in the soak), which TCP retransmits.
+  - Benchmark with threaded NAPI, the driver's default since, and the zero
+    checksum fix:
+    [results/zcu106-1000basex-2026-10-25-threaded.md](results/zcu106-1000basex-2026-10-25-threaded.md)
+    (same conditions otherwise). TCP one direction at a time at 941 Mb/s
+    received and 962 Mb/s sent with no retransmits; UDP towards the board
+    with a 950 Mb/s target, 930 Mb/s received and no gaps; TCP in both
+    directions for 10 s at 835 / 929 Mb/s and for 300 s at 799 Mb/s
+    received and 931 Mb/s sent. The MAC dropped 467 of 25.9 million RX
+    frames in the soak for lack of room. Counters as below: TX exact in
+    every test, RX exact in all but the soak, where the MAC's totals came
+    out 1 frame short.
   - Counters: in every test the MAC's TX frames equalled the interface's TX
     packets, and in all but the soak the MAC's good RX frames equalled the
     interface's RX packets. Over the soak (about 14 folds of the RX group)
