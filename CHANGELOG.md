@@ -10,7 +10,7 @@ This project does not yet maintain long-lived release branches.
 - Linux netdev driver (work in progress) in `sw/linux/`: an out-of-tree
   module for Linux 6.12 or later that moves frames through dmaengine channels
   (AMD AXI DMA), with NAPI, a page pool for RX buffers, scatter-gather and
-  TX checksum filled in during the TX bounce copy, BQL, phylink, the MAC
+  TX checksum computed over the TX bounce copy, BQL, phylink, the MAC
   counters as 64-bit totals in `ethtool -S` and a watchdog that rebuilds a
   stalled DMA datapath, plus a draft device tree binding (`bard0,emaczero`)
   and a ZCU106 device tree for the 1000BASE-X shell, and a host-side

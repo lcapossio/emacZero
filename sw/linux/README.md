@@ -28,18 +28,34 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
   an AXI DMA built without its realignment engine needs buffers aligned to
   its memory bus width, and an skb's Ethernet header usually is not. Since
   the copy happens anyway, the driver offers scatter-gather and
-  `NETIF_F_HW_CSUM` and fills in the checksum during the copy
-  (`skb_copy_and_csum_dev()`), so the stack skips its own linearising copy
-  and checksum pass. The buffers come from `dma_alloc_noncoherent()`, within
-  the DMA channel's address mask.
+  `NETIF_F_HW_CSUM`, so the stack skips its own linearising copy and
+  checksum pass. For a frame that asks for a checksum, the driver sums it
+  piece by piece as it copies (`skb_copy_and_csum_bits()`; on arm64 each
+  piece is copied and then summed, not in one fused pass) and stores it as
+  `skb_checksum_help()` would, a zero result as 0xffff (a zero UDP checksum
+  means "none" over IPv4 and is invalid over IPv6). The buffers come from
+  `dma_alloc_noncoherent()`, within the DMA channel's address mask.
+- **No checksum offload in the MAC yet.** `eth_mac_sys` can insert TX
+  checksums (`TX_CSUM_OFFLOAD`, CTRL bit 7) and drop RX frames with bad ones
+  (`RX_CSUM_OFFLOAD`, CTRL bit 9), but the driver uses neither: the CTRL bits
+  read back as written whether or not the core was built with the logic, so
+  the driver cannot tell. (The emacz_zephyr ZCU106 shell builds without
+  both.) Using them needs a way to discover them (a capability register or
+  a device tree property). On RX the driver could then only mark frames as
+  checked (`CHECKSUM_UNNECESSARY`) when it has parsed them as within the
+  checker's scope (Ethernet II with at most one VLAN tag, IPv4 or the IPv6
+  fixed header, TCP, UDP or ICMP; not IPv4 fragments or IPv6 extension
+  headers).
 - **RX page pool.** Each RX buffer is a 2 KB fragment of a page from a page
   pool (two per page with 4 KB pages), which maps the page once, recycles
   it when all its fragments come back and syncs it for the device then.
   When the DMA channel cannot address all of memory (an AXI DMA with a
   32-bit address width on a board with RAM above 4 GB, as on the ZCU106),
-  the pages come from `GFP_DMA32`, so SWIOTLB never bounces them. NAPI hands
-  refilled descriptors to the provider every 16, so a channel that ran out
-  restarts without waiting for the end of the poll.
+  the pages come from `GFP_DMA32`, so SWIOTLB does not have to bounce them
+  (checked with `perf` on the ZCU106 only). `xilinx_dma` starts pending
+  descriptors from its completion interrupt, or from `issue_pending` on an
+  idle channel, so NAPI hands refilled descriptors over every 16: a channel
+  that ran dry after its last interrupt does not wait for the whole poll.
 - **Channels per ifup.** The channels are requested on `ifup` and released
   on `ifdown`, as `xilinx_axienet` does. Stopping an AXI DMA channel resets the
   whole core, so stopping the second channel clears the interrupt enables of
@@ -72,7 +88,7 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
   RX disabled. The totals count from driver load (the probe clears the
   MAC's counters). What a counter takes between its read and the clear is
   lost from the totals; the driver reads the busiest counters last, with
-  interrupts off, to keep that window to a few bus cycles.
+  interrupts off, to keep that window short.
 
 The MAC comes out of reset with TX and RX enabled. The driver disables them
 at probe, enables them on `ifup` and disables them on `ifdown`.
@@ -230,11 +246,11 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
   copies the hardware did not need: the ZCU106 has 2 GB of RAM above 4 GB,
   out of reach of the AXI DMA's 32-bit addresses, so SWIOTLB bounced about
   half the RX buffers (a copy on map and on unmap) and TX bounce buffers (a
-  copy on every sync); and without scatter-gather the stack copied and
+  copy on every sync for the device); and without scatter-gather the stack copied and
   checksummed every TCP segment in software before the driver copied it
   again. The changes, in order: buffers within the DMA mask (TX from
   `dma_alloc_noncoherent()`, RX from the DMA zone), scatter-gather with the
-  checksum filled in during the bounce copy, handing RX descriptors over
+  checksum done on the bounce copy, handing RX descriptors over
   every 16, and the RX page pool with two buffers per page. Measured after a kernel
   rebuild with `CONFIG_PAGE_POOL` (module binaries of the earlier builds
   unchanged), same board and PC, the board's iperf3 server pinned to CPU2,
@@ -253,16 +269,19 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
   offered) lost no frame between the MAC and the interface in any build.
   The UDP rate the board sends varies from run to run between two levels,
   about 750 and about 940 Mb/s: six runs of the page-pool build gave 746,
-  936, 917, 886, 751 and 949 Mb/s with scatter-gather on, and six with it
-  off (`ethtool -K eth1 sg off tx off`) a steady 778 to 789 Mb/s. The single
+  936, 917, 886, 751 and 949 Mb/s with scatter-gather on, and six with
+  scatter-gather and TX checksumming both off (`ethtool -K eth1 sg off tx
+  off`; the two were not separated) a steady 778 to 789 Mb/s. The single
   values in the table are one run each; what sets the level was not traced.
 - UDP towards the board with the board's iperf3 not pinned (free to share
   the NAPI core), 950 Mb/s offered, three 10 s runs per build: the build
   above dropped 5.3 to 7.1 % of the datagrams at the receiving socket (its
   receive buffer full; the driver delivered every frame), the final build
   0.4 to 3.3 %. A page pool with one buffer per page dropped 5.3 % in one
-  run: each frame was charged a whole 4 KB page against the socket, which
-  is why the driver puts two buffers in a page.
+  run. With one buffer per page each frame is charged a whole 4 KB page
+  against the socket's receive buffer, close to twice what a 2 KB buffer
+  costs (the skb itself is charged too); one run does not isolate the
+  effect, but it is why the driver puts two buffers in a page.
 - Threaded NAPI against softirq NAPI, last build, both directions, 20 s
   per run, the board's iperf3 on CPU2 (thread and interrupt affinity
   checked before each run; Mb/s received / sent):
@@ -278,21 +297,27 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
   | threaded | CPU3 | CPU3 | 700 / 897 |
 
   Threaded NAPI (`echo 1 > /sys/class/net/eth1/threaded`) adds about
-  100 Mb/s received with both directions busy and costs nothing in one
-  direction (final build: TCP 937 Mb/s received, 942 Mb/s sent, no
-  retransmits); pinning the thread adds
-  nothing, and sharing a core with both DMA interrupts takes the gain away.
+  100 Mb/s received with both directions busy. In one direction at a time
+  it gave TCP 937 Mb/s received and 942 Mb/s sent with no retransmits,
+  against 941 and 963 to 970 with NAPI in softirq (one run each, so the
+  sending side may cost something). Pinning the thread showed no further
+  gain in these runs, and sharing a core with both DMA interrupts took the
+  gain away.
   The driver leaves the choice to the user. RX copybreak (frames up to 256
   bytes copied into a small skb, the page posted again) made no difference
   measurable against the run-to-run spread and is not in the driver.
 - What the NAPI core still spends its time on with the page pool, both
   directions, softirq (`perf`, 20 s): the `xilinx_dma` descriptor path (tasklet, per-descriptor
   allocation, prep, submit, `issue_pending`) about a quarter, the TCP
-  checksum of received segments in GRO plus the TX copy-and-checksum about
-  12 %, and the TX bounce copy. The first needs a lighter provider path or
-  a driver-owned DMA ring; the second, checksum offload in the hardware.
+  checksum of received segments in GRO plus the TX checksum about 12 %,
+  and the TX bounce copy. The first needs a lighter provider path or a
+  driver-owned DMA ring; the second, the MAC's checksum offload (see
+  above).
 - Final build, after the throughput work (same board and PC, 2026-10-25,
-  the kernel with `CONFIG_PAGE_POOL`):
+  the kernel with `CONFIG_PAGE_POOL`). The lifecycle, benchmark, counter
+  and stall results ran before the zero checksum fix below, which changes
+  only how the TX checksum is stored; a profile of the fixed build with
+  both directions busy found no SWIOTLB functions:
   - Lifecycle: 20 `ifdown`/`ifup` cycles, unbind/bind and
     `rmmod`/`insmod`, no errors or page pool warnings, both DMA channels
     keep their interrupt enables, no memory lost.
@@ -300,7 +325,8 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
     [results/zcu106-1000basex-2026-10-25.md](results/zcu106-1000basex-2026-10-25.md)
     (raw counters alongside; the board's iperf3 pinned to CPU2): TCP one
     direction at a time at 941 Mb/s received and 970 Mb/s sent with no
-    retransmits; UDP at 950 Mb/s offered towards the board with every frame
+    retransmits; UDP towards the board with a 950 Mb/s target (the PC's
+    iperf3 sent 912 Mb/s and the board received 879 Mb/s), every frame
     counted by the MAC reaching the interface (iperf3 reported 212 gaps, so
     those datagrams were lost above the driver); TCP in both directions for
     300 s at 679 Mb/s received and 911 Mb/s sent, with NAPI in softirq.
@@ -309,11 +335,11 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
   - Counters: in every test the MAC's TX frames equalled the interface's TX
     packets, and in all but the soak the MAC's good RX frames equalled the
     interface's RX packets. Over the soak (about 14 folds of the RX group)
-    the MAC's totals came out 2 RX frames short: the frames the MAC counted
-    between the read of its frame counter and the clear. The fold runs with
-    interrupts off, which made the TX totals exact over the soak (before,
-    up to 10 frames short), but a frame landing in those few bus cycles is
-    still lost; closing that needs a snapshot in the MAC.
+    the MAC's totals came out 2 RX frames short, consistent with frames the
+    MAC counted between the read of its frame counter and the clear. The
+    fold runs with interrupts off, which made the TX totals exact over the
+    soak (before, up to 10 frames short), but a frame landing in that window
+    is still lost; closing it needs a snapshot in the MAC.
   - TX stall: with the MAC's TX disabled by hand (CTRL TX_EN cleared) under
     1400-byte pings, the watchdog reported "TX DMA stalled, 2 frames in
     flight" and rebuilt the datapath once, within seconds. Before the stop
@@ -323,6 +349,35 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
     500 Mb/s of UDP, the watchdog reported "RX DMA stalled (MAC dropped
     40422 frames)" at its next tick and rebuilt the datapath once. TCP ran
     at 940 / 942 Mb/s afterwards.
+  - Zero checksums: a test program on the board sent IPv4 UDP datagrams of
+    2 to 1472 bytes built so their checksum sums to zero, each written in
+    two pieces, and the PC captured them. The build before this test sent
+    them with 0x0000 ("no checksum"); the driver now sends 0xffff, and
+    tcpdump found every checksum correct, as for random datagrams. The link
+    has no IPv6; the checksum code does not tell the two apart. Sending TCP
+    at line rate, the board's four CPUs were 5.3 % busy with the fix and
+    5.7 % without it (four alternating 10 s samples each, standard deviation
+    about 0.5 %): no measurable cost. The two tests below ran on a build
+    that differed only in how the TX copy sums (copy, then sum the whole
+    frame), which they do not exercise.
+  - RX buffers held by a socket: a UDP socket on the board that never reads
+    held about 16 MB of received skbs (the ring has 128 buffers) while the
+    PC sent UDP at about 660 Mb/s, and the datapath went down and up three
+    ways meanwhile: `ifdown`/`ifup`, an RX stall rebuild and
+    `rmmod`/`insmod`. Then the socket closed. No page pool warnings, and
+    MemFree ended within 5 MB of its start over two runs (leaking the held
+    buffers would cost about 16 MB a run).
+  - Allocation failures, with a test build that fails RX buffer allocations
+    on demand (not part of the driver): `ifup` failing at the 1st, 64th or
+    128th buffer returns -ENOMEM and leaves the interface down, and 200 such
+    failures in a row left slab use unchanged and MemFree within the noise
+    (leaking the partly filled pools would cost about 50 MB). A rebuild
+    failing after an RX stall logged "datapath restart failed (-12), closing
+    the interface", and `ifup` brought it back at 941 / 954 Mb/s. Under
+    500 Mb/s of UDP, failing every 7th refill in NAPI lost 14 % of the
+    datagrams; failing every refill for 8 s dropped all 464,502 frames that
+    arrived, with no stall rebuild and no MAC FIFO drop, and reception
+    resumed when the failures stopped.
   - From the build before the throughput work, not repeated (the code
     involved did not change): PAUSE reception set by hand before a reload
     is off after it; with the board's interface down and the PC sending UDP
@@ -332,7 +387,7 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
 - Not tested yet: IPv6 (the PC port had IPv6 off), the link going down with
   traffic running, the multicast hash filter (needs a core built with
   `MCAST_HASH_FILTER=1`), recovery after an error the DMA reports, a netdev
-  TX timeout, a failed rebuild, PHY-managed (copper) links.
+  TX timeout, PHY-managed (copper) links.
 
 ## Known limits
 

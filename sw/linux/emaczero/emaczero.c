@@ -37,6 +37,7 @@
 #include <linux/skbuff.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/unaligned.h>
 #include <linux/workqueue.h>
 #include <net/page_pool/helpers.h>
 
@@ -533,9 +534,10 @@ static int emz_rx_poll(struct emz_priv *priv, int budget)
 		submitted++;
 		priv->rx_tail = (idx + 1) % EMZ_RX_RING;
 		/*
-		 * The provider starts new descriptors on an idle channel only
-		 * from issue_pending: hand them over in steps, so a channel that
-		 * ran dry does not wait for the whole poll.
+		 * xilinx_dma starts pending descriptors from its completion
+		 * interrupt, or from issue_pending on an idle channel. Hand them
+		 * over in steps, so a channel that ran dry after its last
+		 * interrupt does not wait for the whole poll.
 		 */
 		if (submitted % EMZ_RX_KICK == 0)
 			dma_async_issue_pending(priv->rx_chan);
@@ -592,6 +594,30 @@ static void emz_tx_complete(struct emz_priv *priv)
 		netif_wake_queue(ndev);
 }
 
+/*
+ * Copy a frame into its bounce buffer. NETIF_F_HW_CSUM is done here: the
+ * checksum of a CHECKSUM_PARTIAL frame is summed piece by piece as it is
+ * copied, and stored as skb_checksum_help() stores it, with a zero result
+ * sent as 0xffff (a zero UDP checksum means "none" over IPv4 and is invalid
+ * over IPv6).
+ */
+static int emz_tx_copy(struct sk_buff *skb, u8 *buf)
+{
+	unsigned int len = skb->len, start, field;
+	__wsum csum;
+
+	if (skb->ip_summed != CHECKSUM_PARTIAL)
+		return skb_copy_bits(skb, 0, buf, len);
+	start = skb_checksum_start_offset(skb);
+	field = start + skb->csum_offset;
+	if (unlikely(start >= len || field + sizeof(__sum16) > len ||
+		     skb_copy_bits(skb, 0, buf, start)))
+		return -EINVAL;
+	csum = skb_copy_and_csum_bits(skb, start, buf + start, len - start);
+	put_unaligned(csum_fold(csum) ?: CSUM_MANGLED_0, (__sum16 *)(buf + field));
+	return 0;
+}
+
 static netdev_tx_t emz_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct emz_priv *priv = netdev_priv(ndev);
@@ -606,23 +632,14 @@ static netdev_tx_t emz_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		netif_stop_queue(ndev);
 		return NETDEV_TX_BUSY;
 	}
-	/* skb_copy_and_csum_dev() needs the checksum start in the linear part */
-	if (unlikely(len > EMZ_TX_BUF_LEN || READ_ONCE(priv->reset_pending) ||
-		     (skb->ip_summed == CHECKSUM_PARTIAL &&
-		      skb_checksum_start_offset(skb) > skb_headlen(skb) &&
-		      skb_checksum_help(skb)))) {
-		DEV_STATS_INC(ndev, tx_dropped);
-		dev_kfree_skb_any(skb);
-		goto flush;
-	}
+	if (unlikely(len > EMZ_TX_BUF_LEN || READ_ONCE(priv->reset_pending)))
+		goto drop;
 
 	slot = &priv->tx[idx];
 	/* the slot stays mapped: take it back for the CPU before writing it */
 	dma_sync_single_for_cpu(priv->tx_dma_dev, slot->dma, len, DMA_TO_DEVICE);
-	if (skb->ip_summed == CHECKSUM_PARTIAL)
-		skb_copy_and_csum_dev(skb, slot->buf);
-	else
-		skb_copy_bits(skb, 0, slot->buf, len);
+	if (unlikely(emz_tx_copy(skb, slot->buf)))
+		goto drop;
 	dma_sync_single_for_device(priv->tx_dma_dev, slot->dma, len, DMA_TO_DEVICE);
 	skb_tx_timestamp(skb);
 	dev_consume_skb_any(skb);
@@ -672,6 +689,11 @@ flush:
 	if (!netdev_xmit_more())
 		dma_async_issue_pending(priv->tx_chan);
 	return NETDEV_TX_OK;
+
+drop:
+	DEV_STATS_INC(ndev, tx_dropped);
+	dev_kfree_skb_any(skb);
+	goto flush;
 }
 
 static int emz_tx_alloc_all(struct emz_priv *priv)
@@ -1414,8 +1436,10 @@ static int emz_probe(struct platform_device *pdev)
 	ndev->max_mtu = ETH_DATA_LEN;
 	/*
 	 * Every frame is copied into a bounce buffer, so take fragments and
-	 * fill in the checksum during that copy: the stack then skips its own
-	 * linearising copy and checksum pass.
+	 * sum the checksum during that copy: the stack then skips its own
+	 * linearising copy and checksum pass. The MAC's checksum inserter
+	 * (TX_CSUM_OFFLOAD) is not used: the driver cannot tell whether a core
+	 * was built with it.
 	 */
 	ndev->hw_features = NETIF_F_SG | NETIF_F_HW_CSUM;
 	ndev->features = ndev->hw_features;
