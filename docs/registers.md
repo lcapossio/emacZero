@@ -161,8 +161,8 @@ Both are 16-bit values in bits `[15:0]`; upper bits read as 0.
 
 | Offset | Name | Counts |
 |-------:|------|--------|
-| `0x28` | TX_FRAME | Frames accepted by TX. |
-| `0x2C` | TX_BYTE | Payload + header bytes transmitted. |
+| `0x28` | TX_FRAME | Frames transmitted, each counted once it has ended: user frames and the MAC's own PAUSE frames (also in PAUSE_TX_CNT). On MII it counts at the wire, after the frame and its IFG; frames still in the TX FIFO are not counted yet. On GMII and RGMII it counts at the framer's output, ahead of the TX CDC FIFO, so a frame is counted before it has left that FIFO, and a frame the framer aborts with `tx_er` (the source left a gap, or the frame passed `MAX_FRAME`) counts too. |
+| `0x2C` | TX_BYTE | Bytes with TX_EN high, counted where TX_FRAME counts: preamble and SFD, the frame with its padding, and the FCS. A 1518-byte frame (FCS included) counts 1526. |
 | `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. While RX is disabled (CTRL[1]=0) the MAC drains its own FIFO with `m_axis_tvalid` held low, and frames drained that way are counted here too. |
 | `0x34` | RX_BYTE | Bytes with `rx_dv` on the MAC's GMII input, whether or not the frame is delivered. |
 | `0x38` | RX_ERR | Frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, oversize, runt, or with CTRL[9] a wrong checksum), counted on the same handshake as RX_FRAME, including frames drained while RX is disabled. The core does not drop them; the consumer must discard them. |
@@ -236,6 +236,11 @@ PAUSE_RX_CNT counts valid PAUSE frames received: destination
 `rx_er` after the SFD, and at least 64 bytes. It counts them whether or not
 `PAUSE_CTRL[1]` is set; only with `rx_en` does a frame's quanta hold off
 transmission. A frame that fails any check is ignored.
+
+PAUSE_TX_CNT counts PAUSE frames the MAC sends (`PAUSE_CTRL[0]`), one clock
+after the frame's last byte is handed on: to the TX framer on GMII and RGMII,
+to the TX FIFO on MII. TX_FRAME counts the same frame later, so until then
+PAUSE_TX_CNT is ahead of it.
 
 ## 0x94 - SAF_DBG
 

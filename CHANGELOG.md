@@ -67,6 +67,20 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `eth_mac_tx` (GMII and RGMII builds): when `tx_start_ok` fell on the cycle a
+  frame's first byte was handshaken, the framer dropped that byte, though the
+  source had seen it accepted, and once `tx_start_ok` rose sent the frame from
+  its second byte with a valid FCS. In `eth_mac_sys` this happened when an
+  inbound PAUSE frame (with `PAUSE_CTRL[1]` set) loaded the pause timer on
+  that cycle. The framer now keeps the byte and starts the frame once
+  `tx_start_ok` is high again. Same fix in the VHDL port. New cocotb suite
+  `eth_mac_tx_start`.
+- `docs/registers.md`: TX_FRAME was described as frames "accepted"; it counts
+  frames once they have ended, PAUSE frames and (on GMII and RGMII) aborted
+  frames included, at the wire on MII and at the framer's output, ahead of
+  the TX CDC FIFO, on GMII and RGMII. TX_BYTE was described as payload and
+  header bytes; it counts every byte with TX_EN at the same point, preamble,
+  SFD, padding and FCS included. PAUSE_TX_CNT is now described too.
 - `emaczero.core`: `rtl_core` did not list `rtl/mii_tx_saf.v`, so FuseSoC
   builds of the `default` and `with_l3` targets could not elaborate
   `eth_mac_sys` on its default MII path.
