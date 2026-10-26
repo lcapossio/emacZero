@@ -257,13 +257,14 @@ module eth_mac_rx #(
 
             // Summed with the received checksum in place, a correct datagram
             // sums to 0xFFFF. A UDP checksum of 0 means "none" over IPv4 and
-            // is invalid over IPv6 (RFC 8200 8.1), whatever the sum.
+            // is allowed per socket over IPv6 (RFC 6935/6936), so it passes
+            // unjudged over both and software applies its own policy.
             wire hdr_whole = ({1'b0, c_hdr_end} + 15'd4 <= {1'b0, byte_cnt});
             wire whole     = ({1'b0, c_l3_end}  + 15'd4 <= {1'b0, byte_cnt});
             wire udp_zero  = c_l4_udp && (c_l4_field == 16'h0000);
             wire ip_bad    = c_ip4 && hdr_whole && (c_ip_sum != 16'hFFFF);
-            wire l4_bad    = c_done && whole && c_l4_ok &&
-                             (udp_zero ? !c_ip4 : (c_l4_sum != 16'hFFFF));
+            wire l4_bad    = c_done && whole && c_l4_ok && !udp_zero &&
+                             (c_l4_sum != 16'hFFFF);
             assign csum_bad_now = csum_en_r && (ip_bad || l4_bad);
         end else begin : g_no_csum
             assign csum_bad_now = 1'b0;
