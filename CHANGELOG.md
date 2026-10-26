@@ -67,6 +67,16 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- RX checksum offload (`RX_CSUM_OFFLOAD=1`, CTRL[9]) no longer fails an IPv6
+  UDP datagram whose checksum is 0: it ended with `m_axis_terror` and counted
+  in `RX_ERR_CSUM`, so it was dropped before software could apply its policy.
+  RFC 6935/6936 let a receiver accept such datagrams per socket (Linux
+  `udp6zerocsumrx`, e.g. VXLAN). A UDP checksum of 0 is now passed unjudged
+  over IPv4 and IPv6 and left to software, which must not report it as
+  verified. Wrong nonzero checksums still fail. Verilog and VHDL changed
+  alike; `eth_mac_rx` and the proofs that contain it were re-proven.
+  `ETH-MAC-SYS-CSUM-LOOP` adds IPv6 cases (checksum 0 passes, a wrong one is
+  flagged), and the `eth_mac_rx_csum` cocotb suite checks both.
 - `emaczero.core`: `rtl_core` did not list `rtl/mii_tx_saf.v`, so FuseSoC
   builds of the `default` and `with_l3` targets could not elaborate
   `eth_mac_sys` on its default MII path.

@@ -81,7 +81,7 @@ across all three on every run.
 | `[6]` | `jumbo_en` | `0` | Accept frames up to `MAX_FRAME` wire bytes instead of 1518 (1522 with an 802.1Q / 802.1ad tag). Both limits count the FCS; jumbo never lowers the limit below the standard one. |
 | `[7]` | `tx_csum_off` | `0` | TX checksum insertion when `TX_CSUM_OFFLOAD=1`: the IPv4 header checksum and the TCP / UDP / ICMP / ICMPv6 checksum are computed and written, whatever software put there, within the scope below (outside it the L4 field is left as software wrote it). Sampled at each frame's first byte, so it may change at any time. No datapath effect when the parameter is 0. |
 | `[8]` | `passthrough` | `0` | Sniffer mode: bypass MAC filter and deliver errored frames tagged via `m_axis_terror`. |
-| `[9]` | `rx_csum_off` | `0` | RX checksum verification when `RX_CSUM_OFFLOAD=1`: a frame whose IPv4 header or TCP / UDP / ICMP / ICMPv6 checksum is wrong ends with `m_axis_terror` and counts in `RX_ERR` and `RX_ERR_CSUM`. The frame is still delivered: the consumer must discard it. Sampled at each frame's SFD. No effect when the parameter is 0. |
+| `[9]` | `rx_csum_off` | `0` | RX checksum verification when `RX_CSUM_OFFLOAD=1`: a frame whose IPv4 header or TCP / UDP / ICMP / ICMPv6 checksum is wrong ends with `m_axis_terror` and counts in `RX_ERR` and `RX_ERR_CSUM`; a UDP checksum of 0 is not judged (see below). The frame is still delivered: the consumer must discard it. Sampled at each frame's SFD. No effect when the parameter is 0. |
 | `[31:10]` | reserved | `0` | Reads as 0; writes ignored. |
 
 Checksum offload scope (both directions): Ethernet II with at most one 802.1Q
@@ -100,10 +100,14 @@ unchanged and unchecked (the IPv4 header checksum is still handled):
   as it has arrived).
 
 IPv6 packets with extension headers, and anything inside a tunnel, pass
-through unchanged and unchecked. On RX a UDP checksum of 0 means "no
-checksum" and passes over IPv4, and is an error over IPv6 (RFC 8200); on TX a
-UDP checksum that computes to 0 is sent as 0xFFFF. A driver should therefore claim RX checksum offload only for
-the packets above and verify the rest itself (for Zephyr, report the
+through unchanged and unchecked. On RX a UDP checksum of 0 is not judged, over
+IPv4 or IPv6: it means "no checksum" over IPv4, and over IPv6 RFC 6935/6936
+let a receiver accept it per socket (Linux: `udp6zerocsumrx`, e.g. for
+VXLAN), so the frame passes without `terror` or a count in `RX_ERR_CSUM` and
+software applies its own policy. On TX a UDP checksum that computes to 0 is
+sent as 0xFFFF. A driver should therefore claim RX checksum offload only for
+the packets above, not report a datagram with a zero UDP checksum as
+verified, and verify the rest itself (for Zephyr, report the
 per-protocol capabilities and keep IPv6 extension-header and fragment checks
 in software). RX checksum offload only flags a failing frame with
 `m_axis_terror`; whatever consumes `m_axis` must drop frames that end with it.

@@ -84,7 +84,7 @@ def _check(dut, p: Packet, zero_fields: int, tag: str):
         else:
             field_val = int(dut.l4_field.value)
             if e.l4_udp and field_val == 0:
-                verdict = e.ip4          # "none" over IPv4, invalid over IPv6
+                verdict = True           # "none": passed unjudged, IPv4 or IPv6
             else:
                 verdict = l4_sum == 0xFFFF
             assert verdict == e.l4_good, f"{tag}: l4 verdict sum={l4_sum:04x} good={e.l4_good} ({p})"
@@ -106,6 +106,7 @@ async def directed(dut):
         Packet(family=4, proto=UDP, l4_len=8 + 4, vlan=TPID_8021Q, trailer=bytes(20)),
         Packet(family=4, proto=UDP, l4_len=8, mf=True),         # fragment
         Packet(family=4, proto=UDP, l4_len=8 + 10, udp_zero=True),
+        Packet(family=6, proto=UDP, l4_len=8 + 10, udp_zero=True),
         Packet(family=0, l4_len=50),
     ]
     for n, p in enumerate(cases):

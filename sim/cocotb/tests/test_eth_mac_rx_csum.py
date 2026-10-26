@@ -115,6 +115,7 @@ async def directed(dut):
         Packet(family=4, proto=TCP, l4_len=20 + 33, ihl=6, bad_l4=True),
         Packet(family=4, proto=ICMP, l4_len=8 + 56, bad_l4=True),
         Packet(family=6, proto=UDP, l4_len=8 + 9, bad_l4=True),
+        Packet(family=6, proto=UDP, l4_len=8 + 9, udp_zero=True),    # not judged
         Packet(family=6, proto=TCP, l4_len=20 + 100),
         Packet(family=6, proto=ICMPV6, l4_len=8 + 3, bad_l4=True),
         Packet(family=4, proto=UDP, l4_len=8 + 4, vlan=TPID_8021Q, bad_l4=True),
@@ -138,9 +139,13 @@ def _review_cases():
                                         seed=502).build())
     route = bytes([LSRR, 7, 4, 10, 0, 0, 1, 1])
     return [
-        # IPv6 UDP checksum 0 is invalid even when the data sums correctly
-        (v6_zero, True),
+        # UDP checksum 0 over IPv6 passes unjudged, as over IPv4 (RFC 6935/6936
+        # allow it per socket; software decides), whatever the data sums to,
+        # while a wrong nonzero one still fails
+        (v6_zero, False),
         (v6_ffff, False),                       # the same datagram sent right
+        (Packet(family=6, proto=UDP, l4_len=8 + 20, udp_zero=True, seed=514), False),
+        (Packet(family=6, proto=UDP, l4_len=8 + 20, bad_l4=True, seed=515), True),
         # UDP Length shorter than the IP payload
         (Packet(family=4, proto=UDP, l4_len=16, udp_len=12, seed=503), False),
         (Packet(family=4, proto=UDP, l4_len=16, udp_len=12, bad_l4=True, seed=504), True),

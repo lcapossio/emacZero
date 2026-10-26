@@ -12,6 +12,10 @@
 //      with terror, RX_ERR_CSUM and RX_ERR count it.
 //   C. CTRL[7]=0, CTRL[9]=0: delivered unchecked, no terror, no count.
 //   D. Writing RX_ERR_CSUM clears it.
+// Then an IPv6 UDP frame with CTRL[7]=0, CTRL[9]=1:
+//   E. UDP checksum 0: delivered unchanged and unjudged (allowed per socket
+//      by RFC 6935/6936), no terror, RX_ERR_CSUM stays 0.
+//   F. Wrong nonzero UDP checksum: terror, RX_ERR_CSUM counts it.
 // Verilog 2001
 // =============================================================================
 `timescale 1ns / 1ps
@@ -168,10 +172,13 @@ module tb_eth_mac_sys_csum_loop;
     //   [34..41] UDP header, length 26, csum 0xBEEF (correct: 0x4EF6)
     //   [42..59] payload = byte index
     // Correct values from the Python reference in sim/cocotb/lib/csum.py.
-    localparam FRAME_LEN = 60;
-    reg [7:0] frame [0:FRAME_LEN-1];
+    localparam FRAME_LEN  = 60;
+    localparam FRAME6_LEN = 72;
+    reg [7:0] frame [0:FRAME6_LEN-1];
+    integer frame_len;
     integer i;
     initial begin
+        frame_len = FRAME_LEN;
         for (i = 0; i < 6; i = i + 1) frame[i] = 8'hFF;
         frame[6]=8'h02; frame[7]=8'h11; frame[8]=8'h22;
         frame[9]=8'h33; frame[10]=8'h44; frame[11]=8'h55;
@@ -192,14 +199,39 @@ module tb_eth_mac_sys_csum_loop;
             frame[i] = i[7:0];
     end
 
+    // ---- Test frame: IPv6 UDP with the given UDP checksum ----
+    //   [14..53] IPv6 header, payload length 18, fd00::1 -> fd00::2
+    //   [54..61] UDP header, length 18 (correct csum: 0x51C9)
+    //   [62..71] payload = byte index
+    task load_ipv6_frame;
+        input [15:0] udp_csum;
+        begin
+            frame[12] = 8'h86; frame[13] = 8'hDD;
+            for (i = 14; i < 54; i = i + 1) frame[i] = 8'h00;
+            frame[14] = 8'h60;
+            frame[19] = 8'h12;                    // payload length 18
+            frame[20] = 8'h11;                    // next header UDP
+            frame[21] = 8'h40;                    // hop limit
+            frame[22] = 8'hFD; frame[37] = 8'h01; // fd00::1
+            frame[38] = 8'hFD; frame[53] = 8'h02; // fd00::2
+            frame[54] = 8'h12; frame[55] = 8'h34;
+            frame[56] = 8'h56; frame[57] = 8'h78;
+            frame[58] = 8'h00; frame[59] = 8'h12;
+            frame[60] = udp_csum[15:8]; frame[61] = udp_csum[7:0];
+            for (i = 62; i < FRAME6_LEN; i = i + 1)
+                frame[i] = i[7:0];
+            frame_len = FRAME6_LEN;
+        end
+    endtask
+
     task send_frame;
         integer k;
         begin
-            for (k = 0; k < FRAME_LEN; k = k + 1) begin
+            for (k = 0; k < frame_len; k = k + 1) begin
                 @(negedge clk);
                 tx_tdata  = frame[k];
                 tx_tvalid = 1'b1;
-                tx_tlast  = (k == FRAME_LEN - 1);
+                tx_tlast  = (k == frame_len - 1);
                 @(posedge clk);
                 while (!tx_tready) @(posedge clk);
             end
@@ -212,7 +244,7 @@ module tb_eth_mac_sys_csum_loop;
     // ---- RX capture: last frame's checksum fields and terror ----
     integer    rx_pos;
     integer    rx_frames;
-    reg [15:0] rx_ip_csum, rx_udp_csum;
+    reg [15:0] rx_ip_csum, rx_udp_csum, rx_udp6_csum;
     reg        rx_err;
 
     always @(posedge clk) begin
@@ -224,6 +256,8 @@ module tb_eth_mac_sys_csum_loop;
             if (rx_pos == 25) rx_ip_csum[7:0]   <= rx_tdata;
             if (rx_pos == 40) rx_udp_csum[15:8] <= rx_tdata;
             if (rx_pos == 41) rx_udp_csum[7:0]  <= rx_tdata;
+            if (rx_pos == 60) rx_udp6_csum[15:8] <= rx_tdata;
+            if (rx_pos == 61) rx_udp6_csum[7:0]  <= rx_tdata;
             if (rx_tlast) begin
                 rx_err    <= rx_terror;
                 rx_frames <= rx_frames + 1;
@@ -293,6 +327,21 @@ module tb_eth_mac_sys_csum_loop;
         axi_write(8'h80, 32'd0);
         axi_read(8'h80, rd);
         check32("D RX_ERR_CSUM", rd, 32'd0);
+
+        $display("--- E: IPv6 UDP checksum 0, RX verify on ---");
+        load_ipv6_frame(16'h0000);
+        run_frame(32'h0000_0227);
+        check32("E udp csum", {16'd0, rx_udp6_csum}, 32'h0000_0000);
+        check32("E terror",   {31'd0, rx_err},       32'd0);
+        axi_read(8'h80, rd);
+        check32("E RX_ERR_CSUM", rd, 32'd0);
+
+        $display("--- F: IPv6 UDP checksum wrong, RX verify on ---");
+        load_ipv6_frame(16'hBEEF);
+        run_frame(32'h0000_0227);
+        check32("F terror",   {31'd0, rx_err}, 32'd1);
+        axi_read(8'h80, rd);
+        check32("F RX_ERR_CSUM", rd, 32'd1);
 
         if (fail_cnt == 0) begin
             $display("PASS: %0d tests passed", pass_cnt);
