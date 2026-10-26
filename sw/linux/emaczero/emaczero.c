@@ -138,7 +138,8 @@
 #define EMZ_WATCHDOG		HZ
 #define EMZ_TX_STALL_TICKS	3	/* watchdog periods without a TX completion */
 #define EMZ_DRAIN_MS		100	/* wait for TX in flight before a stop */
-#define EMZ_RX_FLUSH_US		1000	/* an RX stream this long idle is empty */
+/* an RX stream this long without a completion is empty: needs xlnx,irq-delay well under it */
+#define EMZ_RX_FLUSH_US		1000
 #define EMZ_TX_SETTLE_US	3000	/* a MAC whose count holds this long is idle */
 #define EMZ_NR_STATS		21
 /* fold a counter group into the 64-bit totals once a counter passes this */

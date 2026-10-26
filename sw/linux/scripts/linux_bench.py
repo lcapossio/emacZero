@@ -279,6 +279,8 @@ def main():
         report += [args.conditions, ""]
     if board:
         info = board.run(f"uname -r; ethtool -i {args.ifname} | head -2; "
+                         f"ethtool -k {args.ifname} | grep -E '^(rx|tx)-checksumming'; "
+                         f"ethtool --show-priv-flags {args.ifname} 2>/dev/null | tail -n +2; "
                          f"pidof iperf3 > /dev/null || iperf3 -s -D").strip()
         report += ["Board: " + ", ".join(info.splitlines()) + "; counters read over "
                    + ("the serial console" if args.serial else

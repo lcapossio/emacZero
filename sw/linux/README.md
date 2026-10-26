@@ -164,7 +164,9 @@ at probe, enables them on `ifup` and disables them on `ifdown`.
   RX ring; above 255 the provider keeps the previous threshold). It leaves
   the delay timer off by default, so a lone frame could wait for
   completions that never come. The timer counts idle time on the stream; the
-  ZCU106 tree uses 12 (10 us at a 150 MHz SG clock).
+  ZCU106 tree uses 12 (10 us at a 150 MHz SG clock). The RX flush before RX
+  enable relies on it too: it takes 1 ms without a completion to mean an
+  empty stream, so the delay must be well under 1 ms.
 
 ## Build
 
@@ -400,8 +402,9 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
     out 1 frame short.
   - Checksum offload, 2026-10-26: the same block design rebuilt with
     `TX_CSUM_OFFLOAD=1` and `RX_CSUM_OFFLOAD=1` (CAPS reads 0x05EE0006;
-    timing met with 1.6 ns of setup slack), the driver with checksum
-    offload and the TX drain before a stop:
+    timing met with 1.6 ns of setup slack), the driver with both offloads
+    on (the inserter was then the default; now `mac-tx-csum on`) and the TX
+    drain before a stop:
     - Benchmark,
       [results/zcu106-1000basex-2026-10-26-csum.md](results/zcu106-1000basex-2026-10-26-csum.md)
       (conditions in the record): TCP one direction at a time at 941 Mb/s
