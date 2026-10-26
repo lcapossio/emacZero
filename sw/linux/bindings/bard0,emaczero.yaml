@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/bard0,emaczero.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: bard0 design emacZero Ethernet MAC
+
+maintainers:
+  - Leonardo Capossio <hello@bard0.com>
+
+description: |
+  emacZero is a 10/100/1000 Mb/s full-duplex Ethernet MAC for FPGAs, with an
+  AXI4-Lite register block and AXI4-Stream frame ports. It has no DMA engine
+  of its own: frames reach memory through DMA channels of a separate
+  controller (for example the AMD AXI DMA), named by "dmas". The MAC's MDIO
+  master, when wired to a PHY, is described by an "mdio" child node.
+
+  Draft, out of tree: the "bard0" vendor prefix is not registered yet.
+
+allOf:
+  - $ref: ethernet-controller.yaml#
+
+properties:
+  compatible:
+    const: bard0,emaczero
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description:
+      MAC event interrupt (TX done, RX frame, MDIO done). Optional; the
+      driver completes packets through the DMA channels.
+
+  dmas:
+    items:
+      - description: memory-to-device channel feeding the MAC's TX stream
+      - description: device-to-memory channel taking the MAC's RX stream
+
+  dma-names:
+    items:
+      - const: tx
+      - const: rx
+
+  phy-mode:
+    description:
+      The MAC build's interface. MII runs at 10/100 Mb/s, GMII at 1000 Mb/s
+      only (also behind a separate PCS for SGMII or 1000BASE-X), RGMII at
+      10/100/1000 Mb/s. An RGMII build limited to 10/100 Mb/s needs
+      max-speed = <100>.
+    enum:
+      - mii
+      - gmii
+      - rgmii
+      - rgmii-id
+      - rgmii-rxid
+      - rgmii-txid
+      - sgmii
+      - 1000base-x
+
+  managed:
+    description:
+      The MAC has no PCS of its own, so it cannot take the link state from
+      in-band signalling. Use a PHY, or a fixed-link (with link-gpios for a
+      PCS status line).
+    const: auto
+
+  mdio:
+    $ref: mdio.yaml#
+    unevaluatedProperties: false
+
+required:
+  - compatible
+  - reg
+  - dmas
+  - dma-names
+  - phy-mode
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    ethernet@84a00000 {
+        compatible = "bard0,emaczero";
+        reg = <0x84a00000 0x1000>;
+        interrupts = <GIC_SPI 92 IRQ_TYPE_LEVEL_HIGH>;
+        dmas = <&axi_dma 0>, <&axi_dma 1>;
+        dma-names = "tx", "rx";
+        phy-mode = "1000base-x";
+
+        fixed-link {
+            speed = <1000>;
+            full-duplex;
+            link-gpios = <&pcs_gpio 0 GPIO_ACTIVE_HIGH>;
+        };
+    };
+
+  - |
+    ethernet@40000000 {
+        compatible = "bard0,emaczero";
+        reg = <0x40000000 0x1000>;
+        dmas = <&dma 0>, <&dma 1>;
+        dma-names = "tx", "rx";
+        phy-mode = "mii";
+        phy-handle = <&phy1>;
+
+        mdio {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            phy1: ethernet-phy@1 {
+                reg = <1>;
+            };
+        };
+    };

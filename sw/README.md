@@ -1,6 +1,7 @@
 # emacZero — bare-metal driver
 
 Minimal C driver for `eth_mac_sys` exposed over AXI4-Lite. No OS, no malloc.
+The Linux netdev driver is in [linux/](linux/README.md).
 
 | File | Purpose |
 |------|---------|

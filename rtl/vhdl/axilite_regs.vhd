@@ -2,7 +2,7 @@
 -- Copyright (c) 2026 Leonardo Capossio - bard0 design
 -- =============================================================================
 -- axilite_regs.vhd - AXI4-Lite slave register block for Ethernet MAC
--- 32-bit registers at byte addresses 0x00-0x90.
+-- 32-bit registers at byte addresses 0x00-0x98.
 -- VHDL port of rtl/axilite_regs.v (formally proven equivalent; see sim/parity/).
 -- =============================================================================
 --
@@ -83,6 +83,11 @@
 --                                 that predate it (unmapped CSRs read 0).
 --   0x80 RX_ERR_CSUM       RO/WC  frames flagged for a wrong IP / L4 checksum
 --                                 (CTRL[9]); otherwise sound frames only
+--   --- Build capabilities (always present; unmapped, so 0, on older cores) ---
+--   0x98 CAPS       RO    [0] MCAST_HASH_FILTER  [1] TX_CSUM_OFFLOAD
+--                         [2] RX_CSUM_OFFLOAD  [15:3] reserved (0)
+--                         [31:16] MAX_FRAME (bytes; never 0, so a nonzero
+--                         read means the core has CAPS)
 -- =============================================================================
 
 library ieee;
@@ -94,7 +99,11 @@ use work.emz_version_pkg.all;
 entity axilite_regs is
     generic (
         ADDR_WIDTH        : integer := 8;    -- 8 bits gives 256-byte CSR space
-        MCAST_HASH_FILTER : integer := 0
+        MCAST_HASH_FILTER : integer := 0;
+        -- Reported in CAPS only; the logic they select lives in eth_mac_sys.
+        TX_CSUM_OFFLOAD   : integer := 0;
+        RX_CSUM_OFFLOAD   : integer := 0;
+        MAX_FRAME         : integer := 9018
     );
     port (
         s_axi_aclk    : in  std_logic;
@@ -206,6 +215,20 @@ architecture rtl of axilite_regs is
     constant VERSION : std_logic_vector(31 downto 0) :=
         EMZ_VERSION_MAJOR & EMZ_VERSION_MINOR & EMZ_VERSION_ID;
 
+    function cap_bit(p : integer) return std_logic is
+    begin
+        if p /= 0 then
+            return '1';
+        end if;
+        return '0';
+    end function;
+
+    -- MAX_FRAME's low 16 bits, as the Verilog [15:0] localparam truncates it
+    constant CAPS : std_logic_vector(31 downto 0) :=
+        std_logic_vector(to_unsigned(MAX_FRAME mod 65536, 16)) &
+        "0000000000000" & cap_bit(RX_CSUM_OFFLOAD) &
+        cap_bit(TX_CSUM_OFFLOAD) & cap_bit(MCAST_HASH_FILTER);
+
     -- Register address offsets (word-aligned, using bits [ADDR_WIDTH-1:2]).
     -- Verilog compares the ADDR_WIDTH-2 bit index against these 6-bit codes
     -- with zero extension of the narrower side, i.e. numerically; the case
@@ -252,6 +275,7 @@ architecture rtl of axilite_regs is
     constant A_PAUSE_RX_CNT : integer := 16#23#;  -- 0x8C
     constant A_PAUSE_TX_CNT : integer := 16#24#;  -- 0x90
     constant A_SAF_DBG      : integer := 16#25#;  -- 0x94 (RO, mii_tx_saf debug)
+    constant A_CAPS         : integer := 16#26#;  -- 0x98 (RO, build capabilities)
 
     -- =========================================================================
     -- Registers
@@ -590,6 +614,7 @@ begin
                     when A_RX_ERR =>     s_axi_rdata <= stat_rx_err_cnt;
                     when A_SCRATCH =>    s_axi_rdata <= reg_scratch;
                     when A_VERSION =>    s_axi_rdata <= VERSION;
+                    when A_CAPS =>       s_axi_rdata <= CAPS;
                     when A_MCAST_LO =>
                         if MCAST_HASH_FILTER /= 0 then
                             s_axi_rdata <= reg_mcast_lo;

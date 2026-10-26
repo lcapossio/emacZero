@@ -58,7 +58,7 @@ module eth_mac_sys #(
     input  wire        clk,           // system clock, CLK_FREQ_HZ
     input  wire        rst_n,
 
-    // ---- AXI4-Lite CSR slave (8-bit address: 0x00-0x90 used) ----
+    // ---- AXI4-Lite CSR slave (8-bit address: 0x00-0x98 used) ----
     input  wire [7:0]  s_axi_awaddr,
     input  wire        s_axi_awvalid,
     output wire        s_axi_awready,
@@ -900,7 +900,13 @@ module eth_mac_sys #(
     // =========================================================================
     // AXI4-Lite CSR
     // =========================================================================
-    axilite_regs #(.ADDR_WIDTH(8), .MCAST_HASH_FILTER(MCAST_HASH_FILTER)) u_csr (
+    axilite_regs #(
+        .ADDR_WIDTH        (8),
+        .MCAST_HASH_FILTER (MCAST_HASH_FILTER),
+        .TX_CSUM_OFFLOAD   (TX_CSUM_OFFLOAD),
+        .RX_CSUM_OFFLOAD   (RX_CSUM_OFFLOAD),
+        .MAX_FRAME         (MAX_FRAME)
+    ) u_csr (
         .s_axi_aclk     (clk),
         .s_axi_aresetn   (rst_n),
         .s_axi_awaddr   (s_axi_awaddr),

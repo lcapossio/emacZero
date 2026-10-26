@@ -19,6 +19,8 @@ The bench's MII wire capture is mirrored on the rising edge of the MII clock:
 nibbles low-then-high into a 128-byte buffer until mii_tx_en falls.
 
 Checks, in bench order:
+  0  CAPS (0x98) == {MAX_FRAME 2048, RX_CSUM 0, TX_CSUM_OFFLOAD, MCAST 0}: the
+     wrapper reports its parameters (not in the Verilog bench)
   1  SFD (0xD5) found in the capture (the bench stops here if not)
   2  data_len (bytes after SFD minus 4 FCS bytes) >= 60
   TX_CSUM_OFFLOAD=1:
@@ -168,6 +170,8 @@ async def tb_eth_mac_sys_csum(dut):
 
     dut._log.info("INFO: TX_CSUM_OFFLOAD=%d, CTRL[7] should %s", TX_CSUM_PARAM,
                   "patch checksums" if TX_CSUM_PARAM else "be a no-op")
+    caps = await axil.read(0x98)
+    c.eq("CAPS", caps, (2048 << 16) | (TX_CSUM_PARAM << 1))
     await axil.write(0x04, 0x000000A7)
 
     # Send the frame: driven on the falling edge, tready tested at the next one

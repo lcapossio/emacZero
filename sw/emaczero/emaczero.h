@@ -55,6 +55,7 @@ extern "C" {
 #define EMZ_REG_PAUSE_RX_CNT     0x8Cu
 #define EMZ_REG_PAUSE_TX_CNT     0x90u
 #define EMZ_REG_SAF_DBG          0x94u  /* RO mii_tx_saf debug; 0 on RGMII */
+#define EMZ_REG_CAPS             0x98u  /* RO build capabilities; 0 on older cores */
 
 /* Mirror of rtl/version.vh. build_and_test.py asserts these match. */
 #define EMZ_VERSION_MAJOR        0u
@@ -122,6 +123,16 @@ extern "C" {
  * --------------------------------------------------------------------------- */
 #define EMZ_PAUSE_CTRL_TX_SEND (1u << 0)
 #define EMZ_PAUSE_CTRL_RX_EN   (1u << 1)
+
+/* ---------------------------------------------------------------------------
+ * CAPS register fields (read-only; the whole register reads 0 on cores that
+ * predate it, and MAX_FRAME is never 0 on cores that have it)
+ * --------------------------------------------------------------------------- */
+#define EMZ_CAPS_MCAST_HASH      (1u << 0)
+#define EMZ_CAPS_TX_CSUM         (1u << 1)
+#define EMZ_CAPS_RX_CSUM         (1u << 2)
+#define EMZ_CAPS_MAX_FRAME_SHIFT 16
+#define EMZ_CAPS_MAX_FRAME_MASK  (0xFFFFu << EMZ_CAPS_MAX_FRAME_SHIFT)
 
 /* ---------------------------------------------------------------------------
  * MMIO accessors. Override these macros if your platform needs barriers.

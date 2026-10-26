@@ -12,6 +12,8 @@ expected VERSION comes from rtl/version.vh, like the bench's `include. The
 bench uses no $random. Checks, in bench order:
 
   1   VERSION == {MAJOR, MINOR, ID}
+  1b  CAPS == {MAX_FRAME, 0, RX_CSUM, TX_CSUM, MCAST} for the suite's
+      parameters (TB_CAPS); a write to CAPS changes nothing
   2   SCRATCH write/read 0xDEADBEEF, overwrite 0x12345678
   2b  IP_ADDR reset default 0xC0A889C8, write/read 0xC0A8EDC8, cfg_ip_addr
   3   CTRL default 0x23, cfg_tx_en/rx_en/promisc defaults 1/1/0;
@@ -30,6 +32,7 @@ bench uses no $random. Checks, in bench order:
   14  SCRATCH back-to-back 0x33333333
   15  SCRATCH AW-first partial strb 0xFFFFFF42
 """
+import os
 import re
 from pathlib import Path
 
@@ -44,8 +47,18 @@ SUITES = {
         "toplevel": "axilite_regs",
         "sources": ["rtl/axilite_regs.v"],
         "params": {"ADDR_WIDTH": 8},
+        "env": {"TB_CAPS": "0x233A0000"},  # defaults: MAX_FRAME 9018, no options
+    },
+    "axilite_regs_caps": {
+        "toplevel": "axilite_regs",
+        "sources": ["rtl/axilite_regs.v"],
+        "params": {"ADDR_WIDTH": 8, "MCAST_HASH_FILTER": 1, "TX_CSUM_OFFLOAD": 1,
+                   "RX_CSUM_OFFLOAD": 1, "MAX_FRAME": 1518},
+        "env": {"TB_CAPS": "0x05EE0007"},
     },
 }
+
+EXPECTED_CAPS = int(os.environ.get("TB_CAPS", "0x233A0000"), 0)
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -64,6 +77,7 @@ A_RX_FRAME = 0x30
 A_RX_ERR = 0x38
 A_SCRATCH = 0x3C
 A_IP_ADDR = 0x40
+A_CAPS = 0x98
 
 # Inputs the bench ties to a constant 0.
 TIED_ZERO = [
@@ -249,6 +263,11 @@ async def axilite_regs_tests(dut):
 
     # Test 1: VERSION (read-only)
     chk.eq("VERSION", await axi.read(A_VERSION), expected_version())
+
+    # Test 1b: CAPS (read-only, from the parameters)
+    chk.eq("CAPS", await axi.read(A_CAPS), EXPECTED_CAPS)
+    await axi.write(A_CAPS, 0xFFFFFFFF)
+    chk.eq("CAPS after write", await axi.read(A_CAPS), EXPECTED_CAPS)
 
     # Test 2: SCRATCH write/read
     await axi.write(A_SCRATCH, 0xDEADBEEF)
