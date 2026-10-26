@@ -45,36 +45,61 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
   back as written in every build, so the driver reads the CAPS register
   (0x98) at probe; cores that predate it read 0 there and get no offload.
   The probe message says what it found.
-  - TX: with the inserter on (`tx-checksumming`, on by default), a frame
-    that asks for a TCP or UDP checksum is copied as it is, and the inserter
-    writes the checksum, when the driver's parse finds the frame inside the
-    inserter's scope: at most one VLAN tag, then IPv4 without options and not
-    a fragment, or TCP or UDP right after the IPv6 fixed header; the
-    checksum the stack asks for is that header's; the datagram ends with the
-    frame; and for UDP the Length field covers the rest of the frame. The
-    driver sums any other frame in software, as on cores without the
-    inserter. The inserter is on for every frame, not only those that ask
-    for a checksum: it rewrites the IPv4 header, TCP, UDP, ICMP and ICMPv6
-    checksums of every frame in its scope, whatever they held. Frames whose
-    checksums were right go out unchanged, but a frame sent with a wrong
-    checksum on purpose (a raw socket) leaves with a right one, and an IPv4
-    UDP datagram sent without a checksum (0) leaves with one.
+  - TX: the inserter is off by default and turned on with the private
+    flag `mac-tx-csum` (`ethtool --set-priv-flags eth1 mac-tx-csum on`,
+    which needs `tx-checksumming` on too). It is opt-in because it is one
+    switch for every frame, not a per-frame request: it rewrites the IPv4
+    header, TCP, UDP, ICMP and ICMPv6 checksums of every frame in its scope,
+    whatever they held, and computes them itself. A frame forwarded with a
+    wrong checksum (a payload corrupted before this host) leaves with a right
+    one, which hides the corruption from the receiver; a frame sent with a
+    wrong checksum on purpose (a raw socket) or an IPv4 UDP datagram sent
+    without one (0) leaves with one; and a frame whose checksum field holds
+    something other than the pseudo-header sum Linux leaves there (a
+    `virtio_net_hdr` sender may) gets the MAC's checksum, not the one asked
+    for. With the flag off, TX checksums are summed during the bounce copy
+    (see above), which costs about one point of the four CPUs at line rate.
+    With it on, a frame that asks for a TCP or UDP checksum is copied as it
+    is, and the inserter writes the checksum, when the driver's parse finds
+    the frame inside the inserter's scope: at most one VLAN tag, then IPv4
+    without options and not a fragment, or TCP or UDP right after the IPv6
+    fixed header; the checksum the stack asks for is that header's; the
+    datagram ends with the frame; and for UDP the Length field covers the
+    rest of the frame. The driver sums any other frame in software.
   - RX: with the checker on (`rx-checksumming`, on by default), the MAC ends
     a frame whose IPv4 header, TCP, UDP, ICMP or ICMPv6 checksum is wrong
     with `terror`, so it is dropped before the DMA (see the requirements
     below) and counted in `hw_rx_err_csum` (and `hw_rx_errors`); tcpdump on
     the board does not see it. A frame that arrives was right, if the checker
     looked at it: the driver marks it `CHECKSUM_UNNECESSARY` when its parse
-    finds a TCP or UDP datagram inside the checker's scope, with the same
-    header limits as on TX and the whole datagram inside the frame. The stack
-    checks every other frame itself. The checker also drops IPv6 UDP with a
-    zero checksum, which RFC 6936 allows for some tunnels.
+    finds a TCP datagram, or a UDP datagram with a nonzero checksum, inside
+    the checker's scope, with the same header limits as on TX and the whole
+    datagram inside the frame. The stack checks every other frame itself,
+    including UDP with a zero checksum, which over IPv6 only some sockets
+    accept. This core's checker drops IPv6 UDP with a zero checksum, which
+    RFC 6935 and 6936 allow for some tunnels (see
+    [Known limits](#known-limits)).
   - The MAC takes the CTRL bits as each frame starts, so turning either
-    offload on or off with `ethtool -K` while the interface is up restarts
-    the DMA datapath, as a stall rebuild does, and loses the frames in
-    flight. Otherwise a frame left to the inserter could leave without its
-    checksum, or a frame received before the checker was on be passed up as
-    checked.
+    offload on or off while the interface is up (`ethtool -K`, or the flag)
+    restarts the DMA datapath, as a stall rebuild does, and loses the frames
+    in flight. Three things keep the restart from mixing settings:
+    - Before it stops, the driver waits until the MAC has sent every frame
+      the DMA sent since the datapath came up (the MAC's TX frame counter,
+      less the PAUSE frames it made), since a FIFO in front of the MAC can
+      still hold frames meant for the inserter. When a stop cannot confirm
+      that (a timeout), the next start turns TX on with the DMA idle and
+      waits for the counter to hold still for 3 ms before it counts again.
+    - Before it enables RX again, it takes into the ring and drops whatever
+      waited in the stream between the MAC and the DMA, which was checked,
+      or not, under the old setting: with RX off and descriptors posted, a
+      stream whose next descriptor the provider's interrupt handler has not
+      seen complete for 1 ms is empty. The flush runs at every `ifup` and
+      rebuild, and costs 1 to 2 ms.
+    - The first frame after RX is enabled is never marked. This core's RX_EN
+      gate can cut a frame when RX is turned off, leaving its start in the
+      stream, and the next frame then completes it.
+
+    Each switch took 10 to 20 ms on the ZCU106, idle or under load.
 - **RX page pool.** Each RX buffer is a 2 KB fragment of a page from a page
   pool (two per page with 4 KB pages), which maps the page once, recycles
   it when all its fragments come back and syncs it for the device then.
@@ -411,6 +436,30 @@ no DRE) at 150 MHz, PS DDR through S_AXI_HP0_FPD, non-coherent.
       flight) and an RX stall each recovered as before; the RX stall
       injection also made the DMA report an error once, and the driver
       rebuilt on that completion.
+  - After two reviews of the offload, 2026-10-26: `mac-tx-csum` made
+    opt-in, the TX wait for the MAC's counter, the RX flush before RX enable
+    and the unmarked first frame added, zero UDP checksums left to the
+    stack. Same bitstream:
+    - Stale RX frames: with the PC flooding UDP frames with a wrong checksum
+      (to a port with no listener, about 217,000 a second) and
+      `rx-checksumming` toggled off and on 20 times, the previous build
+      passed 548 of them up as checked (the stack counted them in UDP
+      NoPorts, not checksum errors). With the flush, none in the same test.
+    - TX: line-rate UDP from the board (iperf3 `-R -u -b 950M -l 1400`)
+      captured on the PC while `mac-tx-csum` went on and off 10 times: 0
+      wrong UDP checksums in 1.53 million datagrams. The previous build
+      also showed none when toggling `tx-checksumming`, since at 1G the
+      queue in front of the MAC empties before the stop, so this checks that
+      the wait does not hang, not the case it closes (see
+      [Known limits](#known-limits)). Repeated on the final build: 0 in
+      1.51 million.
+    - 150 toggles (`tx`, `rx` and `mac-tx-csum`) under TCP in both
+      directions, iperf3 running through all of them, with no warning, on
+      both builds; 20 lifecycle rounds of `ifdown`/`ifup`, unbind/bind and
+      `rmmod`/`insmod` clean, with no memory lost after dropping caches.
+    - TCP in both directions for 15 s, no toggles, three alternating runs
+      per build: 870 / 977, 863 / 970 and 878 / 972 Mb/s sent against
+      869 / 972, 867 / 973 and 864 / 957 before these changes.
   - Counters: in every test the MAC's TX frames equalled the interface's TX
     packets, and in all but the soak the MAC's good RX frames equalled the
     interface's RX packets. Over the soak (about 14 folds of the RX group)
@@ -497,7 +546,34 @@ in the driver alone:
   frames in flight complete (up to 100 ms) before it stops TX, and waits
   1-2 ms after turning the MAC's RX off before it stops RX, so no completion
   arrives during a stop. Seen once in 40 datapath restarts under TCP in
-  both directions before the driver did this, never in 140 after.
+  both directions before the driver did this, never in 140 after. Both
+  waits are bounded: a TX channel still busy after 100 ms (the MAC held off
+  by PAUSE frames, or a stall) is stopped anyway, and an RX completion can
+  still come later than the RX wait, so the race is narrowed, not closed.
+
+These come from the MAC:
+
+- The TX inserter is one switch for every frame (see the design notes), so
+  with `mac-tx-csum` on it rewrites checksums the stack did not ask for and
+  ignores the partial sum in the field. A per-frame request would need a
+  sideband the plain AXI DMA does not carry.
+- If the MAC cannot send what is queued in front of it within 100 ms of a
+  stop (PAUSE frames from the link partner), those frames reach the
+  inserter under the new `mac-tx-csum` setting. The driver warns "TX frames
+  still queued in front of the MAC at stop" when the MAC's count falls
+  short; a TX channel that did not finish its DMA in time gives no warning
+  of its own. A MAC held off by PAUSE frames for longer than 3 ms also
+  looks idle to the wait at the next start. Not reproduced on the bench:
+  the PC would not send PAUSE frames, and at 1G without them the queue
+  empties in about 25 us.
+- The RX flush trusts the provider's interrupt handler: a completion whose
+  interrupt is held off for more than 1 ms is missed, and that frame,
+  received under the old checker setting, can be marked as checked.
+- The RX checker drops IPv6 UDP datagrams with a zero checksum, which Linux
+  accepts on sockets that allow them (RFC 6935 and 6936, for example VXLAN
+  with `udp6zerocsumrx`). Turn `rx-checksumming` off for such tunnels. A
+  core whose checker passes them is handled already: the driver leaves zero
+  UDP checksums to the stack.
 
 The driver accepts only `fixed-link` or PHY-managed links; it has no PCS of
 its own, so it rejects `managed = "in-band-status"`. It offers the speeds

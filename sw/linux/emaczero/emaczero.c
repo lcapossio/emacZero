@@ -60,10 +60,12 @@
 #define EMZ_MDIO_RDATA		0x1c
 #define EMZ_IRQ_EN		0x20
 #define EMZ_IRQ_STATUS		0x24
+#define EMZ_TX_FRAME		0x28
 #define EMZ_MCAST_LO		0x44
 #define EMZ_MCAST_HI		0x48
 #define EMZ_RX_DROP		0x7c
 #define EMZ_PAUSE_CTRL		0x84
+#define EMZ_PAUSE_TX		0x90
 #define EMZ_CAPS		0x98
 
 #define EMZ_VERSION_ID		GENMASK(15, 0)
@@ -136,6 +138,8 @@
 #define EMZ_WATCHDOG		HZ
 #define EMZ_TX_STALL_TICKS	3	/* watchdog periods without a TX completion */
 #define EMZ_DRAIN_MS		100	/* wait for TX in flight before a stop */
+#define EMZ_RX_FLUSH_US		1000	/* an RX stream this long idle is empty */
+#define EMZ_TX_SETTLE_US	3000	/* a MAC whose count holds this long is idle */
 #define EMZ_NR_STATS		21
 /* fold a counter group into the 64-bit totals once a counter passes this */
 #define EMZ_STAT_FOLD		BIT(31)
@@ -157,6 +161,7 @@ struct emz_rx_slot {
 	unsigned int len;
 	int status;
 	bool done;
+	dma_cookie_t cookie;	/* of the descriptor last submitted */
 };
 
 struct emz_cb {
@@ -192,9 +197,15 @@ struct emz_priv {
 	bool has_tx_csum;		/* the build has the checksum inserter */
 	bool has_rx_csum;		/* ... and the checker */
 	unsigned int max_frame;		/* longest frame the inserter patches */
+	bool tx_csum_mac;		/* private flag mac-tx-csum: the inserter may be used */
 	/* the inserter / checker is on; changed only with the datapath down */
 	bool tx_csum_hw;
 	bool rx_csum_hw;
+	bool rx_csum_mark;		/* checker on and the RX stream flushed */
+	unsigned int rx_mark_skip;	/* frames to leave unmarked after RX enable */
+	u64 tx_mac_base;		/* the MAC's user TX frames at datapath up */
+	atomic_t tx_failed;		/* TX frames since up the DMA did not send */
+	bool tx_mac_unsure;		/* the last stop may have left frames queued */
 
 	struct work_struct reset_work;	/* DMA error, TX timeout, RX stall */
 	bool datapath_up;		/* channels held, rings allocated */
@@ -388,8 +399,10 @@ static void emz_tx_dma_done(void *param, const struct dmaengine_result *res)
 	/* once done is published NAPI may recycle the slot: decide from locals */
 	slot->status = failed ? -EIO : 0;
 	/* the gate before done, so whoever sees the failed slot sees the gate */
-	if (failed)
+	if (failed) {
+		atomic_inc(&priv->tx_failed);
 		emz_request_reset(priv);
+	}
 	/* status before done: pairs with the acquire in emz_tx_complete() */
 	smp_store_release(&slot->done, true);
 	napi_schedule(&priv->napi);
@@ -432,6 +445,7 @@ static int emz_rx_submit(struct emz_priv *priv, unsigned int idx)
 	desc->callback_result = emz_rx_dma_done;
 	desc->callback_param = &priv->rx_cb[idx];
 	cookie = dmaengine_submit(desc);
+	slot->cookie = cookie;
 	return dma_submit_error(cookie) ? -EIO : 0;
 }
 
@@ -550,6 +564,31 @@ static unsigned int emz_csum_parse(const u8 *buf, unsigned int len, u8 *proto,
 	return 0;
 }
 
+/*
+ * With the checker on, a frame whose checksum it found wrong ends with terror
+ * and the stream before the DMA discards it: one inside its scope that gets
+ * here was right. A zero UDP checksum is not one the checker vouches for
+ * (over IPv6 only some sockets accept it), so leave that to the stack. Nor
+ * is the first frame after RX is enabled: a core whose RX_EN gate cuts a
+ * frame leaves its start in the stream, and the next frame completes it.
+ */
+static bool emz_rx_csum_ok(struct emz_priv *priv, const u8 *buf, unsigned int len)
+{
+	unsigned int l4, l4_len;
+	u8 proto;
+
+	if (!priv->rx_csum_mark)
+		return false;
+	if (priv->rx_mark_skip) {
+		priv->rx_mark_skip--;
+		return false;
+	}
+	l4 = emz_csum_parse(buf, len, &proto, &l4_len);
+	if (!l4)
+		return false;
+	return proto == IPPROTO_TCP || ((const struct udphdr *)(buf + l4))->check;
+}
+
 static int emz_rx_poll(struct emz_priv *priv, int budget)
 {
 	struct net_device *ndev = priv->ndev;
@@ -559,8 +598,7 @@ static int emz_rx_poll(struct emz_priv *priv, int budget)
 		unsigned int idx = priv->rx_tail;
 		struct emz_rx_slot *slot = &priv->rx[idx];
 		struct sk_buff *skb;
-		unsigned int len, offset, l4_len;
-		u8 proto;
+		unsigned int len, offset;
 		struct page *page;
 
 		/* pairs with the release in emz_rx_dma_done() */
@@ -592,14 +630,7 @@ static int emz_rx_poll(struct emz_priv *priv, int budget)
 				skb_mark_for_recycle(skb);
 				skb_reserve(skb, EMZ_RX_HEADROOM);
 				skb_put(skb, len);
-				/*
-				 * With the checker on, a frame whose checksum
-				 * it found wrong ends with terror and the
-				 * stream before the DMA discards it: one inside
-				 * its scope that gets here was right.
-				 */
-				if (priv->rx_csum_hw &&
-				    emz_csum_parse(skb->data, len, &proto, &l4_len))
+				if (emz_rx_csum_ok(priv, skb->data, len))
 					skb->ip_summed = CHECKSUM_UNNECESSARY;
 				skb->protocol = eth_type_trans(skb, ndev);
 				dev_sw_netstats_rx_add(ndev, len);
@@ -787,6 +818,7 @@ static netdev_tx_t emz_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	if (unlikely(dma_submit_error(cookie))) {
 		/* complete the slot as failed so NAPI reclaims it, gate first */
 		slot->status = -EIO;
+		atomic_inc(&priv->tx_failed);
 		emz_request_reset(priv);
 		/* pairs with the acquire in emz_tx_complete() */
 		smp_store_release(&slot->done, true);
@@ -870,7 +902,7 @@ static int emz_poll(struct napi_struct *napi, int budget)
 enum { EMZ_STAT_TX, EMZ_STAT_RX, EMZ_STAT_PAUSE, EMZ_STAT_GROUPS };
 
 static const u16 emz_stat_clear[EMZ_STAT_GROUPS] = {
-	[EMZ_STAT_TX]		= 0x28,
+	[EMZ_STAT_TX]		= EMZ_TX_FRAME,
 	[EMZ_STAT_RX]		= EMZ_RX_DROP,
 	[EMZ_STAT_PAUSE]	= 0x8c,
 };
@@ -880,7 +912,7 @@ static const struct {
 	u16 reg;
 	u8 group;
 } emz_hw_stats[EMZ_NR_STATS] = {
-	{ "hw_tx_frames",		0x28, EMZ_STAT_TX },
+	{ "hw_tx_frames",		EMZ_TX_FRAME, EMZ_STAT_TX },
 	{ "hw_tx_bytes",		0x2c, EMZ_STAT_TX },
 	{ "hw_rx_frames",		0x30, EMZ_STAT_RX },
 	{ "hw_rx_bytes",		0x34, EMZ_STAT_RX },
@@ -900,7 +932,7 @@ static const struct {
 	{ "hw_rx_drop_fifo_full",	EMZ_RX_DROP, EMZ_STAT_RX },
 	{ "hw_rx_err_csum",		0x80, EMZ_STAT_RX },
 	{ "hw_pause_rx",		0x8c, EMZ_STAT_PAUSE },
-	{ "hw_pause_tx",		0x90, EMZ_STAT_PAUSE },
+	{ "hw_pause_tx",		EMZ_PAUSE_TX, EMZ_STAT_PAUSE },
 };
 
 static void emz_stats_fold(struct emz_priv *priv)
@@ -953,14 +985,37 @@ static u64 emz_stat_total(struct emz_priv *priv, unsigned int i)
 	return priv->stats_acc[i] + emz_rd(priv, emz_hw_stats[i].reg);
 }
 
-static u64 emz_rx_drop_total(struct emz_priv *priv)
+static u64 emz_stat_reg_total(struct emz_priv *priv, u32 reg)
 {
 	unsigned int i;
 
 	for (i = 0; i < EMZ_NR_STATS; i++)
-		if (emz_hw_stats[i].reg == EMZ_RX_DROP)
+		if (emz_hw_stats[i].reg == reg)
 			return emz_stat_total(priv, i);
 	return 0;
+}
+
+static u64 emz_rx_drop_total(struct emz_priv *priv)
+{
+	return emz_stat_reg_total(priv, EMZ_RX_DROP);
+}
+
+/*
+ * Frames the MAC has sent, without the PAUSE frames it made itself. PAUSE
+ * counts one as the MAC takes it and TX_FRAME once it is sent, so reading
+ * TX_FRAME first can only come out low. A fold can lose a TX_FRAME count,
+ * which also only makes this low; a lost PAUSE count would make it high,
+ * but the driver never asks the MAC to send PAUSE frames.
+ */
+static u64 emz_tx_mac_frames(struct emz_priv *priv)
+{
+	u64 n;
+
+	mutex_lock(&priv->stats_lock);
+	n = emz_stat_reg_total(priv, EMZ_TX_FRAME);
+	n -= emz_stat_reg_total(priv, EMZ_PAUSE_TX);
+	mutex_unlock(&priv->stats_lock);
+	return n;
 }
 
 /* ------------------------------------------------------- datapath up/down */
@@ -1007,11 +1062,17 @@ static int emz_request_chans(struct emz_priv *priv)
  * terminate polls for minutes for a halt that never comes. Let the frames
  * in flight complete first, so nothing is left to start. A channel that
  * really stopped (a TX stall rebuild) times out here and is stopped anyway.
+ *
+ * A completion means only that the DMA handed the frame on: a FIFO in front
+ * of the MAC (the shell's store-and-forward) can still hold frames, which
+ * would reach the inserter under the next datapath's setting. So wait too
+ * until the MAC has sent every frame the DMA sent since up. A stop that
+ * cannot tell leaves the next datapath to wait for the MAC to go idle.
  */
 static void emz_tx_drain(struct emz_priv *priv)
 {
 	unsigned long end = jiffies + msecs_to_jiffies(EMZ_DRAIN_MS);
-	unsigned int i;
+	unsigned int i, sent;
 
 	/* descriptors submitted under xmit_more may not have been started */
 	dma_async_issue_pending(priv->tx_chan);
@@ -1020,10 +1081,42 @@ static void emz_tx_drain(struct emz_priv *priv)
 		/* pairs with the release in emz_tx_dma_done() */
 		while (!smp_load_acquire(&priv->tx[i % EMZ_TX_RING].done)) {
 			if (time_after(jiffies, end))
-				return;
+				goto unsure;
 			usleep_range(100, 200);
 		}
 	}
+	sent = priv->tx_head - atomic_read(&priv->tx_failed);
+	while ((s32)((u32)(emz_tx_mac_frames(priv) - priv->tx_mac_base) - sent) < 0) {
+		if (time_after(jiffies, end)) {
+			netdev_warn(priv->ndev, "TX frames still queued in front of the MAC at stop\n");
+			goto unsure;
+		}
+		usleep_range(100, 200);
+	}
+	return;
+unsure:
+	priv->tx_mac_unsure = true;
+}
+
+/*
+ * With frames possibly left in front of the MAC by the last stop, let it
+ * send them (TX on, the DMA idle) before taking the count the next stop
+ * waits from: the count must not move for EMZ_TX_SETTLE_US, longer than a
+ * frame takes at 10 Mb/s. A MAC held off by PAUSE frames for longer looks
+ * idle too.
+ */
+static void emz_tx_settle(struct emz_priv *priv)
+{
+	unsigned long end = jiffies + msecs_to_jiffies(EMZ_DRAIN_MS);
+	u64 n = emz_tx_mac_frames(priv), m;
+
+	emz_ctrl_update(priv, 0, EMZ_CTRL_TX_EN);
+	do {
+		usleep_range(EMZ_TX_SETTLE_US, 2 * EMZ_TX_SETTLE_US);
+		m = n;
+		n = emz_tx_mac_frames(priv);
+	} while (n != m && !time_after(jiffies, end));
+	priv->tx_mac_unsure = n != m;
 }
 
 static void emz_datapath_down(struct emz_priv *priv)
@@ -1059,6 +1152,48 @@ static void emz_datapath_down(struct emz_priv *priv)
 	emz_release_chans(priv);
 }
 
+/*
+ * Frames can wait across a stop in the stream between the MAC and the DMA
+ * (the shell's FIFOs), checked or not by the checker as it was set then.
+ * Before RX is enabled, take whatever is there into the ring and drop it:
+ * with RX off and descriptors posted, a stream that completes nothing for
+ * EMZ_RX_FLUSH_US is empty. "Completes" as the provider's interrupt handler
+ * sees it (the cookie), not as its later callback reports it. Called with
+ * NAPI off.
+ */
+static int emz_rx_flush(struct emz_priv *priv)
+{
+	unsigned long end = jiffies + msecs_to_jiffies(EMZ_DRAIN_MS);
+	unsigned int n;
+
+	do {
+		usleep_range(EMZ_RX_FLUSH_US, 2 * EMZ_RX_FLUSH_US);
+		for (n = 0; n < EMZ_RX_RING; n++) {
+			unsigned int idx = priv->rx_tail;
+			struct emz_rx_slot *slot = &priv->rx[idx];
+
+			/* pairs with the release in emz_rx_dma_done() */
+			if (!smp_load_acquire(&slot->done))
+				break;
+			if (slot->status)
+				return -EIO;
+			/* the CPU never read the buffer: post it again as it is */
+			if (emz_rx_submit(priv, idx))
+				return -EIO;
+			priv->rx_tail = (idx + 1) % EMZ_RX_RING;
+		}
+		if (n) {
+			dma_async_issue_pending(priv->rx_chan);
+			continue;
+		}
+		/* nothing reported: done, unless a completion's callback is late */
+		if (dma_async_is_tx_complete(priv->rx_chan, priv->rx[priv->rx_tail].cookie,
+					     NULL, NULL) != DMA_COMPLETE)
+			return 0;
+	} while (!time_after(jiffies, end));
+	return -ETIMEDOUT;
+}
+
 static int emz_datapath_up(struct emz_priv *priv)
 {
 	struct net_device *ndev = priv->ndev;
@@ -1075,6 +1210,7 @@ static int emz_datapath_up(struct emz_priv *priv)
 	priv->tx_tail = 0;
 	priv->rx_tail = 0;
 	priv->reset_pending = false;
+	atomic_set(&priv->tx_failed, 0);
 
 	ret = emz_request_chans(priv);
 	if (ret)
@@ -1092,17 +1228,30 @@ static int emz_datapath_up(struct emz_priv *priv)
 	}
 
 	netdev_reset_queue(ndev);
-	/* before the first completion can call napi_schedule() */
-	napi_enable(&priv->napi);
-
 	for (i = 0; i < EMZ_RX_RING; i++) {
 		ret = emz_rx_submit(priv, i);
-		if (ret) {
-			napi_disable(&priv->napi);
+		if (ret)
 			goto err;
-		}
 	}
 	dma_async_issue_pending(priv->rx_chan);
+
+	ret = emz_rx_flush(priv);
+	if (ret == -ETIMEDOUT)
+		netdev_warn(ndev, "RX stream not empty before RX enable, RX checksums left to the stack\n");
+	else if (ret)
+		goto err;
+	priv->rx_csum_mark = priv->rx_csum_hw && !ret;
+	priv->rx_mark_skip = 1;
+	if (priv->tx_mac_unsure)
+		emz_tx_settle(priv);
+	priv->tx_mac_base = emz_tx_mac_frames(priv);
+
+	/* before RX can complete a frame and call napi_schedule() */
+	napi_enable(&priv->napi);
+	/* and for a completion whose napi_schedule() came while NAPI was off */
+	local_bh_disable();
+	napi_schedule(&priv->napi);
+	local_bh_enable();
 	emz_ctrl_update(priv, 0, EMZ_CTRL_TX_EN | EMZ_CTRL_RX_EN);
 	priv->datapath_up = true;
 	netif_wake_queue(ndev);
@@ -1290,36 +1439,37 @@ static void emz_set_rx_mode(struct net_device *ndev)
 	emz_ctrl_update(priv, EMZ_CTRL_PROMISC, promisc ? EMZ_CTRL_PROMISC : 0);
 }
 
-static void emz_csum_apply(struct emz_priv *priv, netdev_features_t features)
+static void emz_csum_apply(struct emz_priv *priv, bool tx, bool rx)
 {
-	priv->tx_csum_hw = priv->has_tx_csum && (features & NETIF_F_HW_CSUM);
-	priv->rx_csum_hw = priv->has_rx_csum && (features & NETIF_F_RXCSUM);
+	priv->tx_csum_hw = tx;
+	priv->rx_csum_hw = rx;
 	emz_ctrl_update(priv, EMZ_CTRL_TX_CSUM | EMZ_CTRL_RX_CSUM,
-			(priv->tx_csum_hw ? EMZ_CTRL_TX_CSUM : 0) |
-			(priv->rx_csum_hw ? EMZ_CTRL_RX_CSUM : 0));
+			(tx ? EMZ_CTRL_TX_CSUM : 0) | (rx ? EMZ_CTRL_RX_CSUM : 0));
 }
 
 /*
- * The MAC takes the CTRL checksum bits as each frame starts. Changed with
- * frames in flight, a TX frame left to the inserter could leave without its
- * checksum, or an RX frame received before the checker was on be passed up
- * as checked: change them with the datapath down. Frames in flight are lost.
+ * Set the inserter and the checker from the features and the mac-tx-csum
+ * flag. The MAC takes the CTRL checksum bits as each frame starts: change
+ * them with the datapath down, which sends what is queued for the MAC and
+ * flushes what was received under the old setting. Other frames in flight
+ * are lost.
  */
-static int emz_set_features(struct net_device *ndev, netdev_features_t features)
+static int emz_csum_config(struct emz_priv *priv, netdev_features_t features, bool tx_mac)
 {
-	struct emz_priv *priv = netdev_priv(ndev);
-	bool tx = priv->has_tx_csum && (features & NETIF_F_HW_CSUM);
+	struct net_device *ndev = priv->ndev;
+	bool tx = priv->has_tx_csum && tx_mac && (features & NETIF_F_HW_CSUM);
 	bool rx = priv->has_rx_csum && (features & NETIF_F_RXCSUM);
 	int ret;
 
+	priv->tx_csum_mac = tx_mac;
 	if (tx == priv->tx_csum_hw && rx == priv->rx_csum_hw)
 		return 0;
 	if (!priv->datapath_up) {
-		emz_csum_apply(priv, features);
+		emz_csum_apply(priv, tx, rx);
 		return 0;
 	}
 	emz_datapath_down(priv);
-	emz_csum_apply(priv, features);
+	emz_csum_apply(priv, tx, rx);
 	ret = emz_datapath_up(priv);
 	if (ret) {
 		/* as in emz_reset_work(): no datapath, so no interface */
@@ -1327,6 +1477,13 @@ static int emz_set_features(struct net_device *ndev, netdev_features_t features)
 		dev_close(ndev);
 	}
 	return 0;
+}
+
+static int emz_set_features(struct net_device *ndev, netdev_features_t features)
+{
+	struct emz_priv *priv = netdev_priv(ndev);
+
+	return emz_csum_config(priv, features, priv->tx_csum_mac);
 }
 
 static int emz_ioctl(struct net_device *ndev, struct ifreq *rq, int cmd)
@@ -1361,19 +1518,63 @@ static void emz_get_drvinfo(struct net_device *ndev, struct ethtool_drvinfo *inf
 		 FIELD_GET(EMZ_VERSION_REV, emz_rd(priv, EMZ_VERSION)));
 }
 
+/*
+ * mac-tx-csum: let the MAC's inserter write TX checksums. It is off by
+ * default because the inserter is one switch for all frames: it rewrites
+ * the checksums of every frame in its scope, including frames the stack
+ * sent with no checksum to fill in (a forwarded frame with a wrong one
+ * leaves with a right one), and it computes them itself, ignoring the
+ * partial sum the stack left in the field. See the README.
+ */
+#define EMZ_PRIV_MAC_TX_CSUM	BIT(0)
+
 static int emz_get_sset_count(struct net_device *ndev, int sset)
 {
-	return sset == ETH_SS_STATS ? EMZ_NR_STATS : -EOPNOTSUPP;
+	struct emz_priv *priv = netdev_priv(ndev);
+
+	switch (sset) {
+	case ETH_SS_STATS:
+		return EMZ_NR_STATS;
+	case ETH_SS_PRIV_FLAGS:
+		return priv->has_tx_csum ? 1 : 0;
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
 static void emz_get_strings(struct net_device *ndev, u32 sset, u8 *data)
 {
+	struct emz_priv *priv = netdev_priv(ndev);
 	unsigned int i;
 
-	if (sset != ETH_SS_STATS)
-		return;
-	for (i = 0; i < ARRAY_SIZE(emz_hw_stats); i++)
-		ethtool_puts(&data, emz_hw_stats[i].name);
+	switch (sset) {
+	case ETH_SS_STATS:
+		for (i = 0; i < ARRAY_SIZE(emz_hw_stats); i++)
+			ethtool_puts(&data, emz_hw_stats[i].name);
+		break;
+	case ETH_SS_PRIV_FLAGS:
+		if (priv->has_tx_csum)
+			ethtool_puts(&data, "mac-tx-csum");
+		break;
+	}
+}
+
+static u32 emz_get_priv_flags(struct net_device *ndev)
+{
+	struct emz_priv *priv = netdev_priv(ndev);
+
+	return priv->tx_csum_mac ? EMZ_PRIV_MAC_TX_CSUM : 0;
+}
+
+static int emz_set_priv_flags(struct net_device *ndev, u32 flags)
+{
+	struct emz_priv *priv = netdev_priv(ndev);
+
+	if (flags & ~EMZ_PRIV_MAC_TX_CSUM)
+		return -EINVAL;
+	if ((flags & EMZ_PRIV_MAC_TX_CSUM) && !priv->has_tx_csum)
+		return -EOPNOTSUPP;
+	return emz_csum_config(priv, ndev->features, flags & EMZ_PRIV_MAC_TX_CSUM);
 }
 
 static void emz_get_ethtool_stats(struct net_device *ndev, struct ethtool_stats *stats, u64 *data)
@@ -1414,6 +1615,8 @@ static const struct ethtool_ops emz_ethtool_ops = {
 	.get_sset_count		= emz_get_sset_count,
 	.get_strings		= emz_get_strings,
 	.get_ethtool_stats	= emz_get_ethtool_stats,
+	.get_priv_flags		= emz_get_priv_flags,
+	.set_priv_flags		= emz_set_priv_flags,
 	.get_link_ksettings	= emz_get_link_ksettings,
 	.set_link_ksettings	= emz_set_link_ksettings,
 	.nway_reset		= emz_nway_reset,
@@ -1548,6 +1751,8 @@ static int emz_probe(struct platform_device *pdev)
 	priv->has_tx_csum = caps & EMZ_CAPS_TX_CSUM;
 	priv->has_rx_csum = caps & EMZ_CAPS_RX_CSUM;
 	priv->max_frame = FIELD_GET(EMZ_CAPS_MAX_FRAME, caps);
+	/* a previous user may have left frames in front of the MAC */
+	priv->tx_mac_unsure = true;
 
 	/* the channels are taken at ifup; here only defer until they exist */
 	ret = emz_request_chans(priv);
@@ -1631,14 +1836,14 @@ static int emz_probe(struct platform_device *pdev)
 	/*
 	 * Every frame is copied into a bounce buffer, so take fragments and do
 	 * NETIF_F_HW_CSUM there: the stack then skips its own linearising copy
-	 * and checksum pass. A build with the MAC's inserter writes most TX
-	 * checksums itself, and one with the checker verifies RX checksums.
+	 * and checksum pass. A build with the checker verifies RX checksums,
+	 * and one with the inserter writes most TX checksums with mac-tx-csum on.
 	 */
 	ndev->hw_features = NETIF_F_SG | NETIF_F_HW_CSUM;
 	if (priv->has_rx_csum)
 		ndev->hw_features |= NETIF_F_RXCSUM;
 	ndev->features = ndev->hw_features;
-	emz_csum_apply(priv, ndev->features);
+	emz_csum_config(priv, ndev->features, false);
 	netif_napi_add(ndev, &priv->napi, emz_poll);
 
 	/* devm actions run in reverse: this one after the netdev is unregistered */
