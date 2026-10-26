@@ -315,6 +315,8 @@ module eth_mac_sys #(
     // frame is part-way through, so a frame in flight when RX is disabled is
     // still delivered whole, and one in flight when RX is enabled is drained
     // whole; the consumer never sees a frame without its start or its tlast.
+    // Nor does rx_en_eff fall while a beat is offered and not yet taken
+    // (rx_hold): AXI-Stream does not let tvalid drop before the handshake.
     wire [7:0] m_axis_tdata_mac;
     wire       m_axis_tvalid_mac;
     wire       m_axis_tlast_mac;
@@ -325,13 +327,14 @@ module eth_mac_sys #(
     wire       m_axis_tready_mac = rx_en_eff ? m_axis_tready : 1'b1;
     wire       rx_mid_next = (m_axis_tvalid_mac && m_axis_tready_mac) ?
                              !m_axis_tlast_mac : rx_mid;
+    wire       rx_hold     = m_axis_tvalid_mac && rx_en_eff && !m_axis_tready;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rx_mid    <= 1'b0;
             rx_en_eff <= 1'b1;      // CTRL[1] reset value
         end else begin
             rx_mid <= rx_mid_next;
-            if (!rx_mid_next)
+            if (!rx_mid_next && !rx_hold)
                 rx_en_eff <= cfg_rx_en;
         end
     end

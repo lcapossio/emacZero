@@ -74,7 +74,7 @@ across all three on every run.
 | Bits | Name | Reset | Description |
 |-----:|------|:-----:|-------------|
 | `[0]` | `tx_en` | `1` | TX path enable. |
-| `[1]` | `rx_en` | `1` | RX path enable. While 0, `m_axis_tvalid` is held low and the MAC drains received frames itself. A change takes effect at the next frame boundary of the MAC's RX stream: a frame part-way out to `m_axis` when RX is disabled is still delivered whole (it still needs the sink's `tready`), and one part-way through when RX is enabled is drained whole, so the sink never gets a frame without its start or its TLAST. |
+| `[1]` | `rx_en` | `1` | RX path enable. While 0, `m_axis_tvalid` is held low and the MAC drains received frames itself. A change takes effect at the next frame boundary of the MAC's RX stream: a frame part-way out to `m_axis` when RX is disabled, or whose first beat `m_axis` is already offering, is still delivered whole (it still needs the sink's `tready`; `m_axis_tvalid` never drops before a handshake), and one part-way through when RX is enabled is drained whole, so the sink never gets a frame without its start or its TLAST. |
 | `[2]` | `promisc` | `0` | Accept frames regardless of dst-MAC. |
 | `[4:3]` | `speed` | `00` | `00` = 1G, `01` = 100M, `10` = 10M. |
 | `[5]` | `full_duplex` | `1` | Informational only; MAC is full-duplex by construction. |

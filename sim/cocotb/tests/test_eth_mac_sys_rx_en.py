@@ -19,10 +19,15 @@ Sequence (CTRL 0x07 = rx on, 0x05 = rx off; tx_en and promisc set):
      drained whole and the sink sees none of it (the old gate gave it C's
      tail, which a sink still holding A's prefix merged into one frame)
   4  frame D, rx on: arrives whole
+  5  frame E, rx on, sink holding tready low; once E's first beat is offered
+     RX is disabled, and tready comes back 200 clk later: m_axis_tvalid
+     stays high with E's first byte until the handshake (AXI-Stream), and E
+     arrives whole (a gate that only waited for a started frame dropped
+     tvalid and drained E)
 Checks: C was still on its way out when RX was enabled (RX_FRAME 2 then);
-the sink got exactly A and D, each whole (bytes, tlast, tsof on the
+the sink got exactly A, D and E, each whole (bytes, tlast, tsof on the
 first beat only, no terror), and no unfinished frame; RX_FRAME counts all
-four (frames drained while RX is off are counted, docs/registers.md) and
+five (frames drained while RX is off are counted, docs/registers.md) and
 RX_DROP none.
 """
 import cocotb
@@ -152,7 +157,7 @@ async def rx_en_frame_boundary(dut):
     await Timer(100, "ns")
     await axil.write(0x04, CTRL_RX_ON)
 
-    fa, fb, fc, fd = (frame(t) for t in (0xA1, 0xB2, 0xC3, 0xD4))
+    fa, fb, fc, fd, fe = (frame(t) for t in (0xA1, 0xB2, 0xC3, 0xD4, 0xE5))
 
     dut._log.info("--- 1: RX disabled with frame A part-way to the sink ---")
     cocotb.start_soon(send_frame(dut, fa))
@@ -187,11 +192,31 @@ async def rx_en_frame_boundary(dut):
     await send_frame(dut, fd)
     await ClockCycles(dut.clk, 4000)
 
+    dut._log.info("--- 5: RX disabled with frame E's first beat offered ---")
+    await FallingEdge(dut.clk)
+    dut.m_axis_tready.value = 0
+    cocotb.start_soon(send_frame(dut, fe))
+    while True:
+        await FallingEdge(dut.clk)
+        await ReadOnly()
+        if bit(dut.m_axis_tvalid):
+            break
+    await axil.write(0x04, CTRL_RX_OFF)
+    held = 0
+    for _ in range(200):
+        await FallingEdge(dut.clk)
+        await ReadOnly()
+        held += bit(dut.m_axis_tvalid) and int(dut.m_axis_tdata.value) == fe[0]
+    c.eq("E first beat held for 200 clk", held, 200)
+    await FallingEdge(dut.clk)
+    dut.m_axis_tready.value = 1
+    await ClockCycles(dut.clk, 4000)
+
     got = [f for f, _, _ in sink.frames]
-    c.eq("frames delivered", len(got), 2)
+    c.eq("frames delivered", len(got), 3)
     c.check("unfinished frame at the sink", not sink.cur,
             f"{len(sink.cur)} beats without tlast")
-    for name, want, n in (("A", fa, 0), ("D", fd, 1)):
+    for name, want, n in (("A", fa, 0), ("D", fd, 1), ("E", fe, 2)):
         if n < len(sink.frames):
             data, err, sof = sink.frames[n]
             c.check(f"frame {name} whole", data == want,
@@ -199,6 +224,6 @@ async def rx_en_frame_boundary(dut):
             c.eq(f"frame {name} terror", err, 0)
             c.check(f"frame {name} tsof on first beat only",
                     sof == [1] + [0] * (len(sof) - 1))
-    c.eq("RX_FRAME", await axil.read(0x30), 4)
+    c.eq("RX_FRAME", await axil.read(0x30), 5)
     c.eq("RX_DROP", await axil.read(0x7C), 0)
     c.finish()

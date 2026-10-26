@@ -281,6 +281,7 @@ architecture rtl of eth_mac_sys is
     signal rx_en_eff         : std_logic;   -- CTRL[1] as applied to the current frame
     signal rx_mid            : std_logic;   -- a MAC-side frame is part-way through
     signal rx_mid_next       : std_logic;
+    signal rx_hold           : std_logic;
 
     signal cfg_speed_eff : std_logic_vector(1 downto 0);
 
@@ -409,10 +410,13 @@ begin
     -- frame is part-way through, so a frame in flight when RX is disabled is
     -- still delivered whole, and one in flight when RX is enabled is drained
     -- whole; the consumer never sees a frame without its start or its tlast.
+    -- Nor does rx_en_eff fall while a beat is offered and not yet taken
+    -- (rx_hold): AXI-Stream does not let tvalid drop before the handshake.
     m_axis_tready_mac <= m_axis_tready when rx_en_eff = '1' else '1';
     rx_mid_next <= (not m_axis_tlast_mac)
                        when m_axis_tvalid_mac = '1' and m_axis_tready_mac = '1'
                    else rx_mid;
+    rx_hold     <= m_axis_tvalid_mac and rx_en_eff and (not m_axis_tready);
     process (clk, rst_n)
     begin
         if rst_n = '0' then
@@ -420,7 +424,7 @@ begin
             rx_en_eff <= '1';       -- CTRL[1] reset value
         elsif rising_edge(clk) then
             rx_mid <= rx_mid_next;
-            if rx_mid_next = '0' then
+            if rx_mid_next = '0' and rx_hold = '0' then
                 rx_en_eff <= cfg_rx_en;
             end if;
         end if;
