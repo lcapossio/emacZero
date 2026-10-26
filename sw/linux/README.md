@@ -544,18 +544,25 @@ in the driver alone:
   frame in progress. The driver enables the MAC's TX before stopping TX for
   this reason. If something outside the MAC blocks a stream, a stop can hold
   a CPU for minutes.
-- The provider's completion interrupt starts a channel's pending
-  descriptors without the lock its stop path takes. Run just after a stop
-  cleared RUN/STOP, it sets it again, the channel goes idle while running,
-  and the stop polls for a halt that never comes: about 320 s with a CPU
-  held, then "Cannot stop channel" and a reset. The driver lets the TX
-  frames in flight complete (up to 100 ms) before it stops TX, and waits
-  1-2 ms after turning the MAC's RX off before it stops RX, so no completion
-  arrives during a stop. Seen once in 40 datapath restarts under TCP in
-  both directions before the driver did this, never in 140 after. Both
-  waits are bounded: a TX channel still busy after 100 ms (the MAC held off
-  by PAUSE frames, or a stall) is stopped anyway, and an RX completion can
-  still come later than the RX wait, so the race is narrowed, not closed.
+- The provider's interrupt handler starts a channel's pending descriptors,
+  setting RUN/STOP, while its stop path stops and resets the channel (the
+  whole core, both channels) outside the lock that handler holds. A handler
+  that runs during a stop sets RUN/STOP again, the channel runs with
+  nothing to complete, and the stop polls for a halt that never comes:
+  about 320 s with a CPU held, then "Cannot stop channel" and a reset. So
+  at a stop the driver turns the MAC's RX off, lets the TX frames in flight
+  reach the MAC (up to 100 ms, TX left on) and the RX frames in the shell's
+  FIFOs reach the ring (reposted and dropped), then masks both channels'
+  interrupts across both stops. The masking needs the provider to be
+  `xilinx_dma` with one interrupt per channel node, and lines no other
+  device shares; without it only the drains narrow the race. The drains
+  are best effort: a TX channel still busy after 100 ms (the MAC held off
+  by PAUSE frames, or a stall) is stopped anyway, and a rebuild after a DMA
+  error cannot repost RX buffers. With the earlier 1-2 ms wait instead of
+  the RX drain and the masking, the stop hung 3 times in about 340 RX
+  checksum toggles under a 210 kframe/s flood of bad UDP; with this
+  sequence, never in 400 under the same flood, nor in 150 datapath restarts
+  under TCP in both directions (ZCU106, emacZero main at 0374a04).
 
 These come from the MAC:
 

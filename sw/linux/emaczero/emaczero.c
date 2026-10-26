@@ -31,6 +31,7 @@
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
 #include <linux/phy.h>
@@ -179,6 +180,8 @@ struct emz_priv {
 	struct dma_chan *rx_chan;
 	struct device *tx_dma_dev;	/* the devices that master the bus */
 	struct device *rx_dma_dev;
+	unsigned int tx_irq;		/* the provider's channel interrupts, 0 if unknown */
+	unsigned int rx_irq;
 
 	struct napi_struct napi;
 
@@ -1032,6 +1035,26 @@ static void emz_release_chans(struct emz_priv *priv)
 }
 
 /*
+ * The Linux interrupt of an AXI DMA channel, from the provider's device tree
+ * node (xilinx_dma requests one per channel node), or 0 for another provider.
+ */
+static unsigned int emz_dma_chan_irq(struct dma_chan *chan, const char *compat)
+{
+	struct device_node *np = chan->device->dev->of_node;
+	struct device_node *child;
+	int irq;
+
+	if (!np || !of_device_is_compatible(np, "xlnx,axi-dma-1.00.a"))
+		return 0;
+	child = of_get_compatible_child(np, compat);
+	if (!child)
+		return 0;
+	irq = of_irq_get(child, 0);
+	of_node_put(child);
+	return irq > 0 ? irq : 0;
+}
+
+/*
  * The channels are requested at every datapath start and released at every
  * stop, as xilinx_axienet does. Stopping a channel resets the whole AXI DMA
  * core, which clears the interrupt enables of the channel stopped first;
@@ -1053,15 +1076,44 @@ static int emz_request_chans(struct emz_priv *priv)
 	priv->rx_chan = chan;
 	priv->tx_dma_dev = dmaengine_get_dma_device(priv->tx_chan);
 	priv->rx_dma_dev = dmaengine_get_dma_device(priv->rx_chan);
+	priv->tx_irq = emz_dma_chan_irq(priv->tx_chan, "xlnx,axi-dma-mm2s-channel");
+	priv->rx_irq = emz_dma_chan_irq(priv->rx_chan, "xlnx,axi-dma-s2mm-channel");
 	return 0;
 }
 
 /*
- * xilinx_dma's completion interrupt starts the channel's pending descriptors,
- * setting RUN/STOP, without the lock terminate takes: run just after
- * terminate cleared RUN/STOP, it leaves the channel idle but running, and
- * terminate polls for minutes for a halt that never comes. Let the frames
- * in flight complete first, so nothing is left to start. A channel that
+ * xilinx_dma's interrupt handler starts a channel's pending descriptors,
+ * setting RUN/STOP, and terminate stops and resets the channel (the whole
+ * core, both channels) outside the channel lock that handler holds, taking
+ * it only to free the lists. A handler that runs during either stop undoes
+ * it: the channel is left running with nothing to complete, and the stop
+ * polls for minutes, without sleeping, for a halt that never comes. So the
+ * channels' interrupts stay off across both stops. disable_irq() waits for
+ * a handler already running; a completion that comes meanwhile is cleared
+ * by the reset, or handled against emptied lists once enabled. This masks
+ * the whole Linux interrupt, so the lines must not be shared with other
+ * devices (the ZCU106 shell gives each channel its own). With another
+ * provider the interrupts are not known, and only the drains before the
+ * stops narrow the race.
+ */
+static void emz_dma_stop(struct emz_priv *priv)
+{
+	if (priv->tx_irq)
+		disable_irq(priv->tx_irq);
+	if (priv->rx_irq)
+		disable_irq(priv->rx_irq);
+	dmaengine_terminate_sync(priv->tx_chan);
+	emz_ctrl_update(priv, EMZ_CTRL_TX_EN, 0);
+	dmaengine_terminate_sync(priv->rx_chan);
+	if (priv->rx_irq)
+		enable_irq(priv->rx_irq);
+	if (priv->tx_irq)
+		enable_irq(priv->tx_irq);
+}
+
+/*
+ * Let the TX frames in flight complete before the stop, so nothing is left
+ * for a completion interrupt to start (see emz_dma_stop()). A channel that
  * really stopped (a TX stall rebuild) times out here and is stopped anyway.
  *
  * A completion means only that the DMA handed the frame on: a FIFO in front
@@ -1120,47 +1172,15 @@ static void emz_tx_settle(struct emz_priv *priv)
 	priv->tx_mac_unsure = n != m;
 }
 
-static void emz_datapath_down(struct emz_priv *priv)
-{
-	struct net_device *ndev = priv->ndev;
-
-	if (!priv->datapath_up)
-		return;
-	priv->datapath_up = false;
-
-	cancel_delayed_work_sync(&priv->watchdog);
-	/* NAPI first: a running poll could wake the queue again */
-	napi_disable(&priv->napi);
-	netif_tx_disable(ndev);
-
-	/*
-	 * Drain TX into the MAC, then stop RX at the MAC. The TX channel halts
-	 * only once its stream has taken the frame in progress, and xilinx_dma
-	 * polls for that for minutes without sleeping, so make sure the MAC
-	 * takes data.
-	 */
-	emz_ctrl_update(priv, 0, EMZ_CTRL_TX_EN);
-	emz_tx_drain(priv);
-	dmaengine_terminate_sync(priv->tx_chan);
-	emz_ctrl_update(priv, EMZ_CTRL_TX_EN | EMZ_CTRL_RX_EN, 0);
-	/* the same race on RX: let the last frame's completion come in first */
-	usleep_range(1000, 2000);
-	dmaengine_terminate_sync(priv->rx_chan);
-
-	netdev_reset_queue(ndev);
-	emz_tx_free_all(priv);
-	emz_rx_free_all(priv);
-	emz_release_chans(priv);
-}
-
 /*
  * Frames can wait across a stop in the stream between the MAC and the DMA
  * (the shell's FIFOs), checked or not by the checker as it was set then.
- * Before RX is enabled, take whatever is there into the ring and drop it:
- * with RX off and descriptors posted, a stream that completes nothing for
+ * With RX off at the MAC, take whatever is there into the ring and drop it:
+ * with descriptors posted, a stream that completes nothing for
  * EMZ_RX_FLUSH_US is empty. "Completes" as the provider's interrupt handler
  * sees it (the cookie), not as its later callback reports it. Called with
- * NAPI off.
+ * NAPI off before RX is enabled, and before a stop, where it is best
+ * effort: a rebuild's gate refuses the reposts, and a failed slot ends it.
  */
 static int emz_rx_flush(struct emz_priv *priv)
 {
@@ -1193,6 +1213,38 @@ static int emz_rx_flush(struct emz_priv *priv)
 			return 0;
 	} while (!time_after(jiffies, end));
 	return -ETIMEDOUT;
+}
+
+static void emz_datapath_down(struct emz_priv *priv)
+{
+	struct net_device *ndev = priv->ndev;
+
+	if (!priv->datapath_up)
+		return;
+	priv->datapath_up = false;
+
+	cancel_delayed_work_sync(&priv->watchdog);
+	/* NAPI first: a running poll could wake the queue again */
+	napi_disable(&priv->napi);
+	netif_tx_disable(ndev);
+
+	/*
+	 * Stop RX at the MAC, then let both directions run dry while the
+	 * channels' interrupts still start their work: TX into the MAC (the TX
+	 * channel halts only once its stream has taken the frame in progress,
+	 * so the MAC takes data until it has) and RX out of the shell's FIFOs
+	 * into the ring. A frame the MAC holds offered at RX off goes through
+	 * whole once the ring takes it.
+	 */
+	emz_ctrl_update(priv, EMZ_CTRL_RX_EN, EMZ_CTRL_TX_EN);
+	emz_tx_drain(priv);
+	emz_rx_flush(priv);
+	emz_dma_stop(priv);
+
+	netdev_reset_queue(ndev);
+	emz_tx_free_all(priv);
+	emz_rx_free_all(priv);
+	emz_release_chans(priv);
 }
 
 static int emz_datapath_up(struct emz_priv *priv)
@@ -1267,7 +1319,8 @@ static int emz_datapath_up(struct emz_priv *priv)
 	return 0;
 
 err:
-	dmaengine_terminate_sync(priv->rx_chan);
+	/* RX may be running: a flush that failed part way leaves work pending */
+	emz_dma_stop(priv);
 	emz_tx_free_all(priv);
 	emz_rx_free_all(priv);
 	emz_release_chans(priv);
