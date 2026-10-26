@@ -76,9 +76,10 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
     the checker's scope, with the same header limits as on TX and the whole
     datagram inside the frame. The stack checks every other frame itself,
     including UDP with a zero checksum, which over IPv6 only some sockets
-    accept. This core's checker drops IPv6 UDP with a zero checksum, which
-    RFC 6935 and 6936 allow for some tunnels (see
-    [Known limits](#known-limits)).
+    accept. The checker in this tree passes a zero UDP checksum unjudged;
+    older cores, including the one the results below were measured on, drop
+    IPv6 UDP with a zero checksum, which RFC 6935 and 6936 allow for some
+    tunnels (see [Known limits](#known-limits)).
   - The MAC takes the CTRL bits as each frame starts, so turning either
     offload on or off while the interface is up (`ethtool -K`, or the flag)
     restarts the DMA datapath, as a stall rebuild does, and loses the frames
@@ -95,9 +96,11 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
       stream whose next descriptor the provider's interrupt handler has not
       seen complete for 1 ms is empty. The flush runs at every `ifup` and
       rebuild, and costs 1 to 2 ms.
-    - The first frame after RX is enabled is never marked. This core's RX_EN
-      gate can cut a frame when RX is turned off, leaving its start in the
-      stream, and the next frame then completes it.
+    - The first frame after RX is enabled is never marked. On older cores,
+      including the one the results below were measured on, the RX_EN gate
+      can cut a frame when RX is turned off, leaving its start in the
+      stream, and the next frame then completes it. The core in this tree
+      applies RX_EN and TX_EN only between frames.
 
     Each switch took 10 to 20 ms on the ZCU106, idle or under load.
 - **RX page pool.** Each RX buffer is a 2 KB fragment of a page from a page
@@ -572,11 +575,12 @@ These come from the MAC:
 - The RX flush trusts the provider's interrupt handler: a completion whose
   interrupt is held off for more than 1 ms is missed, and that frame,
   received under the old checker setting, can be marked as checked.
-- The RX checker drops IPv6 UDP datagrams with a zero checksum, which Linux
+- On older cores, including the ZCU106 build the results were measured on,
+  the RX checker drops IPv6 UDP datagrams with a zero checksum, which Linux
   accepts on sockets that allow them (RFC 6935 and 6936, for example VXLAN
-  with `udp6zerocsumrx`). Turn `rx-checksumming` off for such tunnels. A
-  core whose checker passes them is handled already: the driver leaves zero
-  UDP checksums to the stack.
+  with `udp6zerocsumrx`). Turn `rx-checksumming` off for such tunnels on
+  those cores. The checker in this tree passes them unjudged, and the driver
+  leaves zero UDP checksums to the stack with either.
 
 The driver accepts only `fixed-link` or PHY-managed links; it has no PCS of
 its own, so it rejects `managed = "in-band-status"`. It offers the speeds
