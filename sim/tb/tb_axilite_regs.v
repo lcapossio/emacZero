@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
 // tb_axilite_regs.v - Testbench for axilite_regs.v
-// Tests: scratch RW, version RO, MAC addr, MDIO go self-clear, IRQ W1C,
+// Tests: scratch RW, version RO, CAPS RO, MAC addr, MDIO go self-clear, IRQ W1C,
 //        stats clear-on-write, config outputs
 // =============================================================================
 `timescale 1ns / 1ps
@@ -149,6 +149,7 @@ module tb_axilite_regs;
     localparam [7:0] A_RX_ERR     = 8'h38;
     localparam [7:0] A_SCRATCH    = 8'h3C;
     localparam [7:0] A_IP_ADDR    = 8'h40;
+    localparam [7:0] A_CAPS       = 8'h98;
 
     task axi_write;
         input [7:0]  addr;
@@ -335,6 +336,16 @@ module tb_axilite_regs;
         axi_read(A_VERSION, rd_result);
         check32("VERSION", rd_result,
                 {`EMZ_VERSION_MAJOR, `EMZ_VERSION_MINOR, `EMZ_VERSION_ID});
+
+        // =================================================================
+        // Test 1b: CAPS register (read-only; default parameters: MAX_FRAME
+        // 9018, no multicast hash, no checksum offload)
+        // =================================================================
+        axi_read(A_CAPS, rd_result);
+        check32("CAPS", rd_result, 32'h233A_0000);
+        axi_write(A_CAPS, 32'hFFFF_FFFF);
+        axi_read(A_CAPS, rd_result);
+        check32("CAPS after write", rd_result, 32'h233A_0000);
 
         // =================================================================
         // Test 2: SCRATCH register (write/read)

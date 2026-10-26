@@ -1,0 +1,9 @@
+# Kbuild outputs of the out-of-tree build
+*.o
+*.ko
+*.mod
+*.mod.c
+.*.cmd
+Module.symvers
+modules.order
+.tmp_versions/
