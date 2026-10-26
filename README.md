@@ -73,8 +73,9 @@ ICMPv6 over IPv4 and IPv6).
   Length field. Not covered (left to software): IPv4 fragments and IPv4 with
   a source route option (header checksum only), UDP whose Length is below 8
   or beyond the IP payload, a datagram longer than its frame (RX: header
-  checksum only), IPv6 packets with extension headers, and tunnels. A UDP
-  checksum of 0 means "none" over IPv4 and is rejected over IPv6 on RX; a UDP
+  checksum only), IPv6 packets with extension headers, and tunnels. RX does
+  not judge a UDP checksum of 0, over IPv4 ("none") or IPv6 (allowed per
+  socket by RFC 6935/6936), and leaves it to software; a UDP
   checksum that computes to 0 is sent as 0xFFFF. The TX side stores each frame whole before sending it (one
   `MAX_FRAME` of block RAM, a few cycles per frame), since the checksum fields
   precede the bytes they cover. The checksum logic is `rtl/net/csum_calc.v`.
@@ -375,7 +376,7 @@ module and configuration in [sim/parity/](sim/parity/); see
 | UDP-STATS-REPLY | binary stats query/clear responder packet generation | 19 |
 | ETH-MAC-SYS-CSUM | Integrated TX checksum-offload path with `TX_CSUM_OFFLOAD=1`: exact IPv4 and UDP checksums on the wire | 7 |
 | ETH-MAC-SYS-CSUM-BYPASS | Default `TX_CSUM_OFFLOAD=0` path ignores `CTRL[7]` and preserves checksums | 6 |
-| ETH-MAC-SYS-CSUM-LOOP | TX and RX offload through MII loopback: inserted checksums accepted, wrong ones flagged with `terror` and counted in `RX_ERR_CSUM` / `RX_ERR` only with CTRL[9], counter clear | 17 |
+| ETH-MAC-SYS-CSUM-LOOP | TX and RX offload through MII loopback: inserted checksums accepted, wrong ones flagged with `terror` and counted in `RX_ERR_CSUM` / `RX_ERR` only with CTRL[9], counter clear; an IPv6 UDP checksum of 0 passes unjudged, a wrong one is flagged | 24 |
 | ETH-MAC-SYS-JUMBO | Integrated jumbo-frame system path | 3 |
 | GMII-CDC-100M | 100M rate adaptation pacing in gmii_cdc | 4 |
 | GMII-CDC-10M | 10M rate adaptation pacing in gmii_cdc | 4 |

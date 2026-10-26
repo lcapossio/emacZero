@@ -7,13 +7,16 @@ RX_CSUM_OFFLOAD=1; 100 MHz clk, one 25 MHz clock on mii_tx_clk and
 mii_rx_clk (two clocks of the same period and phase here), MII TX looped back
 to MII RX through a one-cycle register on the MII clock, m_axis_tready tied 1,
 mdio_i follows mdio_o. The bench's RX capture (rising edge of clk) records
-bytes 24-25 (IP checksum) and 40-41 (UDP checksum) of each received frame,
-its terror on TLAST, and the frame count. send_frame drives each byte on the
-falling edge and holds it until s_axis_tready is high at a rising edge.
-The frame is an IPv4/UDP frame with IP checksum 0xDEAD (correct 0xA440) and
-UDP checksum 0xBEEF (correct 0x4EF6).
+bytes 24-25 (IP checksum), 40-41 (UDP checksum) and 60-61 (IPv6 UDP
+checksum) of each received frame, its terror on TLAST, and the frame count.
+send_frame drives each byte on the falling edge and holds it until
+s_axis_tready is high at a rising edge.
+A to D send a 60-byte IPv4/UDP frame with IP checksum 0xDEAD (correct 0xA440)
+and UDP checksum 0xBEEF (correct 0x4EF6); E and F a 72-byte IPv6/UDP frame
+(fd00::1 -> fd00::2, UDP length 18, correct checksum 0x51C9) whose UDP
+checksum is 0 (E) or 0xBEEF (F).
 
-Checks, in bench order (16):
+Checks, in bench order (23):
   CTRL readback with [9] == 0x2A7
   A  (CTRL 0x2A7): frames received 1; ip csum 0xA440; udp csum 0x4EF6;
      terror 0; RX_ERR_CSUM 0
@@ -21,6 +24,9 @@ Checks, in bench order (16):
      terror 1; RX_ERR_CSUM 1; RX_ERR 1
   C  (CTRL 0x027): frames received 1; terror 0; RX_ERR_CSUM 1
   D  write RX_ERR_CSUM; RX_ERR_CSUM 0
+  E  (CTRL 0x227): frames received 1; IPv6 udp csum 0x0000; terror 0;
+     RX_ERR_CSUM 0
+  F  (CTRL 0x227): frames received 1; terror 1; RX_ERR_CSUM 1
 No $random in the bench.
 """
 import cocotb
@@ -56,6 +62,17 @@ FRAME = ([0xFF] * 6 + [0x02, 0x11, 0x22, 0x33, 0x44, 0x55] + [0x08, 0x00]
 assert len(FRAME) == FRAME_LEN
 
 
+def ipv6_frame(udp_csum):
+    """The bench's load_ipv6_frame: IPv4 frame's MAC addresses, IPv6/UDP."""
+    ip6 = [0x60, 0, 0, 0, 0x00, 0x12, 0x11, 0x40]
+    ip6 += [0xFD] + [0] * 14 + [0x01]               # fd00::1
+    ip6 += [0xFD] + [0] * 14 + [0x02]               # fd00::2
+    udp = [0x12, 0x34, 0x56, 0x78, 0x00, 0x12, udp_csum >> 8, udp_csum & 0xFF]
+    f = FRAME[:12] + [0x86, 0xDD] + ip6 + udp + list(range(62, 72))
+    assert len(f) == 72
+    return f
+
+
 async def mii_loopback(dut):
     """always @(posedge mii_clk) {rxd, rx_dv} <= {txd, tx_en} (values settled
     since the falling edge before; mii_txd changes on the rising edge only).
@@ -83,6 +100,7 @@ class RxCapture:
         self.frames = 0
         self.ip = [None, None]       # rx_ip_csum[15:8], [7:0]
         self.udp = [None, None]
+        self.udp6 = [None, None]
         self.err = None
 
     @staticmethod
@@ -96,6 +114,10 @@ class RxCapture:
     @property
     def udp_csum(self):
         return self._word(self.udp)
+
+    @property
+    def udp6_csum(self):
+        return self._word(self.udp6)
 
     async def run(self):
         d = self.dut
@@ -118,6 +140,10 @@ class RxCapture:
                     self.udp[0] = b
                 if self.pos == 41:
                     self.udp[1] = b
+                if self.pos == 60:
+                    self.udp6[0] = b
+                if self.pos == 61:
+                    self.udp6[1] = b
                 if tl:
                     self.err = int(te) if te.is_resolvable else None
                     self.frames += 1
@@ -126,14 +152,14 @@ class RxCapture:
                     self.pos += 1
 
 
-async def send_frame(dut):
+async def send_frame(dut, frame):
     """Each byte driven on the falling edge, then held until s_axis_tready is
     high at a rising edge (read settled just before that edge)."""
-    for k in range(FRAME_LEN):
+    for k in range(len(frame)):
         await FallingEdge(dut.clk)
-        dut.s_axis_tdata.value = FRAME[k]
+        dut.s_axis_tdata.value = frame[k]
         dut.s_axis_tvalid.value = 1
-        dut.s_axis_tlast.value = 1 if k == FRAME_LEN - 1 else 0
+        dut.s_axis_tlast.value = 1 if k == len(frame) - 1 else 0
         while True:
             await ReadOnly()
             ready = bit(dut.s_axis_tready)
@@ -170,10 +196,10 @@ async def tb_eth_mac_sys_csum_loop(dut):
     dut.rst_n.value = 1
     await Timer(100, "ns")
 
-    async def run_frame(ctrl):
+    async def run_frame(ctrl, frame=FRAME):
         await axil.write(0x04, ctrl)
         n0 = rx.frames
-        await send_frame(dut)
+        await send_frame(dut, frame)
         await ClockCycles(dut.clk, 4000)
         c.eq("frames received", rx.frames - n0, 1)
 
@@ -203,5 +229,16 @@ async def tb_eth_mac_sys_csum_loop(dut):
     dut._log.info("--- D: write clears RX_ERR_CSUM ---")
     await axil.write(0x80, 0)
     c.eq("D RX_ERR_CSUM", await axil.read(0x80), 0)
+
+    dut._log.info("--- E: IPv6 UDP checksum 0, RX verify on ---")
+    await run_frame(0x00000227, ipv6_frame(0x0000))
+    c.eq("E udp csum", rx.udp6_csum, 0x0000)
+    c.eq("E terror", rx.err, 0)
+    c.eq("E RX_ERR_CSUM", await axil.read(0x80), 0)
+
+    dut._log.info("--- F: IPv6 UDP checksum wrong, RX verify on ---")
+    await run_frame(0x00000227, ipv6_frame(0xBEEF))
+    c.eq("F terror", rx.err, 1)
+    c.eq("F RX_ERR_CSUM", await axil.read(0x80), 1)
 
     c.finish()

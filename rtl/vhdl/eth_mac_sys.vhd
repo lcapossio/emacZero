@@ -257,6 +257,11 @@ architecture rtl of eth_mac_sys is
 
     -- TX gating: hold tready low when tx disabled
     signal s_axis_tvalid_gated : std_logic;
+    signal s_axis_tready_i     : std_logic;   -- s_axis_tready, readable here
+    signal tx_en_eff           : std_logic;   -- CTRL[0] as applied to the current frame
+    signal tx_mid              : std_logic;   -- an s_axis frame is part-way accepted
+    signal tx_mid_next         : std_logic;
+    signal tx_hold             : std_logic;
     signal s_axis_tready_mac   : std_logic;
 
     signal user_tx_tdata  : std_logic_vector(7 downto 0);
@@ -278,6 +283,10 @@ architecture rtl of eth_mac_sys is
     signal m_axis_terror_mac : std_logic;
     signal m_axis_tsof_mac   : std_logic;
     signal m_axis_tready_mac : std_logic;
+    signal rx_en_eff         : std_logic;   -- CTRL[1] as applied to the current frame
+    signal rx_mid            : std_logic;   -- a MAC-side frame is part-way through
+    signal rx_mid_next       : std_logic;
+    signal rx_hold           : std_logic;
 
     signal cfg_speed_eff : std_logic_vector(1 downto 0);
 
@@ -337,7 +346,33 @@ begin
     -- =========================================================================
     -- TX/RX gating
     -- =========================================================================
-    s_axis_tvalid_gated <= s_axis_tvalid and cfg_tx_en;
+    -- TX gating: while TX is disabled, s_axis_tready is held low and tvalid
+    -- is masked from the core. CTRL[0] takes effect only between frames of
+    -- s_axis: tx_en_eff follows cfg_tx_en when no frame is part-way accepted,
+    -- so a frame the source is part-way through when TX is disabled is still
+    -- taken whole (a pause mid-frame would underrun the cut-through framer,
+    -- which aborts the frame and later sends its rest as a new frame). Nor
+    -- does tx_en_eff fall while a first beat is offered and not yet taken
+    -- (tx_hold), so tvalid into the core never drops before a handshake;
+    -- that frame is then taken whole too.
+    tx_mid_next <= (not s_axis_tlast)
+                       when s_axis_tvalid = '1' and s_axis_tready_i = '1'
+                   else tx_mid;
+    tx_hold     <= s_axis_tvalid and tx_en_eff and (not s_axis_tready_i);
+    process (clk, rst_n)
+    begin
+        if rst_n = '0' then
+            tx_mid    <= '0';
+            tx_en_eff <= '1';       -- CTRL[0] reset value
+        elsif rising_edge(clk) then
+            tx_mid <= tx_mid_next;
+            if tx_mid_next = '0' and tx_hold = '0' then
+                tx_en_eff <= cfg_tx_en;
+            end if;
+        end if;
+    end process;
+    s_axis_tvalid_gated <= s_axis_tvalid and tx_en_eff;
+    s_axis_tready       <= s_axis_tready_i;
 
     -- =========================================================================
     -- Optional TX checksum offload.
@@ -367,14 +402,14 @@ begin
                 m_axis_tlast  => user_tx_tlast
             );
 
-        s_axis_tready <= csum_s_tready and cfg_tx_en;
+        s_axis_tready_i <= csum_s_tready and tx_en_eff;
     end generate gen_tx_csum;
 
     gen_no_tx_csum : if TX_CSUM_OFFLOAD = 0 generate
         user_tx_tdata  <= s_axis_tdata;
         user_tx_tvalid <= s_axis_tvalid_gated;
         user_tx_tlast  <= s_axis_tlast;
-        s_axis_tready  <= user_tx_tready and cfg_tx_en;
+        s_axis_tready_i <= user_tx_tready and tx_en_eff;
     end generate gen_no_tx_csum;
 
     -- PAUSE-priority mux, switched only between user frames. A PAUSE frame
@@ -400,11 +435,34 @@ begin
     pause_tready     <= pause_sel and s_axis_tready_mac;
     user_tx_tready   <= (not pause_sel) and s_axis_tready_mac;
 
-    -- RX gating: mask tvalid when rx disabled
-    m_axis_tready_mac <= m_axis_tready when cfg_rx_en = '1' else '1';
+    -- RX gating: while RX is disabled, tvalid is masked and the MAC's own
+    -- stream is drained (tready forced high). CTRL[1] takes effect only
+    -- between frames of that stream: rx_en_eff follows cfg_rx_en when no
+    -- frame is part-way through, so a frame in flight when RX is disabled is
+    -- still delivered whole, and one in flight when RX is enabled is drained
+    -- whole; the consumer never sees a frame without its start or its tlast.
+    -- Nor does rx_en_eff fall while a beat is offered and not yet taken
+    -- (rx_hold): AXI-Stream does not let tvalid drop before the handshake.
+    m_axis_tready_mac <= m_axis_tready when rx_en_eff = '1' else '1';
+    rx_mid_next <= (not m_axis_tlast_mac)
+                       when m_axis_tvalid_mac = '1' and m_axis_tready_mac = '1'
+                   else rx_mid;
+    rx_hold     <= m_axis_tvalid_mac and rx_en_eff and (not m_axis_tready);
+    process (clk, rst_n)
+    begin
+        if rst_n = '0' then
+            rx_mid    <= '0';
+            rx_en_eff <= '1';       -- CTRL[1] reset value
+        elsif rising_edge(clk) then
+            rx_mid <= rx_mid_next;
+            if rx_mid_next = '0' and rx_hold = '0' then
+                rx_en_eff <= cfg_rx_en;
+            end if;
+        end if;
+    end process;
 
     m_axis_tdata  <= m_axis_tdata_mac;
-    m_axis_tvalid <= m_axis_tvalid_mac and cfg_rx_en;
+    m_axis_tvalid <= m_axis_tvalid_mac and rx_en_eff;
     m_axis_tlast  <= m_axis_tlast_mac;
     m_axis_terror <= m_axis_terror_mac;
     m_axis_tsof   <= m_axis_tsof_mac;

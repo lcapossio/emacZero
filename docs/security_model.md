@@ -102,7 +102,7 @@ Key controls for product integrators:
 | `promisc` | Accepts frames outside the configured MAC/filter. Keep disabled by default. |
 | `MCAST_HASH_FILTER` | Adds multicast acceptance surface. Program only required groups. |
 | `TX_CSUM_OFFLOAD` | Lets hardware overwrite IPv4 header and TCP / UDP / ICMP / ICMPv6 checksums (CTRL[7]). Validate software expectations. |
-| `RX_CSUM_OFFLOAD` | With CTRL[9], flags frames whose IP / L4 checksum is wrong with `m_axis_terror`; the consumer must discard them, as the core delivers them. It does not check the L4 checksum of fragments, source-routed IPv4, UDP with an out-of-range Length or datagrams longer than their frame, nor IPv6 extension headers or tunnels, so software that trusts it must still verify those. |
+| `RX_CSUM_OFFLOAD` | With CTRL[9], flags frames whose IP / L4 checksum is wrong with `m_axis_terror`; the consumer must discard them, as the core delivers them. It does not check the L4 checksum of fragments, source-routed IPv4, UDP with an out-of-range Length or datagrams longer than their frame, nor IPv6 extension headers or tunnels, so software that trusts it must still verify those. A UDP checksum of 0 (IPv4 or IPv6) is passed unjudged: software must not treat it as verified and applies its own policy (over IPv6 it is accepted only on sockets that allow it, RFC 6935/6936). |
 | `MII_DEBUG` | Keeps extra debug capture logic. Keep disabled in production builds. |
 
 ## Evidence Already Present
