@@ -14,7 +14,9 @@ There are two kinds of suite:
   VHDL, in Vivado xsim (phase 1c).
 - **Directed + constrained-random suites** with reference models
   (`mii_tx_saf`, `eth_mac_rx*`, `gmii_cdc`, `csum_calc`, `tx_csum_off`),
-  described under [Randomized suites](#randomized-suites).
+  described under [Randomized suites](#randomized-suites), and directed
+  suites for single fixes (such as `eth_mac_tx_start`), described in their
+  docstrings.
 
 ## Layout
 

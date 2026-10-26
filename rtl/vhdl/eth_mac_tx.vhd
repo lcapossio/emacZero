@@ -19,7 +19,9 @@ entity eth_mac_tx is
         clk           : in  std_logic;
         rst_n         : in  std_logic;
         -- Sampled only in S_IDLE so downstream pressure can delay a new frame
-        -- without ever stalling an in-flight Ethernet transmission.
+        -- without ever stalling an in-flight Ethernet transmission. A first
+        -- byte handshaken on the cycle it falls is kept, and its frame starts
+        -- once it is high again.
         tx_start_ok   : in  std_logic;
 
         -- GMII TX interface (to RGMII or direct PHY)
@@ -126,22 +128,30 @@ begin
                     tx_active   <= '0';
                     frame_ended <= '0';
                     stall_cnt   <= (others => '0');
-                    have_first  <= '0';
-                    -- Verilog: (tx_start_ok !== 1'b0)
-                    if tx_start_ok /= '0' then
-                        s_axis_tready_i <= '1';
+                    -- s_axis_tready is registered, so tx_start_ok can fall on
+                    -- the cycle a first byte is handshaken. The source has
+                    -- seen that byte accepted: keep it, and hold the frame
+                    -- here until tx_start_ok returns.
+                    if have_first = '1' or (s_axis_tvalid = '1' and s_axis_tready_i = '1') then
+                        if have_first = '0' then
+                            first_data <= s_axis_tdata;
+                            first_last <= s_axis_tlast;
+                            have_first <= '1';
+                        end if;
+                        -- Verilog: (tx_start_ok !== 1'b0)
+                        if tx_start_ok /= '0' then
+                            state     <= S_PREAMBLE;
+                            count     <= (others => '0');
+                            crc_accum <= (others => '1');
+                            tx_active <= '1';
+                        end if;
                     else
-                        s_axis_tready_i <= '0';
-                    end if;
-                    if s_axis_tvalid = '1' and s_axis_tready_i = '1' and tx_start_ok /= '0' then
-                        first_data      <= s_axis_tdata;
-                        first_last      <= s_axis_tlast;
-                        have_first      <= '1';
-                        s_axis_tready_i <= '0';
-                        state           <= S_PREAMBLE;
-                        count           <= (others => '0');
-                        crc_accum       <= (others => '1');
-                        tx_active       <= '1';
+                        -- Verilog: (tx_start_ok !== 1'b0)
+                        if tx_start_ok /= '0' then
+                            s_axis_tready_i <= '1';
+                        else
+                            s_axis_tready_i <= '0';
+                        end if;
                     end if;
 
                 when S_PREAMBLE =>
