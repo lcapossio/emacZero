@@ -244,8 +244,31 @@ module eth_mac_sys #(
     // =========================================================================
     // TX/RX gating
     // =========================================================================
-    // TX gating: hold tready low when tx disabled
-    wire       s_axis_tvalid_gated = s_axis_tvalid & cfg_tx_en;
+    // TX gating: while TX is disabled, s_axis_tready is held low and tvalid
+    // is masked from the core. CTRL[0] takes effect only between frames of
+    // s_axis: tx_en_eff follows cfg_tx_en when no frame is part-way accepted,
+    // so a frame the source is part-way through when TX is disabled is still
+    // taken whole (a pause mid-frame would underrun the cut-through framer,
+    // which aborts the frame and later sends its rest as a new frame). Nor
+    // does tx_en_eff fall while a first beat is offered and not yet taken
+    // (tx_hold), so tvalid into the core never drops before a handshake;
+    // that frame is then taken whole too.
+    reg        tx_en_eff;          // CTRL[0] as applied to the current frame
+    reg        tx_mid;             // an s_axis frame is part-way accepted
+    wire       tx_mid_next = (s_axis_tvalid && s_axis_tready) ?
+                             !s_axis_tlast : tx_mid;
+    wire       tx_hold     = s_axis_tvalid && tx_en_eff && !s_axis_tready;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            tx_mid    <= 1'b0;
+            tx_en_eff <= 1'b1;      // CTRL[0] reset value
+        end else begin
+            tx_mid <= tx_mid_next;
+            if (!tx_mid_next && !tx_hold)
+                tx_en_eff <= cfg_tx_en;
+        end
+    end
+    wire       s_axis_tvalid_gated = s_axis_tvalid & tx_en_eff;
     wire       s_axis_tready_mac;
 
     // =========================================================================
@@ -280,12 +303,12 @@ module eth_mac_sys #(
                 .m_axis_tlast  (user_tx_tlast)
             );
 
-            assign s_axis_tready = csum_s_tready & cfg_tx_en;
+            assign s_axis_tready = csum_s_tready & tx_en_eff;
         end else begin : gen_no_tx_csum
             assign user_tx_tdata  = s_axis_tdata;
             assign user_tx_tvalid = s_axis_tvalid_gated;
             assign user_tx_tlast  = s_axis_tlast;
-            assign s_axis_tready  = user_tx_tready & cfg_tx_en;
+            assign s_axis_tready  = user_tx_tready & tx_en_eff;
         end
     endgenerate
 

@@ -67,6 +67,17 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `eth_mac_sys`: CTRL[0] (`tx_en`) gated `s_axis` combinationally, so
+  clearing it while the source was part-way through a frame stalled that
+  frame. With `TX_CSUM_OFFLOAD=0` on GMII / RGMII the cut-through framer
+  then sent 0x00 bytes with `tx_er`, aborted the frame, and once TX was
+  enabled again sent the rest of it as a frame of its own with a valid FCS.
+  CTRL[0] now applies only between frames of `s_axis` (and not while a first
+  beat is offered and not yet taken): a frame in progress is taken whole and
+  sent, and no new frame starts while TX is disabled. The source must still
+  not leave gaps inside a frame. Verilog and VHDL changed alike; the
+  `eth_mac_sys` proof was rerun. New cocotb suites `eth_mac_sys_tx_en` and
+  `eth_mac_sys_tx_en_csum` (`TX_CSUM_OFFLOAD` 0 and 1), on both languages.
 - `eth_mac_sys`: CTRL[1] (`rx_en`) gated `m_axis` combinationally, so
   clearing it while a frame was part-way out cut that frame (the sink had a
   prefix with no TLAST and the rest was drained inside the core), and
