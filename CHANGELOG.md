@@ -67,6 +67,38 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `eth_mac_sys`: CTRL[0] (`tx_en`) gated `s_axis` combinationally, so
+  clearing it while the source was part-way through a frame stalled that
+  frame. With `TX_CSUM_OFFLOAD=0` on GMII / RGMII the cut-through framer
+  then sent 0x00 bytes with `tx_er`, aborted the frame, and once TX was
+  enabled again sent the rest of it as a frame of its own with a valid FCS.
+  CTRL[0] now applies only between frames of `s_axis` (and not while a first
+  beat is offered and not yet taken): a frame in progress is taken whole and
+  sent, and no new frame starts while TX is disabled. The source must still
+  not leave gaps inside a frame. Verilog and VHDL changed alike; the
+  `eth_mac_sys` proof was rerun. New cocotb suites `eth_mac_sys_tx_en` and
+  `eth_mac_sys_tx_en_csum` (`TX_CSUM_OFFLOAD` 0 and 1), on both languages.
+- `eth_mac_sys`: CTRL[1] (`rx_en`) gated `m_axis` combinationally, so
+  clearing it while a frame was part-way out cut that frame (the sink had a
+  prefix with no TLAST and the rest was drained inside the core), and
+  setting it mid-frame handed the sink a tail with no start. A sink that
+  assembles frames until TLAST then merged the prefix and a later frame into
+  one corrupted frame, with the FCS already stripped. The gate now changes
+  only between frames of the MAC's RX stream, and never while `m_axis`
+  offers a beat the sink has not taken: a frame in flight (or whose first
+  beat is offered) when RX is disabled is delivered whole, and one in flight
+  when RX is enabled is drained whole. Verilog and VHDL changed alike; the `eth_mac_sys` proofs
+  were rerun. New cocotb suite `eth_mac_sys_rx_en`, on both languages.
+- RX checksum offload (`RX_CSUM_OFFLOAD=1`, CTRL[9]) no longer fails an IPv6
+  UDP datagram whose checksum is 0: it ended with `m_axis_terror` and counted
+  in `RX_ERR_CSUM`, so it was dropped before software could apply its policy.
+  RFC 6935/6936 let a receiver accept such datagrams per socket (Linux
+  `udp6zerocsumrx`, e.g. VXLAN). A UDP checksum of 0 is now passed unjudged
+  over IPv4 and IPv6 and left to software, which must not report it as
+  verified. Wrong nonzero checksums still fail. Verilog and VHDL changed
+  alike; `eth_mac_rx` and the proofs that contain it were re-proven.
+  `ETH-MAC-SYS-CSUM-LOOP` adds IPv6 cases (checksum 0 passes, a wrong one is
+  flagged), and the `eth_mac_rx_csum` cocotb suite checks both.
 - `emaczero.core`: `rtl_core` did not list `rtl/mii_tx_saf.v`, so FuseSoC
   builds of the `default` and `with_l3` targets could not elaborate
   `eth_mac_sys` on its default MII path.

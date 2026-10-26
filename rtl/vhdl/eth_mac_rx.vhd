@@ -300,14 +300,14 @@ begin
 
         -- Summed with the received checksum in place, a correct datagram
         -- sums to 0xFFFF. A UDP checksum of 0 means "none" over IPv4 and
-        -- is invalid over IPv6 (RFC 8200 8.1), whatever the sum.
+        -- is allowed per socket over IPv6 (RFC 6935/6936), so it passes
+        -- unjudged over both and software applies its own policy.
         hdr_whole <= '1' when resize(unsigned(c_hdr_end), 15) + 4 <= resize(byte_cnt, 15) else '0';
         whole     <= '1' when resize(unsigned(c_l3_end), 15) + 4 <= resize(byte_cnt, 15) else '0';
         udp_zero  <= '1' when c_l4_udp = '1' and c_l4_field = x"0000" else '0';
         ip_bad    <= '1' when c_ip4 = '1' and hdr_whole = '1' and c_ip_sum /= x"FFFF" else '0';
         l4_bad    <= '1' when c_done = '1' and whole = '1' and c_l4_ok = '1' and
-                              ((udp_zero = '1' and c_ip4 = '0') or
-                               (udp_zero = '0' and c_l4_sum /= x"FFFF"))
+                              udp_zero = '0' and c_l4_sum /= x"FFFF"
                      else '0';
         csum_bad_now <= csum_en_r and (ip_bad or l4_bad);
     end generate g_csum;

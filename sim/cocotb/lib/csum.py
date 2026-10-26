@@ -109,7 +109,7 @@ class Expect:
     ip_csum: int          # correct IPv4 header checksum
     l4_csum: int          # correct L4 checksum, before UDP's 0 -> 0xFFFF
     ip_good: bool         # header checksum as built is correct
-    l4_good: bool         # L4 checksum as built is correct (UDPv4 0 counts)
+    l4_good: bool         # L4 checksum as built is correct (UDP 0 counts)
 
 
 @dataclass
@@ -124,7 +124,7 @@ class Packet:
     trailer: bytes = b""          # bytes after the datagram (padding etc.)
     bad_ip: bool = False          # corrupt the IPv4 header checksum
     bad_l4: bool = False          # corrupt the L4 checksum
-    udp_zero: bool = False        # send UDP checksum 0 (no checksum; invalid over IPv6)
+    udp_zero: bool = False        # send UDP checksum 0 ("none"; not judged on RX)
     udp_len: int = None           # UDP Length field; None = l4_len
     opts: bytes = None            # IPv4 options (ihl*4 - 20 bytes); None = random list
     truncate: int = 0             # bytes cut from the end of the datagram (may reach the IP header)
@@ -293,7 +293,7 @@ class Packet:
             l4z = bytearray(l4)
             l4z[off:off + 2] = b"\x00\x00"
             l4_csum = self._l4_csum(l4z, cover)
-            if self.proto == UDP and ip4 and field_val == 0:
+            if self.proto == UDP and field_val == 0:
                 l4_good = True
             else:
                 want = 0xFFFF if (self.proto == UDP and l4_csum == 0) else l4_csum

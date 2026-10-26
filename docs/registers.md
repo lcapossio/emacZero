@@ -73,15 +73,15 @@ across all three on every run.
 
 | Bits | Name | Reset | Description |
 |-----:|------|:-----:|-------------|
-| `[0]` | `tx_en` | `1` | TX path enable. |
-| `[1]` | `rx_en` | `1` | RX path enable. |
+| `[0]` | `tx_en` | `1` | TX path enable. While 0, `s_axis_tready` is held low and no new frame is taken. A change takes effect at the next frame boundary of `s_axis`: a frame part-way accepted when TX is disabled, or whose first beat the source is already offering, is still taken whole and sent. PAUSE frames are not gated. The source must still not leave gaps inside a frame: with `TX_CSUM_OFFLOAD=0` on GMII / RGMII the framer is cut-through, and a gap of 8 or more cycles aborts the frame with `tx_er`. |
+| `[1]` | `rx_en` | `1` | RX path enable. While 0, `m_axis_tvalid` is held low and the MAC drains received frames itself. A change takes effect at the next frame boundary of the MAC's RX stream: a frame part-way out to `m_axis` when RX is disabled, or whose first beat `m_axis` is already offering, is still delivered whole (it still needs the sink's `tready`; `m_axis_tvalid` never drops before a handshake), and one part-way through when RX is enabled is drained whole, so the sink never gets a frame without its start or its TLAST. |
 | `[2]` | `promisc` | `0` | Accept frames regardless of dst-MAC. |
 | `[4:3]` | `speed` | `00` | `00` = 1G, `01` = 100M, `10` = 10M. |
 | `[5]` | `full_duplex` | `1` | Informational only; MAC is full-duplex by construction. |
 | `[6]` | `jumbo_en` | `0` | Accept frames up to `MAX_FRAME` wire bytes instead of 1518 (1522 with an 802.1Q / 802.1ad tag). Both limits count the FCS; jumbo never lowers the limit below the standard one. |
 | `[7]` | `tx_csum_off` | `0` | TX checksum insertion when `TX_CSUM_OFFLOAD=1`: the IPv4 header checksum and the TCP / UDP / ICMP / ICMPv6 checksum are computed and written, whatever software put there, within the scope below (outside it the L4 field is left as software wrote it). Sampled at each frame's first byte, so it may change at any time. No datapath effect when the parameter is 0. |
 | `[8]` | `passthrough` | `0` | Sniffer mode: bypass MAC filter and deliver errored frames tagged via `m_axis_terror`. |
-| `[9]` | `rx_csum_off` | `0` | RX checksum verification when `RX_CSUM_OFFLOAD=1`: a frame whose IPv4 header or TCP / UDP / ICMP / ICMPv6 checksum is wrong ends with `m_axis_terror` and counts in `RX_ERR` and `RX_ERR_CSUM`. The frame is still delivered: the consumer must discard it. Sampled at each frame's SFD. No effect when the parameter is 0. |
+| `[9]` | `rx_csum_off` | `0` | RX checksum verification when `RX_CSUM_OFFLOAD=1`: a frame whose IPv4 header or TCP / UDP / ICMP / ICMPv6 checksum is wrong ends with `m_axis_terror` and counts in `RX_ERR` and `RX_ERR_CSUM`; a UDP checksum of 0 is not judged (see below). The frame is still delivered: the consumer must discard it. Sampled at each frame's SFD. No effect when the parameter is 0. |
 | `[31:10]` | reserved | `0` | Reads as 0; writes ignored. |
 
 Checksum offload scope (both directions): Ethernet II with at most one 802.1Q
@@ -100,10 +100,14 @@ unchanged and unchecked (the IPv4 header checksum is still handled):
   as it has arrived).
 
 IPv6 packets with extension headers, and anything inside a tunnel, pass
-through unchanged and unchecked. On RX a UDP checksum of 0 means "no
-checksum" and passes over IPv4, and is an error over IPv6 (RFC 8200); on TX a
-UDP checksum that computes to 0 is sent as 0xFFFF. A driver should therefore claim RX checksum offload only for
-the packets above and verify the rest itself (for Zephyr, report the
+through unchanged and unchecked. On RX a UDP checksum of 0 is not judged, over
+IPv4 or IPv6: it means "no checksum" over IPv4, and over IPv6 RFC 6935/6936
+let a receiver accept it per socket (Linux: `udp6zerocsumrx`, e.g. for
+VXLAN), so the frame passes without `terror` or a count in `RX_ERR_CSUM` and
+software applies its own policy. On TX a UDP checksum that computes to 0 is
+sent as 0xFFFF. A driver should therefore claim RX checksum offload only for
+the packets above, not report a datagram with a zero UDP checksum as
+verified, and verify the rest itself (for Zephyr, report the
 per-protocol capabilities and keep IPv6 extension-header and fragment checks
 in software). RX checksum offload only flags a failing frame with
 `m_axis_terror`; whatever consumes `m_axis` must drop frames that end with it.
@@ -163,7 +167,7 @@ Both are 16-bit values in bits `[15:0]`; upper bits read as 0.
 |-------:|------|--------|
 | `0x28` | TX_FRAME | Frames accepted by TX. |
 | `0x2C` | TX_BYTE | Payload + header bytes transmitted. |
-| `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. While RX is disabled (CTRL[1]=0) the MAC drains its own FIFO with `m_axis_tvalid` held low, and frames drained that way are counted here too. |
+| `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. While RX is disabled (CTRL[1]=0, applied from the next frame boundary) the MAC drains its own FIFO with `m_axis_tvalid` held low, and frames drained that way are counted here too. |
 | `0x34` | RX_BYTE | Bytes with `rx_dv` on the MAC's GMII input, whether or not the frame is delivered. |
 | `0x38` | RX_ERR | Frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, oversize, runt, or with CTRL[9] a wrong checksum), counted on the same handshake as RX_FRAME, including frames drained while RX is disabled. The core does not drop them; the consumer must discard them. |
 | `0x50` | RX_ERR_OVERFLOW | Frames that started with RX FIFO room and ran out mid-frame: truncated and delivered with terror, so also in RX_FRAME and RX_ERR. |
