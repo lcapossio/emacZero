@@ -15,6 +15,9 @@ There are two kinds of suite:
 - **Directed + constrained-random suites** with reference models
   (`mii_tx_saf`, `eth_mac_rx*`, `gmii_cdc`, `csum_calc`, `tx_csum_off`),
   described under [Randomized suites](#randomized-suites).
+- **Directed suites without a bench**: `eth_mac_sys_rx_en` checks that
+  CTRL[1] changes apply only at frame boundaries of `m_axis` (no frame cut
+  when RX is disabled, no tail delivered when it is enabled mid-frame).
 
 ## Layout
 
@@ -51,7 +54,7 @@ Requires `cocotb>=2.0` with Icarus Verilog for `--hdl verilog`, and GHDL
 (tested: 4.1) for `--hdl vhdl`. `build_and_test.py` runs every suite on both
 languages (phases 2 and 2b, all CPUs in parallel); phase 2b runs in WSL when
 GHDL is not on the Windows `PATH`. CI (`.github/workflows/sim.yml`) runs both.
-A full run of the 53 suites on both languages takes about 9 minutes at
+A full run of the 54 suites on both languages takes about 9 minutes at
 `-j 6`. `gmii_loopback` is the slowest: about 8 minutes on Icarus and 4 on
 GHDL, because a Python coroutine models its PHY on each of about 3 million
 clock edges.

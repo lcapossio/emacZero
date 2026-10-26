@@ -67,6 +67,16 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `eth_mac_sys`: CTRL[1] (`rx_en`) gated `m_axis` combinationally, so
+  clearing it while a frame was part-way out cut that frame (the sink had a
+  prefix with no TLAST and the rest was drained inside the core), and
+  setting it mid-frame handed the sink a tail with no start. A sink that
+  assembles frames until TLAST then merged the prefix and a later frame into
+  one corrupted frame, with the FCS already stripped. The gate now changes
+  only between frames of the MAC's RX stream: a frame in flight when RX is
+  disabled is delivered whole, and one in flight when RX is enabled is
+  drained whole. Verilog and VHDL changed alike; the `eth_mac_sys` proofs
+  were rerun. New cocotb suite `eth_mac_sys_rx_en`, on both languages.
 - RX checksum offload (`RX_CSUM_OFFLOAD=1`, CTRL[9]) no longer fails an IPv6
   UDP datagram whose checksum is 0: it ended with `m_axis_terror` and counted
   in `RX_ERR_CSUM`, so it was dropped before software could apply its policy.

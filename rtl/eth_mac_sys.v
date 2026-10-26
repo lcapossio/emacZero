@@ -309,16 +309,35 @@ module eth_mac_sys #(
     assign     pause_tready     = pause_sel &  s_axis_tready_mac;
     assign     user_tx_tready   = ~pause_sel & s_axis_tready_mac;
 
-    // RX gating: mask tvalid when rx disabled
+    // RX gating: while RX is disabled, tvalid is masked and the MAC's own
+    // stream is drained (tready forced high). CTRL[1] takes effect only
+    // between frames of that stream: rx_en_eff follows cfg_rx_en when no
+    // frame is part-way through, so a frame in flight when RX is disabled is
+    // still delivered whole, and one in flight when RX is enabled is drained
+    // whole; the consumer never sees a frame without its start or its tlast.
     wire [7:0] m_axis_tdata_mac;
     wire       m_axis_tvalid_mac;
     wire       m_axis_tlast_mac;
     wire       m_axis_terror_mac;
     wire       m_axis_tsof_mac;
-    wire       m_axis_tready_mac = cfg_rx_en ? m_axis_tready : 1'b1;
+    reg        rx_en_eff;          // CTRL[1] as applied to the current frame
+    reg        rx_mid;             // a MAC-side frame is part-way through
+    wire       m_axis_tready_mac = rx_en_eff ? m_axis_tready : 1'b1;
+    wire       rx_mid_next = (m_axis_tvalid_mac && m_axis_tready_mac) ?
+                             !m_axis_tlast_mac : rx_mid;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rx_mid    <= 1'b0;
+            rx_en_eff <= 1'b1;      // CTRL[1] reset value
+        end else begin
+            rx_mid <= rx_mid_next;
+            if (!rx_mid_next)
+                rx_en_eff <= cfg_rx_en;
+        end
+    end
 
     assign m_axis_tdata  = m_axis_tdata_mac;
-    assign m_axis_tvalid = m_axis_tvalid_mac & cfg_rx_en;
+    assign m_axis_tvalid = m_axis_tvalid_mac & rx_en_eff;
     assign m_axis_tlast  = m_axis_tlast_mac;
     assign m_axis_terror = m_axis_terror_mac;
     assign m_axis_tsof   = m_axis_tsof_mac;

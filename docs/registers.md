@@ -74,7 +74,7 @@ across all three on every run.
 | Bits | Name | Reset | Description |
 |-----:|------|:-----:|-------------|
 | `[0]` | `tx_en` | `1` | TX path enable. |
-| `[1]` | `rx_en` | `1` | RX path enable. |
+| `[1]` | `rx_en` | `1` | RX path enable. While 0, `m_axis_tvalid` is held low and the MAC drains received frames itself. A change takes effect at the next frame boundary of the MAC's RX stream: a frame part-way out to `m_axis` when RX is disabled is still delivered whole (it still needs the sink's `tready`), and one part-way through when RX is enabled is drained whole, so the sink never gets a frame without its start or its TLAST. |
 | `[2]` | `promisc` | `0` | Accept frames regardless of dst-MAC. |
 | `[4:3]` | `speed` | `00` | `00` = 1G, `01` = 100M, `10` = 10M. |
 | `[5]` | `full_duplex` | `1` | Informational only; MAC is full-duplex by construction. |
@@ -167,7 +167,7 @@ Both are 16-bit values in bits `[15:0]`; upper bits read as 0.
 |-------:|------|--------|
 | `0x28` | TX_FRAME | Frames accepted by TX. |
 | `0x2C` | TX_BYTE | Payload + header bytes transmitted. |
-| `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. While RX is disabled (CTRL[1]=0) the MAC drains its own FIFO with `m_axis_tvalid` held low, and frames drained that way are counted here too. |
+| `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. While RX is disabled (CTRL[1]=0, applied from the next frame boundary) the MAC drains its own FIFO with `m_axis_tvalid` held low, and frames drained that way are counted here too. |
 | `0x34` | RX_BYTE | Bytes with `rx_dv` on the MAC's GMII input, whether or not the frame is delivered. |
 | `0x38` | RX_ERR | Frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, oversize, runt, or with CTRL[9] a wrong checksum), counted on the same handshake as RX_FRAME, including frames drained while RX is disabled. The core does not drop them; the consumer must discard them. |
 | `0x50` | RX_ERR_OVERFLOW | Frames that started with RX FIFO room and ran out mid-frame: truncated and delivered with terror, so also in RX_FRAME and RX_ERR. |

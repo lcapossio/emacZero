@@ -278,6 +278,9 @@ architecture rtl of eth_mac_sys is
     signal m_axis_terror_mac : std_logic;
     signal m_axis_tsof_mac   : std_logic;
     signal m_axis_tready_mac : std_logic;
+    signal rx_en_eff         : std_logic;   -- CTRL[1] as applied to the current frame
+    signal rx_mid            : std_logic;   -- a MAC-side frame is part-way through
+    signal rx_mid_next       : std_logic;
 
     signal cfg_speed_eff : std_logic_vector(1 downto 0);
 
@@ -400,11 +403,31 @@ begin
     pause_tready     <= pause_sel and s_axis_tready_mac;
     user_tx_tready   <= (not pause_sel) and s_axis_tready_mac;
 
-    -- RX gating: mask tvalid when rx disabled
-    m_axis_tready_mac <= m_axis_tready when cfg_rx_en = '1' else '1';
+    -- RX gating: while RX is disabled, tvalid is masked and the MAC's own
+    -- stream is drained (tready forced high). CTRL[1] takes effect only
+    -- between frames of that stream: rx_en_eff follows cfg_rx_en when no
+    -- frame is part-way through, so a frame in flight when RX is disabled is
+    -- still delivered whole, and one in flight when RX is enabled is drained
+    -- whole; the consumer never sees a frame without its start or its tlast.
+    m_axis_tready_mac <= m_axis_tready when rx_en_eff = '1' else '1';
+    rx_mid_next <= (not m_axis_tlast_mac)
+                       when m_axis_tvalid_mac = '1' and m_axis_tready_mac = '1'
+                   else rx_mid;
+    process (clk, rst_n)
+    begin
+        if rst_n = '0' then
+            rx_mid    <= '0';
+            rx_en_eff <= '1';       -- CTRL[1] reset value
+        elsif rising_edge(clk) then
+            rx_mid <= rx_mid_next;
+            if rx_mid_next = '0' then
+                rx_en_eff <= cfg_rx_en;
+            end if;
+        end if;
+    end process;
 
     m_axis_tdata  <= m_axis_tdata_mac;
-    m_axis_tvalid <= m_axis_tvalid_mac and cfg_rx_en;
+    m_axis_tvalid <= m_axis_tvalid_mac and rx_en_eff;
     m_axis_tlast  <= m_axis_tlast_mac;
     m_axis_terror <= m_axis_terror_mac;
     m_axis_tsof   <= m_axis_tsof_mac;
