@@ -94,8 +94,10 @@ This project does not yet maintain long-lived release branches.
   PAUSE frame (was 714 ns) and for one right behind a 1514-byte frame (was
   12.26 us). On an Arty A7 (MII, 100M, PHY in MII loopback, 100 MHz sys
   clock) the gate closed 130 ns after RX_DV fell at the FPGA pins, with
-  1518-byte frames queued at line rate. The changes, alike in Verilog and
-  VHDL:
+  1518-byte frames queued at line rate. On a ZCU106 (1000BASE-X, GMII 1G,
+  125 MHz sys clock, PCS/PMA transceiver in internal loopback) it closed
+  48 ns after RX_DV fell at the MAC's GMII, also with 1518-byte frames
+  queued at line rate. The changes, alike in Verilog and VHDL:
   - New `eth_pause_rx` recognizes PAUSE frames on the PHY receive stream in
     the receive clock domain, before the RX FIFO, and hands the quanta to
     `eth_pause` through a toggle synchronizer. `eth_pause` keeps the TX gate

@@ -244,6 +244,10 @@ On hardware (Arty A7, MII at 100M, 100 MHz sys clock, the DP83848 PHY in MII
 loopback so the MAC receives its own PAUSE frames, sampled at the FPGA pins
 every 10 ns): the TX gate closed 130 ns after RX_DV fell, before the next
 queued data frame's IFG ended, and a quanta of 1 held TX for 5130 ns.
+On a ZCU106 (1000BASE-X, GMII at 1G, 125 MHz sys clock, the PCS/PMA core's
+transceiver in internal loopback, sampled at the MAC's GMII every 8 ns): the
+gate closed 48 ns after RX_DV fell, with 1518-byte frames queued at line
+rate, and a quanta of 1 held TX for 520 ns (512 bit times = 512 ns).
 
 ## 0x88 - PAUSE_QUANTA
 
