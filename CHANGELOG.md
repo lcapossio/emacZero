@@ -66,6 +66,12 @@ This project does not yet maintain long-lived release branches.
   (`sim/parity/run_all.py`), with translateHDL and yowasp-yosys pinned. CI runs on Ubuntu 24.04 instead of
   `ubuntu-latest`.
 
+- `eth_mac_sys` / `axilite_regs` parameter `TXRX_EN_AT_RESET` (default 1,
+  unchanged behaviour): with 0, CTRL resets to `0x20`, with `tx_en` and
+  `rx_en` clear, so the core neither takes nor delivers a frame until
+  software sets them. Verilog and VHDL alike, proven equivalent with the
+  parameter at 0 as well.
+
 ### Changed
 
 - `tb_gmii_cdc_rx_overflow.v` reads its FIFO-word probe through a wire, and
@@ -84,6 +90,15 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- `eth_mac_sys`: the TX and RX frame-boundary gates that apply CTRL[0] and
+  CTRL[1] reset to "enabled" whatever CTRL's own reset value was. For one
+  clock after reset the gates followed their own reset value, so a core whose
+  CTRL resets with TX disabled could take a frame whose first beat was
+  offered across the reset release, and then send it whole. Both gates now
+  reset from `TXRX_EN_AT_RESET`, as CTRL does. With the default (1) nothing
+  changes. Verilog and VHDL changed alike. New cocotb suites
+  `eth_mac_sys_reset_txrx_off` and `eth_mac_sys_reset_txrx_on`, on both
+  languages.
 - `eth_mac_sys`: CTRL[0] (`tx_en`) gated `s_axis` combinationally, so
   clearing it while the source was part-way through a frame stalled that
   frame. With `TX_CSUM_OFFLOAD=0` on GMII / RGMII the cut-through framer

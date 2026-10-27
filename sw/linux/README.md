@@ -147,7 +147,8 @@ progress: probe, link handling, TX and RX are tested on hardware against a PC
   lost from the totals; the driver reads the busiest counters last, with
   interrupts off, to keep that window short.
 
-The MAC comes out of reset with TX and RX enabled. The driver disables them
+The MAC comes out of reset with TX and RX enabled (unless it was built with
+`TXRX_EN_AT_RESET=0`). The driver disables them
 at probe, enables them on `ifup` and disables them on `ifdown`.
 
 ## Requirements on the hardware around the MAC

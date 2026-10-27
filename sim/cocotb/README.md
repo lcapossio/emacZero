@@ -22,7 +22,10 @@ There are three kinds of suite:
   (`TX_CSUM_OFFLOAD` 0 and 1) check the same for CTRL[0] on `s_axis` and the
   GMII wire (no aborted or re-framed frame); `eth_mac_tx_start` checks that
   `eth_mac_tx` keeps a first byte handshaken on the cycle `tx_start_ok`
-  falls.
+  falls; `eth_mac_sys_reset_txrx_off` and `eth_mac_sys_reset_txrx_on`
+  (`TXRX_EN_AT_RESET` 0 and 1) check that CTRL's `tx_en` / `rx_en` and the
+  frame-boundary gates leave reset together, with a frame offered across the
+  reset release.
 
 ## Layout
 

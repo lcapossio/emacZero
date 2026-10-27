@@ -149,7 +149,8 @@ module eth_mac_sys #(
     // FIFO at gigabit line rate.
     parameter CLK_FREQ_HZ       = 100_000_000,
     parameter RGMII_SPEEDS      = "ALL",  // "ALL" | "1G_ONLY" | "10_100"
-    parameter MII_DEBUG         = 0       // 0 = debug capture/counters off
+    parameter MII_DEBUG         = 0,      // 0 = debug capture/counters off
+    parameter TXRX_EN_AT_RESET  = 1       // CTRL tx_en/rx_en reset value
 )(
     input  wire        clk,           // system clock, CLK_FREQ_HZ
     input  wire        rst_n,
@@ -283,6 +284,7 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 
 Default CTRL: tx_en=1, rx_en=1, promisc=0, speed=00 (1G), full_duplex=1,
 jumbo_en=0, tx_csum_off=0, passthrough=0, rx_csum_off=0  ->  0x23.
+With `TXRX_EN_AT_RESET=0`, tx_en and rx_en reset to 0 (CTRL = 0x20).
 Default MAC: 02:00:00:00:00:01 (locally administered).
 
 ## Simulation
