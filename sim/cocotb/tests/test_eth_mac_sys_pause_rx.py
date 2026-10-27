@@ -46,7 +46,7 @@ import zlib
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer, with_timeout
 from cocotb.utils import get_sim_time
 
 from lib.axil_master import AxiLiteMaster
@@ -205,6 +205,22 @@ class RxPins:
                 self._drive(b & 0xF, 1, 0)
                 await self._slot()
                 self._drive(b >> 4, 1, 0)
+                if er:
+                    # RX_ER on the high nibble: RX_CTL low on the falling
+                    # edge only (it carries RX_DV xor RX_ER there).
+                    await RisingEdge(self.clk)
+                    await Timer(RXC_NS // 4, "ns")
+                    self.dut.rgmii_rx_ctl.value = 0
+        return await self._end()
+
+    async def send_nibs(self, nibs, er_at=()):
+        """MII only: drive nibbles as given, rx_er on the indices in er_at."""
+        for i, n in enumerate(nibs):
+            await self._slot()
+            self._drive(n, 1, 1 if i in er_at else 0)
+        return await self._end()
+
+    async def _end(self):
         await self._slot()
         self._drive(0, 0, 0)
         t_end = now_ns()
@@ -317,13 +333,49 @@ async def pause_rx(dut):
     await axil.write(0x8C, 0)
     bad = [("bad FCS", wire(pause_frame(0xFFFF), bad_fcs=True), None),
            ("56-byte frame", wire(pause_frame(0xFFFF, length=52)), None)]
-    if MODE in ("gmii", "mii"):
-        bad.insert(1, ("rx_er", wire(pause_frame(0xFFFF)), 30))
+    good = wire(pause_frame(0xFFFF))
+    bad.insert(1, ("rx_er", good, 30))
+    bad.insert(2, ("rx_er on the last byte", good, len(good) - 1))
     for label, byts, er_at in bad:
         await pins.send(byts, er_at=er_at)
         await Timer(BUDGET_NS, "ns")
         c.eq(f"{label}: tx_paused", bit(dut.tx_paused), 0)
         c.eq(f"{label}: PAUSE_RX_CNT", await axil.read(0x8C), 0)
+
+    # 4b. A valid PAUSE frame right after one with rx_er on its last byte
+    #     counts: the error does not carry over to the next frame.
+    await pins.send(good, er_at=len(good) - 1)
+    await latency("PAUSE after an rx_er frame", [good])
+    c.eq("PAUSE after an rx_er frame: PAUSE_RX_CNT", await axil.read(0x8C), 1)
+    await latency("PAUSE quanta 0", [wire(pause_frame(0))], level=0)
+    await axil.write(0x8C, 0)
+
+    # 5. MII: the SFD is found after an odd number of nibbles (an even number
+    #    of 5s before the D), and rx_er on a trailing odd nibble makes a frame
+    #    invalid.
+    if MODE == "mii":
+        def nibs(byts):
+            return [n for b in byts for n in (b & 0xF, b >> 4)]
+
+        def odd(fives, q):
+            return [5] * fives + [0xD] + nibs(wire(pause_frame(q))[8:])
+
+        for fives in (14, 2):
+            w = cocotb.start_soon(paused_edge(1))
+            t_end = await pins.send_nibs(odd(fives, 0xFFFF))
+            lat = (await with_timeout(w, 4 * BUDGET_NS, "ns")) - t_end
+            c.check(f"{fives} preamble nibbles: tx_paused=1 {lat:.0f} ns after "
+                    f"RX_DV fell (budget {BUDGET_NS:.0f} ns)", lat <= BUDGET_NS)
+            w = cocotb.start_soon(paused_edge(0))
+            await pins.send_nibs(odd(fives, 0))
+            await with_timeout(w, 4 * BUDGET_NS, "ns")
+        c.eq("odd preambles: PAUSE_RX_CNT", await axil.read(0x8C), 4)
+
+        tail = nibs(wire(pause_frame(0xFFFF))) + [0]
+        await pins.send_nibs(tail, er_at=(len(tail) - 1,))
+        await Timer(BUDGET_NS, "ns")
+        c.eq("rx_er on a trailing nibble: tx_paused", bit(dut.tx_paused), 0)
+        c.eq("rx_er on a trailing nibble: PAUSE_RX_CNT", await axil.read(0x8C), 4)
 
     c.finish()
 

@@ -12,7 +12,8 @@
 //
 // A frame is a PAUSE frame when dst = 01:80:C2:00:00:01, EtherType = 0x8808
 // and opcode = 0x0001. It counts, and takes effect when it ends, only if it
-// is a valid frame: good FCS, no rx_er after the SFD, and at least 64 bytes.
+// is a valid frame: good FCS, no rx_er while rx_dv is high, and at least 64
+// bytes.
 // Then pause_tgl flips when it ends. eth_pause crosses that into its own clock
 // domain: it synchronizes pause_tgl and reads pause_quanta once the flip has
 // arrived. pause_quanta takes a matched frame's pause_time as soon as those
@@ -25,11 +26,14 @@
 // Byte input:
 //   RX_NIBBLE = 0  rx_d is a byte on every rx_clk cycle with rx_dv and rx_ce
 //                  (GMII: rx_ce tied 1; RGMII 10/100: one byte every two
-//                  cycles). rx_er is sampled with the byte.
+//                  cycles). rx_er counts on the cycles with rx_ce, where it
+//                  goes with the byte (rgmii_if holds it in between).
 //   RX_NIBBLE = 1  rx_d[3:0] is an MII nibble on every cycle with rx_dv, low
-//                  nibble first; rx_ce is ignored. A byte's rx_er is the OR
-//                  of its two nibbles'.
+//                  nibble first; rx_ce is ignored. Nibbles are paired from
+//                  the SFD, so the preamble may have an odd number of them.
 // A frame is the rx_dv envelope; it ends on the first cycle with rx_dv low.
+// rx_er on any of its bytes or, with RX_NIBBLE = 1, any of its nibbles (a
+// trailing odd nibble included) makes the frame invalid.
 //
 // rst_n is asynchronous; it is synchronized to rx_clk here.
 // Verilog 2001
@@ -62,50 +66,59 @@ module eth_pause_rx #(
     // =========================================================================
     // Byte stage: one registered byte strobe per received byte, and a frame-
     // end strobe on the cycle after rx_dv falls, so it always follows the
-    // frame's last byte strobe.
+    // frame's last byte strobe. b_end_er comes with b_end: the frame had
+    // rx_er (see above).
     // =========================================================================
     reg  [7:0] b_d;
     reg        b_stb;
-    reg        b_er;
     reg        b_end;
+    reg        b_end_er;
     reg        dv_d1;
-    reg        nib_sel;      // RX_NIBBLE: the low nibble of a byte is held
+    reg        dv_er;        // rx_er seen in this frame so far
+    reg        nib_algn;     // RX_NIBBLE: SFD seen, nibbles now pair in twos
+    reg        nib_have;     // RX_NIBBLE: nib_low holds a nibble
     reg  [3:0] nib_low;
-    reg        nib_er;
 
     always @(posedge rx_clk or negedge rst_n_s2) begin
         if (!rst_n_s2) begin
-            b_d     <= 8'd0;
-            b_stb   <= 1'b0;
-            b_er    <= 1'b0;
-            b_end   <= 1'b0;
-            dv_d1   <= 1'b0;
-            nib_sel <= 1'b0;
-            nib_low <= 4'd0;
-            nib_er  <= 1'b0;
+            b_d      <= 8'd0;
+            b_stb    <= 1'b0;
+            b_end    <= 1'b0;
+            b_end_er <= 1'b0;
+            dv_d1    <= 1'b0;
+            dv_er    <= 1'b0;
+            nib_algn <= 1'b0;
+            nib_have <= 1'b0;
+            nib_low  <= 4'd0;
         end else begin
-            dv_d1 <= rx_dv;
-            b_end <= dv_d1 && !rx_dv;
-            b_stb <= 1'b0;
-            // Nibble pairing (used only when RX_NIBBLE != 0).
+            dv_d1    <= rx_dv;
+            b_end    <= dv_d1 && !rx_dv;
+            b_end_er <= dv_er;
+            dv_er    <= rx_dv && (dv_er || (rx_er && (RX_NIBBLE != 0 || rx_ce)));
+            b_stb    <= 1'b0;
+            // Nibble pairing (used only when RX_NIBBLE != 0). Until the SFD,
+            // each nibble is paired with the one before it, so the preamble
+            // reads as 0x55 bytes and the SFD (nibbles 5 then D) is found
+            // after an odd or an even number of preamble nibbles. From the
+            // SFD on, nibbles pair in twos.
             if (rx_dv) begin
-                nib_sel <= !nib_sel;
-                if (!nib_sel) begin
-                    nib_low <= rx_d[3:0];
-                    nib_er  <= rx_er;
+                nib_low  <= rx_d[3:0];
+                nib_have <= !(nib_algn && nib_have);
+                if (!nib_algn && nib_have && nib_low == 4'h5 && rx_d[3:0] == 4'hD) begin
+                    nib_algn <= 1'b1;
+                    nib_have <= 1'b0;
                 end
             end else begin
-                nib_sel <= 1'b0;
+                nib_algn <= 1'b0;
+                nib_have <= 1'b0;
             end
             if (RX_NIBBLE != 0) begin
-                if (rx_dv && nib_sel) begin
+                if (rx_dv && nib_have) begin
                     b_d   <= {rx_d[3:0], nib_low};
-                    b_er  <= nib_er | rx_er;
                     b_stb <= 1'b1;
                 end
             end else if (rx_dv && rx_ce) begin
                 b_d   <= rx_d;
-                b_er  <= rx_er;
                 b_stb <= 1'b1;
             end
         end
@@ -133,7 +146,6 @@ module eth_pause_rx #(
     reg [3:0]  rx_state;
     reg [2:0]  rx_idx;       // 0..5 within DST/SRC fields
     reg [6:0]  rx_len;       // bytes after the SFD, saturating at 64
-    reg        rx_bad;       // rx_er seen after the SFD
 
     // CRC over the bytes after the SFD. A frame whose FCS is good leaves the
     // register at the CRC-32 residue, as in eth_mac_rx.
@@ -176,16 +188,11 @@ module eth_pause_rx #(
             rx_state     <= RX_IDLE;
             rx_idx       <= 3'd0;
             rx_len       <= 7'd0;
-            rx_bad       <= 1'b0;
             pause_tgl    <= 1'b0;
             pause_quanta <= 16'd0;
         end else begin
-            if (rx_body) begin
-                if (rx_len != 7'd64)
-                    rx_len <= rx_len + 7'd1;
-                if (b_er)
-                    rx_bad <= 1'b1;
-            end
+            if (rx_body && rx_len != 7'd64)
+                rx_len <= rx_len + 7'd1;
 
             if (b_stb) begin
                 case (rx_state)
@@ -195,7 +202,6 @@ module eth_pause_rx #(
                     RX_PRE: begin
                         rx_idx <= 3'd0;
                         rx_len <= 7'd0;
-                        rx_bad <= 1'b0;
                         if (b_d == 8'hD5)
                             rx_state <= RX_DST;
                         else if (b_d != 8'h55)
@@ -245,7 +251,7 @@ module eth_pause_rx #(
             if (b_end) begin
                 // End of frame. Commit a matched PAUSE frame only if it was a
                 // valid frame.
-                if (rx_state == RX_LATCH && rx_fcs_ok && !rx_bad && rx_len == 7'd64)
+                if (rx_state == RX_LATCH && rx_fcs_ok && !b_end_er && rx_len == 7'd64)
                     pause_tgl <= ~pause_tgl;
                 rx_state <= RX_IDLE;
                 rx_idx   <= 3'd0;

@@ -92,21 +92,30 @@ This project does not yet maintain long-lived release branches.
   listed under v0.2.0. Measured in simulation from RX_DV falling at the PHY
   pins to the TX gate, GMII 1G with a 125 MHz sys clock: 42 ns, for a lone
   PAUSE frame (was 714 ns) and for one right behind a 1514-byte frame (was
-  12.26 us). The changes, alike in Verilog and VHDL:
+  12.26 us). On an Arty A7 (MII, 100M, PHY in MII loopback, 100 MHz sys
+  clock) the gate closed 130 ns after RX_DV fell at the FPGA pins, with
+  1518-byte frames queued at line rate. The changes, alike in Verilog and
+  VHDL:
   - New `eth_pause_rx` recognizes PAUSE frames on the PHY receive stream in
     the receive clock domain, before the RX FIFO, and hands the quanta to
     `eth_pause` through a toggle synchronizer. `eth_pause` keeps the TX gate
     timer and the PAUSE generator; its receive inputs are replaced by
     `rx_pause_tgl` / `rx_pause_quanta`. `mii_if` gains `mii_rxd_q`,
-    `mii_rx_dv_q`, `mii_rx_er_q` (its registered receive inputs).
+    `mii_rx_dv_q`, `mii_rx_er_q` (its registered receive inputs). On MII,
+    `eth_pause_rx` finds the SFD after an odd or an even number of preamble
+    nibbles, and rejects a frame with `rx_er` on any nibble, including a
+    trailing odd one.
   - On GMII and RGMII, `gmii_cdc` gains `tx_hold`: while it is high no data
     frame starts at the media side, and a data frame waiting in its start gap
-    is put back. `eth_mac_sys` drives it from the TX gate.
+    is put back. `eth_mac_sys` drives it from the TX gate. `eth_pause`'s
+    `tx_paused` is now a flop, since it is synchronized into the TX clock
+    domain.
   - PAUSE frames from `PAUSE_CTRL[0]` take their own path: a second
     `eth_mac_tx` (`MAX_FRAME` 60) and a control-frame FIFO in `gmii_cdc`
     (`gmii_ctl_*_in`, `tx_ctl_busy`), and a control-frame AXIS input and FIFO
-    in `mii_tx_saf` (`ctl_axis_*`). A control frame starts ahead of queued
-    data frames and while TX is held. Behaviour change: a PAUSE frame
+    in `mii_tx_saf` (`ctl_axis_*`). Once a control frame is complete in its
+    FIFO and has crossed to the media side, it starts ahead of queued data
+    frames the media side has not yet committed to, also while TX is held. Behaviour change: a PAUSE frame
     requested while a user frame is still entering the TX FIFO now goes out
     before that frame, not after it. The PAUSE-priority mux in `eth_mac_sys`
     is gone.

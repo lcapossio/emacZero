@@ -26,7 +26,9 @@ There are three kinds of suite:
   check 802.3 Annex 31B timing on each receive path, from the PHY pins: a
   received PAUSE frame gates TX within a quarter of the bound, also right
   behind a long frame, queued data frames are held at the TX pins, the MAC's
-  own PAUSE frame still goes out, and both TX framers are counted;
+  own PAUSE frame still goes out, and both TX framers are counted (on MII
+  also after an odd number of preamble nibbles, and not with `rx_er` on a
+  trailing nibble);
   `gmii_cdc_hold` and `gmii_cdc_hold_big` (`MAX_FRAME` 12000) fill the TX
   FIFO to its start limit while held, send the largest frame and check that
   it fits, and check that a control frame or `tx_hold` displaces a data frame

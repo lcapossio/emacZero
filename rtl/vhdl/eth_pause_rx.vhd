@@ -13,7 +13,8 @@
 --
 -- A frame is a PAUSE frame when dst = 01:80:C2:00:00:01, EtherType = 0x8808
 -- and opcode = 0x0001. It counts, and takes effect when it ends, only if it
--- is a valid frame: good FCS, no rx_er after the SFD, and at least 64 bytes.
+-- is a valid frame: good FCS, no rx_er while rx_dv is high, and at least 64
+-- bytes.
 -- Then pause_tgl flips when it ends. eth_pause crosses that into its own clock
 -- domain: it synchronizes pause_tgl and reads pause_quanta once the flip has
 -- arrived. pause_quanta takes a matched frame's pause_time as soon as those
@@ -26,11 +27,14 @@
 -- Byte input:
 --   RX_NIBBLE = 0  rx_d is a byte on every rx_clk cycle with rx_dv and rx_ce
 --                  (GMII: rx_ce tied 1; RGMII 10/100: one byte every two
---                  cycles). rx_er is sampled with the byte.
+--                  cycles). rx_er counts on the cycles with rx_ce, where it
+--                  goes with the byte (rgmii_if holds it in between).
 --   RX_NIBBLE = 1  rx_d(3 downto 0) is an MII nibble on every cycle with rx_dv,
---                  low nibble first; rx_ce is ignored. A byte's rx_er is the OR
---                  of its two nibbles'.
+--                  low nibble first; rx_ce is ignored. Nibbles are paired from
+--                  the SFD, so the preamble may have an odd number of them.
 -- A frame is the rx_dv envelope; it ends on the first cycle with rx_dv low.
+-- rx_er on any of its bytes or, with RX_NIBBLE = 1, any of its nibbles (a
+-- trailing odd nibble included) makes the frame invalid.
 --
 -- rst_n is asynchronous; it is synchronized to rx_clk here.
 -- =============================================================================
@@ -72,14 +76,15 @@ architecture rtl of eth_pause_rx is
     -- =========================================================================
     -- Byte stage
     -- =========================================================================
-    signal b_d     : std_logic_vector(7 downto 0);
-    signal b_stb   : std_logic;
-    signal b_er    : std_logic;
-    signal b_end   : std_logic;
-    signal dv_d1   : std_logic;
-    signal nib_sel : std_logic;      -- RX_NIBBLE: the low nibble of a byte is held
-    signal nib_low : std_logic_vector(3 downto 0);
-    signal nib_er  : std_logic;
+    signal b_d      : std_logic_vector(7 downto 0);
+    signal b_stb    : std_logic;
+    signal b_end    : std_logic;
+    signal b_end_er : std_logic;
+    signal dv_d1    : std_logic;
+    signal dv_er    : std_logic;     -- rx_er seen in this frame so far
+    signal nib_algn : std_logic;     -- RX_NIBBLE: SFD seen, nibbles now pair in twos
+    signal nib_have : std_logic;     -- RX_NIBBLE: nib_low holds a nibble
+    signal nib_low  : std_logic_vector(3 downto 0);
 
     -- =========================================================================
     -- Parser FSM
@@ -100,7 +105,6 @@ architecture rtl of eth_pause_rx is
     signal rx_state  : std_logic_vector(3 downto 0);
     signal rx_idx    : unsigned(2 downto 0);   -- 0..5 within DST/SRC fields
     signal rx_len    : unsigned(6 downto 0);   -- bytes after the SFD, saturating at 64
-    signal rx_bad    : std_logic;              -- rx_er seen after the SFD
 
     signal pause_tgl_i    : std_logic;
     signal pause_quanta_i : std_logic_vector(15 downto 0);
@@ -144,42 +148,55 @@ begin
     -- =========================================================================
     -- Byte stage: one registered byte strobe per received byte, and a frame-
     -- end strobe on the cycle after rx_dv falls, so it always follows the
-    -- frame's last byte strobe.
+    -- frame's last byte strobe. b_end_er comes with b_end: the frame had
+    -- rx_er (see above).
     -- =========================================================================
     process (rx_clk, rst_n_s2)
     begin
         if rst_n_s2 = '0' then
-            b_d     <= (others => '0');
-            b_stb   <= '0';
-            b_er    <= '0';
-            b_end   <= '0';
-            dv_d1   <= '0';
-            nib_sel <= '0';
-            nib_low <= (others => '0');
-            nib_er  <= '0';
+            b_d      <= (others => '0');
+            b_stb    <= '0';
+            b_end    <= '0';
+            b_end_er <= '0';
+            dv_d1    <= '0';
+            dv_er    <= '0';
+            nib_algn <= '0';
+            nib_have <= '0';
+            nib_low  <= (others => '0');
         elsif rising_edge(rx_clk) then
-            dv_d1 <= rx_dv;
-            b_end <= dv_d1 and not rx_dv;
-            b_stb <= '0';
-            -- Nibble pairing (used only when RX_NIBBLE /= 0).
+            dv_d1    <= rx_dv;
+            b_end    <= dv_d1 and not rx_dv;
+            b_end_er <= dv_er;
+            if RX_NIBBLE /= 0 then
+                dv_er <= rx_dv and (dv_er or rx_er);
+            else
+                dv_er <= rx_dv and (dv_er or (rx_er and rx_ce));
+            end if;
+            b_stb    <= '0';
+            -- Nibble pairing (used only when RX_NIBBLE /= 0). Until the SFD,
+            -- each nibble is paired with the one before it, so the preamble
+            -- reads as 0x55 bytes and the SFD (nibbles 5 then D) is found
+            -- after an odd or an even number of preamble nibbles. From the
+            -- SFD on, nibbles pair in twos.
             if rx_dv = '1' then
-                nib_sel <= not nib_sel;
-                if nib_sel = '0' then
-                    nib_low <= rx_d(3 downto 0);
-                    nib_er  <= rx_er;
+                nib_low  <= rx_d(3 downto 0);
+                nib_have <= not (nib_algn and nib_have);
+                if nib_algn = '0' and nib_have = '1' and nib_low = x"5" and
+                   rx_d(3 downto 0) = x"D" then
+                    nib_algn <= '1';
+                    nib_have <= '0';
                 end if;
             else
-                nib_sel <= '0';
+                nib_algn <= '0';
+                nib_have <= '0';
             end if;
             if RX_NIBBLE /= 0 then
-                if rx_dv = '1' and nib_sel = '1' then
+                if rx_dv = '1' and nib_have = '1' then
                     b_d   <= rx_d(3 downto 0) & nib_low;
-                    b_er  <= nib_er or rx_er;
                     b_stb <= '1';
                 end if;
             elsif rx_dv = '1' and rx_ce = '1' then
                 b_d   <= rx_d;
-                b_er  <= rx_er;
                 b_stb <= '1';
             end if;
         end if;
@@ -212,17 +229,11 @@ begin
             rx_state       <= RX_IDLE;
             rx_idx         <= (others => '0');
             rx_len         <= (others => '0');
-            rx_bad         <= '0';
             pause_tgl_i    <= '0';
             pause_quanta_i <= (others => '0');
         elsif rising_edge(rx_clk) then
-            if rx_body = '1' then
-                if rx_len /= 64 then
-                    rx_len <= rx_len + 1;
-                end if;
-                if b_er = '1' then
-                    rx_bad <= '1';
-                end if;
+            if rx_body = '1' and rx_len /= 64 then
+                rx_len <= rx_len + 1;
             end if;
 
             if b_stb = '1' then
@@ -233,7 +244,6 @@ begin
                     when RX_PRE =>
                         rx_idx <= (others => '0');
                         rx_len <= (others => '0');
-                        rx_bad <= '0';
                         if b_d = x"D5" then
                             rx_state <= RX_DST;
                         elsif b_d /= x"55" then
@@ -285,7 +295,7 @@ begin
             if b_end = '1' then
                 -- End of frame. Commit a matched PAUSE frame only if it was a
                 -- valid frame.
-                if rx_state = RX_LATCH and rx_fcs_ok = '1' and rx_bad = '0' and rx_len = 64 then
+                if rx_state = RX_LATCH and rx_fcs_ok = '1' and b_end_er = '0' and rx_len = 64 then
                     pause_tgl_i <= not pause_tgl_i;
                 end if;
                 rx_state <= RX_IDLE;

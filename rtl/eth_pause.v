@@ -9,7 +9,8 @@
 //                receive clock domain, ahead of the RX FIFO) recognizes PAUSE
 //                frames (dst=01:80:C2:00:00:01, EtherType=0x8808,
 //                opcode=0x0001) and flips rx_pause_tgl for each valid one:
-//                good FCS, no rx_er after the SFD, and at least 64 bytes. Here
+//                good FCS, no rx_er while rx_dv is high, and at least 64
+//                bytes. Here
 //                each flip counts, and its 16-bit quanta is loaded into
 //                pause_remaining, which decrements at one tick per "pause
 //                quantum" of the current line rate. While pause_remaining != 0,
@@ -20,7 +21,8 @@
 //   * TX generator: when cfg_pause_tx_send pulses, enqueues a single 60-byte
 //                   MAC-Control PAUSE frame on its own AXIS-byte master. The
 //                   wrapper sends it on a control path that is not held by
-//                   tx_paused and goes out ahead of queued user frames.
+//                   tx_paused and goes out ahead of queued user frames that
+//                   have not started.
 //
 // Pause-quantum tick period, in clk cycles (defaults are for clk = 100 MHz;
 // eth_mac_sys derives them from its CLK_FREQ_HZ):
@@ -121,17 +123,26 @@ module eth_pause #(
     // ============================================================
     // Pause timer and PAUSE_RX counter
     // ============================================================
+    // tx_paused_r is (pause_remaining != 0), kept in a flop of its own:
+    // gmii_cdc and mii_tx_saf synchronize tx_paused into the TX clock domain,
+    // so it must not glitch.
     reg [15:0] pause_remaining;
+    reg        tx_paused_r;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pause_remaining <= 16'd0;
+            tx_paused_r     <= 1'b0;
             pause_rx_cnt    <= 32'd0;
         end else begin
-            if (pause_load)
+            if (pause_load) begin
                 pause_remaining <= rx_pause_quanta;
-            else if (pause_tick && pause_remaining != 16'd0)
+                tx_paused_r     <= (rx_pause_quanta != 16'd0);
+            end else if (pause_tick && pause_remaining != 16'd0) begin
                 pause_remaining <= pause_remaining - 16'd1;
+                if (pause_remaining == 16'd1)
+                    tx_paused_r <= 1'b0;
+            end
 
             if (stat_clr)
                 pause_rx_cnt <= 32'd0;
@@ -140,7 +151,7 @@ module eth_pause #(
         end
     end
 
-    assign tx_paused = (pause_remaining != 16'd0);
+    assign tx_paused = tx_paused_r;
 
     // (our_mac is consumed by the TX generator below; tag the snoop input as
     //  used so lint stays clean even when the parser only verifies the dst.)

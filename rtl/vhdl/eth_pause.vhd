@@ -10,7 +10,8 @@
 --                receive clock domain, ahead of the RX FIFO) recognizes PAUSE
 --                frames (dst=01:80:C2:00:00:01, EtherType=0x8808,
 --                opcode=0x0001) and flips rx_pause_tgl for each valid one:
---                good FCS, no rx_er after the SFD, and at least 64 bytes. Here
+--                good FCS, no rx_er while rx_dv is high, and at least 64
+--                bytes. Here
 --                each flip counts, and its 16-bit quanta is loaded into
 --                pause_remaining, which decrements at one tick per "pause
 --                quantum" of the current line rate. While pause_remaining != 0,
@@ -21,7 +22,8 @@
 --   * TX generator: when cfg_pause_tx_send pulses, enqueues a single 60-byte
 --                   MAC-Control PAUSE frame on its own AXIS-byte master. The
 --                   wrapper sends it on a control path that is not held by
---                   tx_paused and goes out ahead of queued user frames.
+--                   tx_paused and goes out ahead of queued user frames that
+--                   have not started.
 --
 -- Pause-quantum tick period, in clk cycles (defaults are for clk = 100 MHz;
 -- eth_mac_sys derives them from its CLK_FREQ_HZ):
@@ -101,7 +103,11 @@ architecture rtl of eth_pause is
     -- ============================================================
     -- Pause timer and PAUSE_RX counter
     -- ============================================================
+    -- tx_paused_r is (pause_remaining /= 0), kept in a flop of its own:
+    -- gmii_cdc and mii_tx_saf synchronize tx_paused into the TX clock domain,
+    -- so it must not glitch.
     signal pause_remaining : unsigned(15 downto 0);
+    signal tx_paused_r     : std_logic;
     signal pause_rx_cnt_i  : unsigned(31 downto 0);
 
     -- (our_mac is consumed by the TX generator below; tag the snoop input as
@@ -182,12 +188,21 @@ begin
     begin
         if rst_n = '0' then
             pause_remaining <= (others => '0');
+            tx_paused_r     <= '0';
             pause_rx_cnt_i  <= (others => '0');
         elsif rising_edge(clk) then
             if pause_load = '1' then
                 pause_remaining <= unsigned(rx_pause_quanta);
+                if unsigned(rx_pause_quanta) /= 0 then
+                    tx_paused_r <= '1';
+                else
+                    tx_paused_r <= '0';
+                end if;
             elsif pause_tick = '1' and pause_remaining /= 0 then
                 pause_remaining <= pause_remaining - 1;
+                if pause_remaining = 1 then
+                    tx_paused_r <= '0';
+                end if;
             end if;
 
             if stat_clr = '1' then
@@ -198,7 +213,7 @@ begin
         end if;
     end process;
 
-    tx_paused <= '1' when pause_remaining /= 0 else '0';
+    tx_paused <= tx_paused_r;
 
     unused_our_mac <= '1' when unsigned(our_mac) /= 0 else '0';
 

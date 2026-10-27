@@ -214,7 +214,7 @@ When `MCAST_HASH_FILTER == 1`, an incoming multicast frame is hashed into a
 
 | Bits | Name | Description |
 |-----:|------|-------------|
-| `[0]` | `tx_send` | W1S: emit one PAUSE frame using `PAUSE_QUANTA`. Reads 0. The PAUSE frame goes out ahead of user frames that have not started at the PHY pins, also while the TX gate holds them; a frame already going out finishes first. |
+| `[0]` | `tx_send` | W1S: emit one PAUSE frame using `PAUSE_QUANTA`. Reads 0. The PAUSE frame has its own framer and FIFO. Once it is complete in that FIFO and the media-side scheduler sees it, it goes ahead of every user frame the scheduler has not yet committed to, also while the TX gate holds them. A user frame already going out finishes first, and so does one the scheduler has just committed to: on MII the two media clocks before its TX_EN, on GMII / RGMII the last two media clocks of its start gap. |
 | `[1]` | `rx_en` | When `1`, received PAUSE frames load the local TX gate counter. |
 | `[31:2]` | reserved | Reads as 0. |
 
@@ -240,6 +240,11 @@ A frame that starts after RX_DV fell had already passed the point where it
 could be held. The first pause quantum starts when the frame is recognized,
 so a frame holds TX for at least its quanta.
 
+On hardware (Arty A7, MII at 100M, 100 MHz sys clock, the DP83848 PHY in MII
+loopback so the MAC receives its own PAUSE frames, sampled at the FPGA pins
+every 10 ns): the TX gate closed 130 ns after RX_DV fell, before the next
+queued data frame's IFG ended, and a quanta of 1 held TX for 5130 ns.
+
 ## 0x88 - PAUSE_QUANTA
 
 Bits `[15:0]` are the quanta value loaded into the next PAUSE frame. One
@@ -255,7 +260,7 @@ PAUSE counters together.
 
 PAUSE_RX_CNT counts valid PAUSE frames received: destination
 `01:80:C2:00:00:01`, EtherType `0x8808`, opcode `0x0001`, a good FCS, no
-`rx_er` after the SFD, and at least 64 bytes. It counts them whether or not
+`rx_er` while RX_DV is high, and at least 64 bytes. It counts them whether or not
 `PAUSE_CTRL[1]` is set; only with `rx_en` does a frame's quanta hold off
 transmission. A frame that fails any check is ignored.
 
