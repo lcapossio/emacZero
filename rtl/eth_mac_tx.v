@@ -13,7 +13,9 @@ module eth_mac_tx #(
     input  wire        clk,
     input  wire        rst_n,
     // Sampled only in S_IDLE so downstream pressure can delay a new frame
-    // without ever stalling an in-flight Ethernet transmission.
+    // without ever stalling an in-flight Ethernet transmission. A first byte
+    // handshaken on the cycle it falls is kept, and its frame starts once it
+    // is high again.
     input  wire        tx_start_ok,
 
     // GMII TX interface (to RGMII or direct PHY)
@@ -113,17 +115,24 @@ module eth_mac_tx #(
                     tx_active   <= 1'b0;
                     frame_ended <= 1'b0;
                     stall_cnt   <= 4'd0;
-                    have_first  <= 1'b0;
-                    s_axis_tready <= (tx_start_ok !== 1'b0);
-                    if (s_axis_tvalid && s_axis_tready && (tx_start_ok !== 1'b0)) begin
-                        first_data <= s_axis_tdata;
-                        first_last <= s_axis_tlast;
-                        have_first <= 1'b1;
-                        s_axis_tready <= 1'b0;
-                        state     <= S_PREAMBLE;
-                        count     <= 4'd0;
-                        crc_accum <= 32'hFFFFFFFF;
-                        tx_active <= 1'b1;
+                    // s_axis_tready is registered, so tx_start_ok can fall on
+                    // the cycle a first byte is handshaken. The source has
+                    // seen that byte accepted: keep it, and hold the frame
+                    // here until tx_start_ok returns.
+                    if (have_first || (s_axis_tvalid && s_axis_tready)) begin
+                        if (!have_first) begin
+                            first_data <= s_axis_tdata;
+                            first_last <= s_axis_tlast;
+                            have_first <= 1'b1;
+                        end
+                        if (tx_start_ok !== 1'b0) begin
+                            state     <= S_PREAMBLE;
+                            count     <= 4'd0;
+                            crc_accum <= 32'hFFFFFFFF;
+                            tx_active <= 1'b1;
+                        end
+                    end else begin
+                        s_axis_tready <= (tx_start_ok !== 1'b0);
                     end
                 end
 

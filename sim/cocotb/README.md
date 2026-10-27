@@ -5,7 +5,7 @@ suite runs on both languages: on the Verilog RTL in `rtl/` under Icarus, and on
 the VHDL port in `rtl/vhdl/` under GHDL. The two get exactly the same tests;
 only the simulator and the source list change.
 
-There are two kinds of suite:
+There are three kinds of suite:
 
 - **Ports of the Verilog testbenches.** Each core bench in `sim/tb/` (the 44
   core entries of `build_and_test.py`) has a cocotb twin that drives the same
@@ -20,7 +20,9 @@ There are two kinds of suite:
   when RX is disabled, no tail delivered when it is enabled mid-frame, no
   offered beat withdrawn); `eth_mac_sys_tx_en` and `eth_mac_sys_tx_en_csum`
   (`TX_CSUM_OFFLOAD` 0 and 1) check the same for CTRL[0] on `s_axis` and the
-  GMII wire (no aborted or re-framed frame).
+  GMII wire (no aborted or re-framed frame); `eth_mac_tx_start` checks that
+  `eth_mac_tx` keeps a first byte handshaken on the cycle `tx_start_ok`
+  falls.
 
 ## Layout
 
