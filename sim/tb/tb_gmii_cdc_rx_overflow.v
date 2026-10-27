@@ -57,6 +57,10 @@ module tb_gmii_cdc_rx_overflow;
         .gmii_txd_in    (8'd0),
         .gmii_tx_en_in  (1'b0),
         .gmii_tx_er_in  (1'b0),
+        .gmii_ctl_txd_in   (8'd0),
+        .gmii_ctl_tx_en_in (1'b0),
+        .gmii_ctl_tx_er_in (1'b0),
+        .tx_hold         (1'b0),
         .gmii_rxd_out   (rx_data),
         .gmii_rx_dv_out (rx_dv),
         .gmii_rx_er_out (rx_er),
@@ -68,6 +72,7 @@ module tb_gmii_cdc_rx_overflow;
         .gmii_rx_er_in  (m_rx_er),
         .gmii_rx_ce_in  (1'b1),
         .tx_busy        (),
+        .tx_ctl_busy    (),
         .tx_fifo_level  ()
     );
 

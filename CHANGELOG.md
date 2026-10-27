@@ -84,6 +84,49 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **Received PAUSE frames now hold TX within the 802.3 Annex 31B bound on
+  every PHY.** A received PAUSE frame was recognized only after the RX CDC
+  FIFO had delivered it, behind any frames received before it, and on GMII
+  and RGMII it only stopped frames entering the TX CDC FIFO, so frames
+  already in it (up to about 7 KB) still went out; this was the known limit
+  listed under v0.2.0. Measured in simulation from RX_DV falling at the PHY
+  pins to the TX gate, GMII 1G with a 125 MHz sys clock: 42 ns, for a lone
+  PAUSE frame (was 714 ns) and for one right behind a 1514-byte frame (was
+  12.26 us). The changes, alike in Verilog and VHDL:
+  - New `eth_pause_rx` recognizes PAUSE frames on the PHY receive stream in
+    the receive clock domain, before the RX FIFO, and hands the quanta to
+    `eth_pause` through a toggle synchronizer. `eth_pause` keeps the TX gate
+    timer and the PAUSE generator; its receive inputs are replaced by
+    `rx_pause_tgl` / `rx_pause_quanta`. `mii_if` gains `mii_rxd_q`,
+    `mii_rx_dv_q`, `mii_rx_er_q` (its registered receive inputs).
+  - On GMII and RGMII, `gmii_cdc` gains `tx_hold`: while it is high no data
+    frame starts at the media side, and a data frame waiting in its start gap
+    is put back. `eth_mac_sys` drives it from the TX gate.
+  - PAUSE frames from `PAUSE_CTRL[0]` take their own path: a second
+    `eth_mac_tx` (`MAX_FRAME` 60) and a control-frame FIFO in `gmii_cdc`
+    (`gmii_ctl_*_in`, `tx_ctl_busy`), and a control-frame AXIS input and FIFO
+    in `mii_tx_saf` (`ctl_axis_*`). A control frame starts ahead of queued
+    data frames and while TX is held. Behaviour change: a PAUSE frame
+    requested while a user frame is still entering the TX FIFO now goes out
+    before that frame, not after it. The PAUSE-priority mux in `eth_mac_sys`
+    is gone.
+  - The pause quantum prescaler restarts on each received PAUSE frame, so a
+    frame holds TX for at least its quanta; it could end up to one quantum
+    early.
+  - `gmii_cdc`'s TX start limit left 12 bytes too little room for a
+    `MAX_FRAME` frame with its preamble, SFD and FCS; with TX held the FIFO
+    can now fill that far. It is now `16383 - max(MAX_FRAME, 9018) - 13`, and
+    `MAX_FRAME` above 16370 is an elaboration error on GMII and RGMII (a held
+    frame that long cannot fit; before, such a frame could overrun the FIFO
+    at 10/100 even without PAUSE).
+  - `eth_stats` takes a second set of TX events (`gmii_tx_en2`,
+    `tx_frame_done2`), so TX_FRAME and TX_BYTE count both framers when they
+    run in the same clock.
+  New cocotb suites `eth_mac_sys_pause_rx_gmii`, `_mii`, `_rgmii100`,
+  `_rgmii10`, `gmii_cdc_hold` and `gmii_cdc_hold_big`; `ETH-MAC-SYS-PAUSE`
+  check 3b now expects the PAUSE frame first. New proof
+  `sim/parity/eth_pause_rx`; `eth_pause`, `eth_stats`, `mii_if`, `gmii_cdc`,
+  `mii_tx_saf`, `eth_mac_tx` (`MAX_FRAME` 60) and `eth_mac_sys` re-proven.
 - `eth_mac_sys`: CTRL[0] (`tx_en`) gated `s_axis` combinationally, so
   clearing it while the source was part-way through a frame stalled that
   frame. With `TX_CSUM_OFFLOAD=0` on GMII / RGMII the cut-through framer

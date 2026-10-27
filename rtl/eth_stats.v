@@ -25,6 +25,11 @@ module eth_stats #(
 
     // ---- Frame completion pulses (single-cycle, sys_clk domain) ----
     input  wire        tx_frame_done,  // falling edge of gmii_tx_en
+    // Second TX source, counted alongside the first: the GMII/RGMII control-
+    // frame framer, which can emit on the same cycle as the data framer.
+    // Tie both to 0 when there is only one TX source.
+    input  wire        gmii_tx_en2,
+    input  wire        tx_frame_done2,
     input  wire        rx_frame_good,  // TLAST handshake (tvalid && tready) && !terror
     input  wire        rx_frame_bad,   // TLAST handshake (tvalid && tready) && terror
 
@@ -79,6 +84,19 @@ module eth_stats #(
     // is width-agnostic, so it tracks STAT_CNT_W automatically.
     `define SAT_INC(cnt) ((&(cnt)) ? (cnt) : (cnt) + 1'b1)
 
+    // Saturating add of two 1-bit events (0, 1 or 2): the TX counters see one
+    // event from each of two framers, possibly on the same cycle.
+    function [STAT_CNT_W-1:0] sat_add2;
+        input [STAT_CNT_W-1:0] cnt;
+        input                  a;
+        input                  b;
+        reg   [STAT_CNT_W:0]   sum;
+        begin
+            sum      = {1'b0, cnt} + {{STAT_CNT_W{1'b0}}, a} + {{STAT_CNT_W{1'b0}}, b};
+            sat_add2 = sum[STAT_CNT_W] ? {STAT_CNT_W{1'b1}} : sum[STAT_CNT_W-1:0];
+        end
+    endfunction
+
     // =====================================================================
     // TX counters
     // =====================================================================
@@ -90,11 +108,11 @@ module eth_stats #(
             tx_frame_cnt <= {STAT_CNT_W{1'b0}};
             tx_byte_cnt  <= {STAT_CNT_W{1'b0}};
         end else begin
-            if (tx_frame_done)
-                tx_frame_cnt <= `SAT_INC(tx_frame_cnt);
+            if (tx_frame_done || tx_frame_done2)
+                tx_frame_cnt <= sat_add2(tx_frame_cnt, tx_frame_done, tx_frame_done2);
 
-            if (gmii_tx_en)
-                tx_byte_cnt <= `SAT_INC(tx_byte_cnt);
+            if (gmii_tx_en || gmii_tx_en2)
+                tx_byte_cnt <= sat_add2(tx_byte_cnt, gmii_tx_en, gmii_tx_en2);
         end
     end
 

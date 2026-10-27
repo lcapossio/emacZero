@@ -22,7 +22,15 @@ There are three kinds of suite:
   (`TX_CSUM_OFFLOAD` 0 and 1) check the same for CTRL[0] on `s_axis` and the
   GMII wire (no aborted or re-framed frame); `eth_mac_tx_start` checks that
   `eth_mac_tx` keeps a first byte handshaken on the cycle `tx_start_ok`
-  falls.
+  falls; `eth_mac_sys_pause_rx_gmii`, `_mii`, `_rgmii100` and `_rgmii10`
+  check 802.3 Annex 31B timing on each receive path, from the PHY pins: a
+  received PAUSE frame gates TX within a quarter of the bound, also right
+  behind a long frame, queued data frames are held at the TX pins, the MAC's
+  own PAUSE frame still goes out, and both TX framers are counted;
+  `gmii_cdc_hold` and `gmii_cdc_hold_big` (`MAX_FRAME` 12000) fill the TX
+  FIFO to its start limit while held, send the largest frame and check that
+  it fits, and check that a control frame or `tx_hold` displaces a data frame
+  waiting in its start gap.
 
 ## Layout
 

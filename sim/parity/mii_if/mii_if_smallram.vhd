@@ -59,6 +59,11 @@ entity mii_if is
         gmii_rxd                    : out std_logic_vector(7 downto 0);
         gmii_rx_dv                  : out std_logic;
         gmii_rx_er                  : out std_logic;
+        -- The IOB-registered MII receive nibbles, in the mii_rx_clk domain, ahead
+        -- of the RX FIFO (eth_pause_rx watches these for PAUSE frames).
+        mii_rxd_q                   : out std_logic_vector(3 downto 0);
+        mii_rx_dv_q                 : out std_logic;
+        mii_rx_er_q                 : out std_logic;
         mii_tx_clk_out              : out std_logic;
         tx_busy                     : out std_logic;
         tx_fifo_level               : out std_logic_vector(12 downto 0);
@@ -592,6 +597,10 @@ begin
             mii_rx_er_iob <= mii_rx_er;
         end if;
     end process;
+
+    mii_rxd_q   <= mii_rxd_iob;
+    mii_rx_dv_q <= mii_rx_dv_iob;
+    mii_rx_er_q <= mii_rx_er_iob;
 
     process (mii_rx_clk, rx_rst_n_s2)
     begin

@@ -6,21 +6,22 @@
 --
 -- Two cooperating units:
 --
---   * RX parser: snoops the GMII RX byte stream, preamble and SFD included,
---                looking for PAUSE frames (dst=01:80:C2:00:00:01,
---                EtherType=0x8808, opcode=0x0001). A matched frame counts and
---                takes effect when it ends, and only if it is a valid frame:
---                good FCS, no rx_er after the SFD, and at least 64 bytes. It
---                then loads its 16-bit quanta into pause_remaining, which
---                decrements at one tick per "pause quantum" of the current
---                line rate. While pause_remaining != 0, tx_paused is asserted
---                to gate eth_mac_tx from starting a new frame. A quanta of 0
---                cancels the pause immediately.
+--   * RX: eth_pause_rx (instantiated next to the PHY interface, in the PHY
+--                receive clock domain, ahead of the RX FIFO) recognizes PAUSE
+--                frames (dst=01:80:C2:00:00:01, EtherType=0x8808,
+--                opcode=0x0001) and flips rx_pause_tgl for each valid one:
+--                good FCS, no rx_er after the SFD, and at least 64 bytes. Here
+--                each flip counts, and its 16-bit quanta is loaded into
+--                pause_remaining, which decrements at one tick per "pause
+--                quantum" of the current line rate. While pause_remaining != 0,
+--                tx_paused is asserted to hold data frames that have not yet
+--                started on the medium. A quanta of 0 cancels the pause
+--                immediately.
 --
 --   * TX generator: when cfg_pause_tx_send pulses, enqueues a single 60-byte
 --                   MAC-Control PAUSE frame on its own AXIS-byte master. The
---                   wrapper is responsible for priority-muxing this source
---                   into eth_mac_tx ahead of normal user traffic.
+--                   wrapper sends it on a control path that is not held by
+--                   tx_paused and goes out ahead of queued user frames.
 --
 -- Pause-quantum tick period, in clk cycles (defaults are for clk = 100 MHz;
 -- eth_mac_sys derives them from its CLK_FREQ_HZ):
@@ -51,10 +52,9 @@ entity eth_pause is
         cfg_pause_tx_send   : in  std_logic;                      -- 1-cycle pulse: emit a PAUSE frame
         cfg_pause_tx_quanta : in  std_logic_vector(15 downto 0);  -- quanta value to send
 
-        -- ---- Snoop GMII RX (preamble and SFD included, as from the PHY) ----
-        gmii_rxd            : in  std_logic_vector(7 downto 0);
-        gmii_rx_dv          : in  std_logic;
-        gmii_rx_er          : in  std_logic;
+        -- ---- From eth_pause_rx, in the PHY receive clock domain (asynchronous) ----
+        rx_pause_tgl        : in  std_logic;                      -- flips once per valid PAUSE frame
+        rx_pause_quanta     : in  std_logic_vector(15 downto 0);  -- its pause_time; stable between flips
 
         -- ---- TX gate to eth_mac_tx ----
         tx_paused           : out std_logic;                      -- 1 = block new frame starts
@@ -74,6 +74,19 @@ end entity eth_pause;
 
 architecture rtl of eth_pause is
 
+    -- Vivado attribute (same name and value as the Verilog).
+    attribute ASYNC_REG : string;
+
+    -- ============================================================
+    -- RX PAUSE events from eth_pause_rx
+    -- ============================================================
+    signal prx_tgl_s1, prx_tgl_s2 : std_logic;
+    attribute ASYNC_REG of prx_tgl_s1 : signal is "TRUE";
+    attribute ASYNC_REG of prx_tgl_s2 : signal is "TRUE";
+    signal prx_tgl_s3 : std_logic;
+    signal prx_evt    : std_logic;
+    signal pause_load : std_logic;
+
     -- ============================================================
     -- Pause-quantum tick prescaler (speed-dependent)
     -- ============================================================
@@ -86,51 +99,10 @@ architecture rtl of eth_pause is
     signal pause_tick : std_logic;
 
     -- ============================================================
-    -- RX parser FSM
+    -- Pause timer and PAUSE_RX counter
     -- ============================================================
-    constant RX_IDLE      : std_logic_vector(3 downto 0) := "0000";  -- 4'd0
-    constant RX_DST       : std_logic_vector(3 downto 0) := "0001";  -- 4'd1
-    constant RX_SRC       : std_logic_vector(3 downto 0) := "0010";  -- 4'd2
-    constant RX_TYPE_HI   : std_logic_vector(3 downto 0) := "0011";  -- 4'd3
-    constant RX_TYPE_LO   : std_logic_vector(3 downto 0) := "0100";  -- 4'd4
-    constant RX_OP_HI     : std_logic_vector(3 downto 0) := "0101";  -- 4'd5
-    constant RX_OP_LO     : std_logic_vector(3 downto 0) := "0110";  -- 4'd6
-    constant RX_QUANTA_HI : std_logic_vector(3 downto 0) := "0111";  -- 4'd7
-    constant RX_QUANTA_LO : std_logic_vector(3 downto 0) := "1000";  -- 4'd8
-    constant RX_LATCH     : std_logic_vector(3 downto 0) := "1001";  -- 4'd9
-    constant RX_DRAIN     : std_logic_vector(3 downto 0) := "1010";  -- 4'd10
-    constant RX_PRE       : std_logic_vector(3 downto 0) := "1011";  -- 4'd11
-
-    signal rx_state        : std_logic_vector(3 downto 0);
-    signal rx_idx          : unsigned(2 downto 0);   -- 0..5 within DST/SRC fields
-    signal rx_quanta       : std_logic_vector(15 downto 0);
     signal pause_remaining : unsigned(15 downto 0);
-    signal rx_len          : unsigned(6 downto 0);   -- bytes after the SFD, saturating at 64
-    signal rx_bad          : std_logic;              -- rx_er seen after the SFD
-
-    -- CRC over the bytes after the SFD. A frame whose FCS is good leaves the
-    -- register at the CRC-32 residue, as in eth_mac_rx.
-    signal rx_sfd    : std_logic;
-    signal rx_body   : std_logic;
-    signal rx_crc    : std_logic_vector(31 downto 0);
-    signal rx_fcs_ok : std_logic;
     signal pause_rx_cnt_i  : unsigned(31 downto 0);
-
-    -- Constant: 802.3x reserved multicast address for MAC Control frames.
-    -- Wire-byte order: 01 80 C2 00 00 01.
-    function dst_byte_match(idx : unsigned(2 downto 0); b : std_logic_vector(7 downto 0))
-        return boolean is
-    begin
-        case to_integer(idx) is
-            when 0      => return b = x"01";
-            when 1      => return b = x"80";
-            when 2      => return b = x"C2";
-            when 3      => return b = x"00";
-            when 4      => return b = x"00";
-            when 5      => return b = x"01";
-            when others => return false;
-        end case;
-    end function dst_byte_match;
 
     -- (our_mac is consumed by the TX generator below; tag the snoop input as
     --  used so lint stays clean even when the parser only verifies the dst.)
@@ -153,6 +125,33 @@ architecture rtl of eth_pause is
 
 begin
 
+    -- ============================================================
+    -- RX PAUSE events from eth_pause_rx
+    -- ============================================================
+    -- Toggle synchronizer into clk. rx_pause_quanta settles at least 46 byte
+    -- times before its toggle and holds for at least 24 byte times after it
+    -- (see eth_pause_rx), so it is sampled directly on the cycle the toggle
+    -- edge is seen here.
+    process (clk, rst_n)
+    begin
+        if rst_n = '0' then
+            prx_tgl_s1 <= '0';
+            prx_tgl_s2 <= '0';
+            prx_tgl_s3 <= '0';
+        elsif rising_edge(clk) then
+            prx_tgl_s1 <= rx_pause_tgl;
+            prx_tgl_s2 <= prx_tgl_s1;
+            prx_tgl_s3 <= prx_tgl_s2;
+        end if;
+    end process;
+
+    prx_evt    <= prx_tgl_s2 xor prx_tgl_s3;
+    pause_load <= prx_evt and cfg_pause_rx_en;
+
+    -- ============================================================
+    -- Pause-quantum tick prescaler (speed-dependent). It restarts when a
+    -- PAUSE frame loads the timer, so N quanta always last N full quanta.
+    -- ============================================================
     tick_div <= TICK_DIV_1G_U   when cfg_speed = "00" else
                 TICK_DIV_100M_U when cfg_speed = "01" else
                 TICK_DIV_10M_U;
@@ -163,7 +162,10 @@ begin
             tick_cnt   <= (others => '0');
             pause_tick <= '0';
         elsif rising_edge(clk) then
-            if tick_cnt >= tick_div - 1 then
+            if pause_load = '1' then
+                tick_cnt   <= (others => '0');
+                pause_tick <= '0';
+            elsif tick_cnt >= tick_div - 1 then
                 tick_cnt   <= (others => '0');
                 pause_tick <= '1';
             else
@@ -174,128 +176,24 @@ begin
     end process;
 
     -- ============================================================
-    -- RX parser FSM
-    -- The snooped bus is the PHY byte stream: one or more 0x55 preamble bytes,
-    -- the 0xD5 SFD, then the frame, as eth_mac_rx sees it. Bytes after the SFD
-    -- run through a CRC-32 and a length count so a PAUSE frame is acted on
-    -- only once its FCS has checked out, as 802.3 requires of a MAC Control
-    -- frame.
+    -- Pause timer and PAUSE_RX counter
     -- ============================================================
-    rx_sfd  <= '1' when gmii_rx_dv = '1' and rx_state = RX_PRE and gmii_rxd = x"D5" else '0';
-    rx_body <= '1' when gmii_rx_dv = '1' and rx_state /= RX_IDLE and rx_state /= RX_PRE and
-                        rx_state /= RX_DRAIN else '0';
-    rx_fcs_ok <= '1' when rx_crc = x"DEBB20E3" else '0';
-
-    u_rx_crc : entity work.crc32
-        port map (
-            clk        => clk,
-            rst_n      => rst_n,
-            data_in    => gmii_rxd,
-            data_valid => rx_body,
-            crc_init   => rx_sfd,
-            crc_out    => open,
-            crc_raw    => rx_crc
-        );
-
     process (clk, rst_n)
     begin
         if rst_n = '0' then
-            rx_state        <= RX_IDLE;
-            rx_idx          <= (others => '0');
-            rx_quanta       <= (others => '0');
-            rx_len          <= (others => '0');
-            rx_bad          <= '0';
             pause_remaining <= (others => '0');
             pause_rx_cnt_i  <= (others => '0');
         elsif rising_edge(clk) then
-            -- Pause counter decrements on each tick (clamped at 0).
-            if pause_tick = '1' and pause_remaining /= 0 then
+            if pause_load = '1' then
+                pause_remaining <= unsigned(rx_pause_quanta);
+            elsif pause_tick = '1' and pause_remaining /= 0 then
                 pause_remaining <= pause_remaining - 1;
-            end if;
-
-            if rx_body = '1' then
-                if rx_len /= 64 then
-                    rx_len <= rx_len + 1;
-                end if;
-                if gmii_rx_er = '1' then
-                    rx_bad <= '1';
-                end if;
-            end if;
-
-            if gmii_rx_dv = '1' then
-                case rx_state is
-                    when RX_IDLE =>
-                        if gmii_rxd = x"55" then rx_state <= RX_PRE; else rx_state <= RX_DRAIN; end if;
-
-                    when RX_PRE =>
-                        rx_idx <= (others => '0');
-                        rx_len <= (others => '0');
-                        rx_bad <= '0';
-                        if gmii_rxd = x"D5" then
-                            rx_state <= RX_DST;
-                        elsif gmii_rxd /= x"55" then
-                            rx_state <= RX_DRAIN;
-                        end if;
-
-                    when RX_DST =>
-                        if not dst_byte_match(rx_idx, gmii_rxd) then
-                            rx_state <= RX_DRAIN;
-                        elsif rx_idx = 5 then
-                            rx_state <= RX_SRC;
-                            rx_idx   <= (others => '0');
-                        else
-                            rx_idx <= rx_idx + 1;
-                        end if;
-
-                    when RX_SRC =>
-                        -- Skip 6 source-MAC bytes
-                        if rx_idx = 5 then
-                            rx_state <= RX_TYPE_HI;
-                            rx_idx   <= (others => '0');
-                        else
-                            rx_idx <= rx_idx + 1;
-                        end if;
-
-                    when RX_TYPE_HI =>
-                        if gmii_rxd = x"88" then rx_state <= RX_TYPE_LO; else rx_state <= RX_DRAIN; end if;
-                    when RX_TYPE_LO =>
-                        if gmii_rxd = x"08" then rx_state <= RX_OP_HI; else rx_state <= RX_DRAIN; end if;
-                    when RX_OP_HI =>
-                        if gmii_rxd = x"00" then rx_state <= RX_OP_LO; else rx_state <= RX_DRAIN; end if;
-                    when RX_OP_LO =>
-                        if gmii_rxd = x"01" then rx_state <= RX_QUANTA_HI; else rx_state <= RX_DRAIN; end if;
-
-                    when RX_QUANTA_HI =>
-                        rx_quanta(15 downto 8) <= gmii_rxd;
-                        rx_state <= RX_QUANTA_LO;
-                    when RX_QUANTA_LO =>
-                        rx_quanta(7 downto 0) <= gmii_rxd;
-                        rx_state <= RX_LATCH;
-
-                    when RX_LATCH | RX_DRAIN =>
-                        null;  -- wait for end of frame
-                    when others =>
-                        rx_state <= RX_IDLE;
-                end case;
-            elsif rx_state /= RX_IDLE then
-                -- gmii_rx_dv low: end of frame. Commit a matched PAUSE frame
-                -- only if it was a valid frame.
-                if rx_state = RX_LATCH and rx_fcs_ok = '1' and rx_bad = '0' and rx_len = 64 then
-                    if pause_rx_cnt_i = x"FFFFFFFF" then
-                        pause_rx_cnt_i <= pause_rx_cnt_i;
-                    else
-                        pause_rx_cnt_i <= pause_rx_cnt_i + 1;
-                    end if;
-                    if cfg_pause_rx_en = '1' then
-                        pause_remaining <= unsigned(rx_quanta);
-                    end if;
-                end if;
-                rx_state <= RX_IDLE;
-                rx_idx   <= (others => '0');
             end if;
 
             if stat_clr = '1' then
                 pause_rx_cnt_i <= (others => '0');
+            elsif prx_evt = '1' and pause_rx_cnt_i /= x"FFFFFFFF" then
+                pause_rx_cnt_i <= pause_rx_cnt_i + 1;
             end if;
         end if;
     end process;

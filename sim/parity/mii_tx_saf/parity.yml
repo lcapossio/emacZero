@@ -3,7 +3,8 @@
 # translateHDL parity manifest: rtl/mii_tx_saf.v (golden) vs rtl/vhdl/mii_tx_saf.vhd.
 # Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/mii_tx_saf/parity.yml --strict
 # The async_fifo submodule is already proven; both sides compile their own
-# port of it, so this proof covers the whole mii_tx_saf hierarchy. Two clock
+# port of it, so this proof covers the whole mii_tx_saf hierarchy, the fixed
+# 9 x 64 control-frame FIFO included. Two clock
 # domains (clk, mii_tx_clk) are independent solver inputs under clk2fflogic.
 # Parameters are shrunk for the solver. The design instantiates
 # MAX_FRAME=1518/FIFO_ADDR_WIDTH=11 and MAX_FRAME=9018/FIFO_ADDR_WIDTH=14

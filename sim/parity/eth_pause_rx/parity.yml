@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: rtl/eth_pause_rx.v (golden) vs rtl/vhdl/eth_pause_rx.vhd.
+# crc32 (the RX FCS check, instance u_rx_crc) is listed on both sides.
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/eth_pause_rx/parity.yml --strict
+# Proven in both byte modes: RX_NIBBLE 0 (GMII / RGMII bytes with rx_ce) and
+# 1 (MII nibbles).
+version: 1
+name: eth_pause_rx_parity
+description: eth_pause_rx Verilog golden vs VHDL port
+
+golden:
+  language: verilog
+  top: eth_pause_rx
+  sources: [../../../rtl/crc32.v, ../../../rtl/eth_pause_rx.v]
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: eth_pause_rx
+  sources: [../../../rtl/vhdl/crc32.vhd, ../../../rtl/vhdl/eth_pause_rx.vhd]
+
+interface:
+  top: eth_pause_rx
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  bounded_depth: 30
+  modules:
+    - name: eth_pause_rx
+      param_sets:
+        - {}
+        - {RX_NIBBLE: 1}
+
+synth:
+  enabled: true
+  tolerance_pct: 30.0
+  param_sets:
+    - {}

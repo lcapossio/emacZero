@@ -41,6 +41,11 @@ module mii_if #(
     output reg  [7:0]  gmii_rxd,
     output reg         gmii_rx_dv,
     output reg         gmii_rx_er,
+    // The IOB-registered MII receive nibbles, in the mii_rx_clk domain, ahead
+    // of the RX FIFO (eth_pause_rx watches these for PAUSE frames).
+    output wire [3:0]  mii_rxd_q,
+    output wire        mii_rx_dv_q,
+    output wire        mii_rx_er_q,
     output wire        mii_tx_clk_out,
     output wire        tx_busy,
     output wire [12:0] tx_fifo_level,
@@ -145,6 +150,10 @@ module mii_if #(
     (* IOB = "TRUE" *) reg [3:0] mii_rxd_iob;
     (* IOB = "TRUE" *) reg       mii_rx_dv_iob;
     (* IOB = "TRUE" *) reg       mii_rx_er_iob;
+
+    assign mii_rxd_q   = mii_rxd_iob;
+    assign mii_rx_dv_q = mii_rx_dv_iob;
+    assign mii_rx_er_q = mii_rx_er_iob;
 
     reg [9:0]  rx_wr_data;
     reg        rx_wr_en;
