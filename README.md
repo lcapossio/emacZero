@@ -468,8 +468,9 @@ names match the Verilog. One difference: the generics whose Verilog default is
 computed from `MAX_FRAME` (`RX_AXIS_ADDR_WIDTH` of `eth_mac` and `eth_mac_sys`,
 `RX_FIFO_ADDR_WIDTH` of `gmii_cdc`, `BUF_ADDR_WIDTH` of `tx_csum_off`) default
 to 0, which selects that same computed value. VHDL-93 cannot express a generic
-default that depends on another generic. The port has not been run on hardware
-yet. The L3 helpers ([rtl/eth_mac_sys_l3_vhdl.f](rtl/eth_mac_sys_l3_vhdl.f),
+default that depends on another generic. On the Arty A7, a build with every
+ported module in VHDL passes the smoke test, the hardware regression and a
+30-minute full-duplex soak at line rate. The L3 helpers ([rtl/eth_mac_sys_l3_vhdl.f](rtl/eth_mac_sys_l3_vhdl.f),
 all but `net_rx`) and most board modules of the Arty A7 and ZCU106 designs,
 including `zcu106_top`, are ported and proven too, but not simulated in VHDL;
 the board builds still need some Verilog. See [docs/vhdl_port.md](docs/vhdl_port.md).

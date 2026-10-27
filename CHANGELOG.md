@@ -30,7 +30,9 @@ This project does not yet maintain long-lived release branches.
   module is formally proven equivalent to the v0.2.0 Verilog with translateHDL
   (manifests in `sim/parity/`; see `docs/vhdl_port.md`). Generics whose Verilog
   default is computed from `MAX_FRAME` default to 0 in VHDL, which selects
-  that same value. Not yet run on hardware.
+  that same value. Run on the Arty A7 in a mixed-language build (every ported
+  module in VHDL): smoke test, hardware regression and a 30-minute full-duplex
+  soak at line rate, all passing.
 - VHDL-93 ports of the L3 helpers (`rtl/eth_mac_sys_l3_vhdl.f`, FuseSoC
   fileset `rtl_vhdl_l3`; all but `net_rx`), `axil_arb2`, and the board
   modules `clk_gen`, `uart_tx`, `arp_responder`, `test_sequencer`,
@@ -68,6 +70,10 @@ This project does not yet maintain long-lived release branches.
 
 ### Changed
 
+- `SECURITY.md` states the support period: only the latest release is
+  supported, and security fixes ship in a new release, not as backports.
+  GitHub private vulnerability reporting is enabled, so the advisory link
+  opens a report form.
 - `tb_gmii_cdc_rx_overflow.v` reads its FIFO-word probe through a wire, and
   `tb_eth_stats.v` can leave out its force-based saturation test
   (`TB_NO_HIER_FORCE`), so both also run against a VHDL DUT in xsim.
