@@ -118,8 +118,9 @@ This project does not yet maintain long-lived release branches.
     in `mii_tx_saf` (`ctl_axis_*`). Once a control frame is complete in its
     FIFO and has crossed to the media side, it starts ahead of queued data
     frames the media side has not yet committed to, also while TX is held. Behaviour change: a PAUSE frame
-    requested while a user frame is still entering the TX FIFO now goes out
-    before that frame, not after it. The PAUSE-priority mux in `eth_mac_sys`
+    requested while a user frame is still entering the TX FIFO can now go out
+    before that frame, if it reaches the media side before that frame is
+    committed; before, it always went out after. The PAUSE-priority mux in `eth_mac_sys`
     is gone.
   - The pause quantum prescaler restarts on each received PAUSE frame, so a
     frame holds TX for at least its quanta; it could end up to one quantum

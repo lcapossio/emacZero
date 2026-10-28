@@ -218,9 +218,10 @@ When `MCAST_HASH_FILTER == 1`, an incoming multicast frame is hashed into a
 | `[1]` | `rx_en` | When `1`, received PAUSE frames load the local TX gate counter. |
 | `[31:2]` | reserved | Reads as 0. |
 
-While the TX gate counter is non-zero, no new user frame starts at the PHY
-pins; a frame already going out finishes, and the MAC's own PAUSE frames are
-still sent. Frames queued in the TX FIFO are held there, on every PHY.
+Once the TX gate counter is non-zero and the gate has crossed into the TX
+clock domain, no new user frame starts at the PHY pins. A frame already going
+out finishes, and so does one the media side had already committed to (the
+latencies are below). The MAC's own PAUSE frames are still sent. Frames queued in the TX FIFO are held there, on every PHY.
 
 A received PAUSE frame is recognized on the PHY receive stream, ahead of the
 RX FIFO, so it takes effect when it ends at the PHY pins, not when the frames
