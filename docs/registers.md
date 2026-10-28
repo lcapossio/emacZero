@@ -166,7 +166,7 @@ Both are 16-bit values in bits `[15:0]`; upper bits read as 0.
 
 | Offset | Name | Counts |
 |-------:|------|--------|
-| `0x28` | TX_FRAME | Frames transmitted, each counted once it has ended: user frames and the MAC's own PAUSE frames (also in PAUSE_TX_CNT). On MII it counts at the wire, after the frame and its IFG; frames still in the TX FIFO are not counted yet. On GMII and RGMII it counts at the framer's output, ahead of the TX CDC FIFO, so a frame is counted before it has left that FIFO, and a frame the framer aborts with `tx_er` (the source left a gap, or the frame passed `MAX_FRAME`) counts too. |
+| `0x28` | TX_FRAME | Frames transmitted, each counted once it has ended: user frames and the MAC's own PAUSE frames (also in PAUSE_TX_CNT). On MII it counts at the wire, after the frame and its IFG; frames still in the TX FIFO are not counted yet. On GMII and RGMII it counts at the framers' outputs (user frames and PAUSE frames each have their own framer), ahead of the TX CDC FIFO, so a frame is counted before it has left that FIFO, and a frame the framer aborts with `tx_er` (the source left a gap, or the frame passed `MAX_FRAME`) counts too. |
 | `0x2C` | TX_BYTE | Bytes with TX_EN high, counted where TX_FRAME counts: preamble and SFD, the frame with its padding, and the FCS. A 1518-byte frame (FCS included) counts 1526. |
 | `0x30` | RX_FRAME | Frames delivered to the AXIS sink: one per TLAST handshake (`tvalid && tready`), errored frames included. While RX is disabled (CTRL[1]=0, applied from the next frame boundary) the MAC drains its own FIFO with `m_axis_tvalid` held low, and frames drained that way are counted here too. |
 | `0x34` | RX_BYTE | Bytes with `rx_dv` on the MAC's GMII input, whether or not the frame is delivered. |
@@ -214,14 +214,41 @@ When `MCAST_HASH_FILTER == 1`, an incoming multicast frame is hashed into a
 
 | Bits | Name | Description |
 |-----:|------|-------------|
-| `[0]` | `tx_send` | W1S: emit one PAUSE frame using `PAUSE_QUANTA`. Reads 0. A user frame already part-way into the MAC finishes first. |
+| `[0]` | `tx_send` | W1S: emit one PAUSE frame using `PAUSE_QUANTA`. Reads 0. The PAUSE frame has its own framer and FIFO. Once it is complete in that FIFO and the media-side scheduler sees it, it goes ahead of every user frame the scheduler has not yet committed to, also while the TX gate holds them. A user frame already going out finishes first, and so does one the scheduler has just committed to: on MII the two media clocks before its TX_EN, on GMII / RGMII the last two media clocks of its start gap. |
 | `[1]` | `rx_en` | When `1`, received PAUSE frames load the local TX gate counter. |
 | `[31:2]` | reserved | Reads as 0. |
 
-While the TX gate counter is non-zero, no new frame starts; a frame in
-progress finishes. On MII this acts at the wire. On GMII and RGMII it acts
-ahead of the TX CDC FIFO, so frames already queued there (up to about 7 KB)
-still go out.
+Once the TX gate counter is non-zero and the gate has crossed into the TX
+clock domain, no new user frame starts at the PHY pins. A frame already going
+out finishes, and so does one the media side had already committed to (the
+latencies are below). The MAC's own PAUSE frames are still sent. Frames queued in the TX FIFO are held there, on every PHY.
+
+A received PAUSE frame is recognized on the PHY receive stream, ahead of the
+RX FIFO, so it takes effect when it ends at the PHY pins, not when the frames
+received before it have been delivered. 802.3 Annex 31B allows 512 bit times
+(1024 at 1 Gb/s) from the end of a PAUSE frame until no new frame starts.
+Measured in simulation (cocotb suites `eth_mac_sys_pause_rx_*`), from RX_DV
+falling at the PHY pins:
+
+| PHY, rate | sys clk | to the TX gate | latest new frame start at the TX pins |
+|-----------|--------:|---------------:|--------------------------------------:|
+| GMII 1G | 125 MHz | 42 ns | 10 ns |
+| MII 100M | 100 MHz | 123 ns | 238 ns |
+| RGMII 100M | 100 MHz | 193 ns | 160 ns |
+| RGMII 10M | 100 MHz | 1723 ns | 1442 ns |
+
+A frame that starts after RX_DV fell had already passed the point where it
+could be held. The first pause quantum starts when the frame is recognized,
+so a frame holds TX for at least its quanta.
+
+On hardware (Arty A7, MII at 100M, 100 MHz sys clock, the DP83848 PHY in MII
+loopback so the MAC receives its own PAUSE frames, sampled at the FPGA pins
+every 10 ns): the TX gate closed 130 ns after RX_DV fell, before the next
+queued data frame's IFG ended, and a quanta of 1 held TX for 5130 ns.
+On a ZCU106 (1000BASE-X, GMII at 1G, 125 MHz sys clock, the PCS/PMA core's
+transceiver in internal loopback, sampled at the MAC's GMII every 8 ns): the
+gate closed 48 ns after RX_DV fell, with 1518-byte frames queued at line
+rate, and a quanta of 1 held TX for 520 ns (512 bit times = 512 ns).
 
 ## 0x88 - PAUSE_QUANTA
 
@@ -238,14 +265,14 @@ PAUSE counters together.
 
 PAUSE_RX_CNT counts valid PAUSE frames received: destination
 `01:80:C2:00:00:01`, EtherType `0x8808`, opcode `0x0001`, a good FCS, no
-`rx_er` after the SFD, and at least 64 bytes. It counts them whether or not
+`rx_er` while RX_DV is high, and at least 64 bytes. It counts them whether or not
 `PAUSE_CTRL[1]` is set; only with `rx_en` does a frame's quanta hold off
 transmission. A frame that fails any check is ignored.
 
 PAUSE_TX_CNT counts PAUSE frames the MAC sends (`PAUSE_CTRL[0]`), one clock
-after the frame's last byte is handed on: to the TX framer on GMII and RGMII,
-to the TX FIFO on MII. TX_FRAME counts the same frame later, so until then
-PAUSE_TX_CNT is ahead of it.
+after the frame's last byte is handed on: to the PAUSE framer on GMII and
+RGMII, to the control-frame FIFO on MII. TX_FRAME counts the same frame later,
+so until then PAUSE_TX_CNT is ahead of it.
 
 ## 0x94 - SAF_DBG
 

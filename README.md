@@ -61,7 +61,8 @@ ICMPv6 over IPv4 and IPv6).
   `jumbo_en=0` 1518, or 1522 with an 802.1Q / 802.1ad tag. TX counts the same
   parameter in AXIS bytes, before the FCS it appends, so it can send a frame
   4 bytes longer than an identically built RX accepts. `MAX_FRAME` must be at
-  most 16382; a larger value is an elaboration error.
+  most 16382 (16370 on GMII and RGMII, where a whole frame must fit in the
+  16K-word TX CDC FIFO); a larger value is an elaboration error.
 - **Checksum offload** - optional, per direction. TX (`TX_CSUM_OFFLOAD=1`,
   `rtl/net/tx_csum_off.v`, CTRL[7]) computes and inserts the IPv4 header
   checksum and the TCP / UDP / ICMP (IPv4) or TCP / UDP / ICMPv6 (IPv6)
@@ -104,7 +105,8 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 | `eth_mac_sys.v` | **System wrapper**: CSR + stats + MAC + PHY IF + MDIO |
 | `axilite_regs.v` | AXI4-Lite CSR block for configuration, counters, MDIO, multicast, and PAUSE |
 | `eth_stats.v` | TX/RX frame, byte, and error counters |
-| `eth_pause.v` | 802.3x PAUSE frame parser/generator |
+| `eth_pause.v` | 802.3x PAUSE TX gate timer and PAUSE frame generator |
+| `eth_pause_rx.v` | 802.3x PAUSE frame recognizer on the PHY receive stream, ahead of the RX FIFO |
 | `eth_mac_tx.v` | TX path: preamble, SFD, data, padding, CRC, IFG |
 | `eth_mac_rx.v` | RX path: preamble detect, data, CRC check, MAC filter |
 | `mii_if.v` | MII PHY interface with store-and-forward CDC FIFOs |

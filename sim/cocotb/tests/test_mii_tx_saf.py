@@ -40,6 +40,9 @@ async def _setup(dut):
     cocotb.start_soon(Clock(dut.clk, SYS_PERIOD_NS, unit="ns").start())
     cocotb.start_soon(Clock(dut.mii_tx_clk, MII_PERIOD_NS, unit="ns").start())
     dut.tx_start_ok.value = 1
+    dut.ctl_axis_tdata.value = 0
+    dut.ctl_axis_tvalid.value = 0
+    dut.ctl_axis_tlast.value = 0
     dut.s_axis_tvalid.value = 0
     dut.s_axis_tlast.value = 0
     dut.s_axis_tdata.value = 0

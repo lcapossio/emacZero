@@ -8,7 +8,9 @@ edge, checks 1 ns after a rising edge. The bench uses no $random.
 Suite eth_stats (default STAT_CNT_W = 32), checks in bench order:
 
   1  tx_byte_cnt 10, tx_frame_cnt 1 after a 10-byte TX frame;
-     tx_byte_cnt 15, tx_frame_cnt 2 after a further 5-byte frame
+     tx_byte_cnt 15, tx_frame_cnt 2 after a further 5-byte frame;
+     both TX sources (gmii_tx_en/gmii_tx_en2, tx_frame_done/tx_frame_done2)
+     for 3 cycles and a frame each: 21, 4; source 2 alone for 2 and 1: 23, 5
   2  rx_byte_cnt 20, rx_frame_cnt 1, rx_crc_err_cnt 0 after a good 20-byte RX
   3  rx_byte_cnt 28, rx_frame_cnt 2, rx_crc_err_cnt 1 after a bad 8-byte RX
   4  clr_tx: tx_frame_cnt 0, tx_byte_cnt 0, rx_frame_cnt still 2
@@ -22,6 +24,8 @@ bench's two checks at that width:
 
   6  tx_frame_cnt at max (7) after one more pulse
      tx_frame_cnt saturated (still 7) after another pulse
+     after clr_tx and 5 pulses, both sources at once reach max (7) exactly;
+     after clr_tx and 6 pulses, both at once hold it at max (7)
 """
 import os
 
@@ -90,6 +94,8 @@ async def reset(dut):
     dut.gmii_tx_en.value = 0
     dut.gmii_rx_dv.value = 0
     dut.tx_frame_done.value = 0
+    dut.gmii_tx_en2.value = 0
+    dut.tx_frame_done2.value = 0
     dut.rx_frame_good.value = 0
     dut.rx_frame_bad.value = 0
     dut.clr_tx.value = 0
@@ -151,6 +157,34 @@ async def eth_stats_counts(dut):
     chk.eq("tx_byte_cnt after 10+5B", dut.tx_byte_cnt, 15)
     chk.eq("tx_frame_cnt after 2 frames", dut.tx_frame_cnt, 2)
 
+    # Both TX sources on the same cycles, then the second alone
+    await FallingEdge(dut.clk)
+    dut.gmii_tx_en.value = 1
+    dut.gmii_tx_en2.value = 1
+    for _ in range(3):
+        await FallingEdge(dut.clk)
+    dut.gmii_tx_en.value = 0
+    dut.gmii_tx_en2.value = 0
+    dut.tx_frame_done.value = 1
+    dut.tx_frame_done2.value = 1
+    await FallingEdge(dut.clk)
+    dut.tx_frame_done.value = 0
+    dut.tx_frame_done2.value = 0
+    await posedge_plus1(dut)
+    chk.eq("tx_byte_cnt after 3 cycles of both", dut.tx_byte_cnt, 21)
+    chk.eq("tx_frame_cnt after both done", dut.tx_frame_cnt, 4)
+    await FallingEdge(dut.clk)
+    dut.gmii_tx_en2.value = 1
+    for _ in range(2):
+        await FallingEdge(dut.clk)
+    dut.gmii_tx_en2.value = 0
+    dut.tx_frame_done2.value = 1
+    await FallingEdge(dut.clk)
+    dut.tx_frame_done2.value = 0
+    await posedge_plus1(dut)
+    chk.eq("tx_byte_cnt after source 2 alone", dut.tx_byte_cnt, 23)
+    chk.eq("tx_frame_cnt after source 2 alone", dut.tx_frame_cnt, 5)
+
     # Test 2: RX good frame
     await drive_rx_frame(dut, 20, False)
     await posedge_plus1(dut)
@@ -203,6 +237,20 @@ async def eth_stats_saturation(dut):
     await pulse(dut, dut.tx_frame_done)
     await posedge_plus1(dut)
     chk.eq("tx_frame_cnt saturated", dut.tx_frame_cnt, CNT_MAX)
+
+    # Two events at once: max - 2 reaches max exactly, max - 1 holds there
+    for start, name in ((CNT_MAX - 2, "max-2 plus two"), (CNT_MAX - 1, "max-1 plus two")):
+        await pulse(dut, dut.clr_tx)
+        for _ in range(start):
+            await pulse(dut, dut.tx_frame_done)
+        await FallingEdge(dut.clk)
+        dut.tx_frame_done.value = 1
+        dut.tx_frame_done2.value = 1
+        await FallingEdge(dut.clk)
+        dut.tx_frame_done.value = 0
+        dut.tx_frame_done2.value = 0
+        await posedge_plus1(dut)
+        chk.eq(f"tx_frame_cnt {name}", dut.tx_frame_cnt, CNT_MAX)
 
     await Timer(10, "ns")
     chk.finish()

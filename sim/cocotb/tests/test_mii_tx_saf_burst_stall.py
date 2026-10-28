@@ -44,6 +44,9 @@ async def mii_tx_saf_burst_stall(dut):
     chk = Checks(dut._log)
     dut.rst_n.value = 0
     dut.tx_start_ok.value = 1
+    dut.ctl_axis_tdata.value = 0
+    dut.ctl_axis_tvalid.value = 0
+    dut.ctl_axis_tlast.value = 0
     dut.s_axis_tvalid.value = 0
     dut.s_axis_tlast.value = 0
     start_clock(dut.clk, 10)

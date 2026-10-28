@@ -11,6 +11,11 @@
 // mid-frame) with no wire underrun and no transmit error - the framer replaces
 // the cut-through eth_mac_tx on the MII path.
 //
+// MAC Control frames (e.g. PAUSE) come in on their own AXIS input and FIFO.
+// Between frames the framer starts a control frame first, else a data frame
+// if tx_start_ok, so control frames are not held by tx_start_ok and do not
+// queue behind data frames.
+//
 // Overflow policy: backpressure (tready = !full) for well-formed frames; size
 // the FIFO >= MAX_FRAME so a valid frame always fits. A runaway frame whose
 // no-tlast run reaches MAX_FRAME is force-terminated (synthetic EOF) and its
@@ -32,9 +37,16 @@ module mii_tx_saf #(
     output wire        s_axis_tready,
     input  wire        s_axis_tlast,
 
-    // Gate frame START (sys clk). Low pauses starting new frames (e.g. on an
-    // inbound 802.3x PAUSE); an in-flight frame always completes. Tie high if
-    // unused.
+    // ---- AXIS control frame input (raw frame, at most 64 bytes, e.g. PAUSE).
+    //      Tie ctl_axis_tvalid low if unused.
+    input  wire [7:0]  ctl_axis_tdata,
+    input  wire        ctl_axis_tvalid,
+    output wire        ctl_axis_tready,
+    input  wire        ctl_axis_tlast,
+
+    // Gate data frame START (sys clk). Low pauses starting new data frames
+    // (e.g. on an inbound 802.3x PAUSE); an in-flight frame always completes,
+    // and control frames are not gated. Tie high if unused.
     input  wire        tx_start_ok,
 
     // ---- MII output (media clock) ----
@@ -175,9 +187,10 @@ module mii_tx_saf #(
     assign tx_fifo_level = (|fifo_count_pad[FIFO_ADDR_WIDTH+13:13])
                            ? 13'h1FFF : fifo_count_pad[12:0];
 
-    wire [8:0] rd_data;
-    wire       rd_empty;
-    reg        rd_en;
+    wire [8:0] dat_rd_data;     // data FIFO head
+    wire       dat_rd_empty;
+    wire       dat_rd_en;
+    reg        rd_en;           // pop the selected FIFO (src_ctl)
 
     async_fifo #(.DATA_WIDTH(9), .ADDR_WIDTH(FIFO_ADDR_WIDTH)) u_fifo (
         .wr_clk       (clk),
@@ -187,11 +200,64 @@ module mii_tx_saf #(
         .wr_full      (wr_full),
         .rd_clk       (mii_tx_clk),
         .rd_rst_n     (tx_rst_n_s2),
-        .rd_data      (rd_data),
-        .rd_en        (rd_en),
-        .rd_empty     (rd_empty),
+        .rd_data      (dat_rd_data),
+        .rd_en        (dat_rd_en),
+        .rd_empty     (dat_rd_empty),
         .wr_data_count(fifo_count)
     );
+
+    // =========================================================================
+    // Control frame FIFO (sys clk write side): {tlast, data}, 64 entries, so a
+    // control frame of up to 64 bytes always commits and backpressure only
+    // waits for the one ahead of it to be sent.
+    // =========================================================================
+    localparam CTL_CNT_W = 7;   // 6 (ADDR_WIDTH) + 1
+    wire       ctl_wr_full;
+    wire       ctl_wr_accept = ctl_axis_tvalid && !ctl_wr_full;
+    wire       ctl_eof_wr    = ctl_wr_accept && ctl_axis_tlast;
+    wire [8:0] ctl_rd_data;
+    wire       ctl_rd_empty;
+    wire       ctl_rd_en;
+
+    assign ctl_axis_tready = !ctl_wr_full;
+
+    reg [CTL_CNT_W-1:0] ctl_wr_bin;
+    reg [CTL_CNT_W-1:0] ctl_wr_gray;
+    wire [CTL_CNT_W-1:0] ctl_wr_next = ctl_wr_bin + 1'b1;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            ctl_wr_bin  <= {CTL_CNT_W{1'b0}};
+            ctl_wr_gray <= {CTL_CNT_W{1'b0}};
+        end else if (ctl_eof_wr) begin
+            ctl_wr_bin  <= ctl_wr_next;
+            ctl_wr_gray <= ctl_wr_next ^ (ctl_wr_next >> 1);
+        end
+    end
+
+    async_fifo #(.DATA_WIDTH(9), .ADDR_WIDTH(6),
+                 .RAM_STYLE("DISTRIBUTED")) u_ctl_fifo (
+        .wr_clk       (clk),
+        .wr_rst_n     (rst_n),
+        .wr_data      ({ctl_axis_tlast, ctl_axis_tdata}),
+        .wr_en        (ctl_wr_accept),
+        .wr_full      (ctl_wr_full),
+        .rd_clk       (mii_tx_clk),
+        .rd_rst_n     (tx_rst_n_s2),
+        .rd_data      (ctl_rd_data),
+        .rd_en        (ctl_rd_en),
+        .rd_empty     (ctl_rd_empty),
+        .wr_data_count()
+    );
+
+    function [CTL_CNT_W-1:0] ctl_gray_to_bin;
+        input [CTL_CNT_W-1:0] gray;
+        integer i;
+        begin
+            ctl_gray_to_bin[CTL_CNT_W-1] = gray[CTL_CNT_W-1];
+            for (i = CTL_CNT_W-2; i >= 0; i = i - 1)
+                ctl_gray_to_bin[i] = ctl_gray_to_bin[i+1] ^ gray[i];
+        end
+    endfunction
 
     function [FRAME_CNT_W-1:0] gray_to_bin;
         input [FRAME_CNT_W-1:0] gray;
@@ -226,6 +292,32 @@ module mii_tx_saf #(
     end
     wire [FRAME_CNT_W-1:0] frame_wr_media = gray_to_bin(frame_wr_s3);
     wire                   frame_pending  = (frame_wr_media != frame_rd_bin);
+
+    // The same for the control FIFO.
+    (* ASYNC_REG = "TRUE" *) reg [CTL_CNT_W-1:0] ctl_wr_s1;
+    (* ASYNC_REG = "TRUE" *) reg [CTL_CNT_W-1:0] ctl_wr_s2;
+    (* ASYNC_REG = "TRUE" *) reg [CTL_CNT_W-1:0] ctl_wr_s3;
+    reg [CTL_CNT_W-1:0] ctl_rd_bin;
+    always @(posedge mii_tx_clk or negedge tx_rst_n_s2) begin
+        if (!tx_rst_n_s2) begin
+            ctl_wr_s1 <= {CTL_CNT_W{1'b0}};
+            ctl_wr_s2 <= {CTL_CNT_W{1'b0}};
+            ctl_wr_s3 <= {CTL_CNT_W{1'b0}};
+        end else begin
+            ctl_wr_s1 <= ctl_wr_gray;
+            ctl_wr_s2 <= ctl_wr_s1;
+            ctl_wr_s3 <= ctl_wr_s2;
+        end
+    end
+    wire [CTL_CNT_W-1:0] ctl_wr_media = ctl_gray_to_bin(ctl_wr_s3);
+    wire                 ctl_pending  = (ctl_wr_media != ctl_rd_bin);
+
+    // The FIFO of the frame being sent: src_ctl is set in S_IDLE and holds
+    // through the frame and its IFG, past its last pop.
+    reg        src_ctl;
+    wire [8:0] rd_data  = src_ctl ? ctl_rd_data  : dat_rd_data;
+    assign     dat_rd_en = rd_en && !src_ctl;
+    assign     ctl_rd_en = rd_en &&  src_ctl;
 
     // =========================================================================
     // CRC-32 (Ethernet FCS), one byte per step - same polynomial as eth_mac_tx.
@@ -291,6 +383,8 @@ module mii_tx_saf #(
             crc_saved     <= 32'd0;
             cur_last      <= 1'b0;
             frame_rd_bin  <= {FRAME_CNT_W{1'b0}};
+            ctl_rd_bin    <= {CTL_CNT_W{1'b0}};
+            src_ctl       <= 1'b0;
             rd_en         <= 1'b0;
             mii_txd_int   <= 4'd0;
             mii_tx_en_int <= 1'b0;
@@ -305,11 +399,15 @@ module mii_tx_saf #(
                     mii_tx_en_int <= 1'b0;
                     nib           <= 1'b0;
                     tx_active_media <= 1'b0;
-                    if (frame_pending && !rd_empty && start_ok_s2) begin
+                    // A control frame first; a data frame only if
+                    // tx_start_ok.
+                    if ((ctl_pending && !ctl_rd_empty) ||
+                        (frame_pending && !dat_rd_empty && start_ok_s2)) begin
                         // tx_en is raised in the first S_PRE cycle (default
                         // branch) together with the first nibble, so it stays
                         // aligned with mii_txd. Raising it here would emit one
                         // stale nibble while tx_en is already high.
+                        src_ctl         <= ctl_pending && !ctl_rd_empty;
                         st              <= S_PRE;
                         cur             <= 8'h55;
                         cnt             <= 4'd0;
@@ -403,7 +501,10 @@ module mii_tx_saf #(
                             S_IFG: begin
                                 if (cnt == IFG_BYTES - 1) begin
                                     st           <= S_IDLE;
-                                    frame_rd_bin <= frame_rd_bin + 1'b1;
+                                    if (src_ctl)
+                                        ctl_rd_bin   <= ctl_rd_bin + 1'b1;
+                                    else
+                                        frame_rd_bin <= frame_rd_bin + 1'b1;
                                     tx_done_tgl  <= ~tx_done_tgl;
                                 end else begin
                                     cnt <= cnt + 4'd1;
@@ -470,7 +571,7 @@ module mii_tx_saf #(
             st_ws1       <= 3'd0;                st_ws2       <= 3'd0;
         end else begin
             frame_rd_ws1 <= frame_rd_bin; frame_rd_ws2 <= frame_rd_ws1;
-            rd_empty_ws1 <= rd_empty;     rd_empty_ws2 <= rd_empty_ws1;
+            rd_empty_ws1 <= dat_rd_empty; rd_empty_ws2 <= rd_empty_ws1;
             st_ws1       <= st;           st_ws2       <= st_ws1;
         end
     end

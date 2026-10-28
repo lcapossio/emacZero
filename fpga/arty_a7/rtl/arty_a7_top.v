@@ -813,7 +813,7 @@ module arty_a7_top (
     assign ela_probe[31]    = ETH_RX_CLK;
     assign ela_probe[34:32] = u_mac_sys.gen_mii.u_mii_tx.st;              // framer FSM
     assign ela_probe[35]    = u_mac_sys.gen_mii.u_mii_tx.tx_active_media; // frame on wire
-    assign ela_probe[36]    = u_mac_sys.gen_mii.u_mii_tx.rd_empty;        // FIFO empty
+    assign ela_probe[36]    = u_mac_sys.gen_mii.u_mii_tx.dat_rd_empty;    // data FIFO empty
     assign ela_probe[37]    = u_mac_sys.gen_mii.u_mii_tx.frame_pending;   // committed frame
     assign ela_probe[63:38] = 26'd0;
 

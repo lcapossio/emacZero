@@ -23,7 +23,8 @@ Checks, in bench order (18):
      counted in PAUSE_RX_CNT; rx_en: next frame held off (> 40 us)
   2  rx_en off: PAUSE frame still counted (2); next frame not held off (< 5 us)
   3  PAUSE then queued frame: PAUSE frame 72 bytes; user frame separate (112)
-  3b PAUSE mid user frame: user frame intact (312); PAUSE frame follows (72)
+  3b PAUSE mid user frame (still entering the TX FIFO): PAUSE frame goes
+     first (72); user frame follows intact (312)
   4  write to PAUSE_RX_CNT clears it; clears PAUSE_TX_CNT too; injected valid
      PAUSE counted (1); bad FCS ignored (1); rx_er ignored (1); 56-byte frame
      ignored (1); 100-byte PAUSE frame counted (2); EtherType 0x8809 ignored (2)
@@ -45,7 +46,7 @@ SUITES = {
         "toplevel": "eth_mac_sys",
         "sources": ["rtl/crc32.v", "rtl/async_fifo.v", "rtl/mii_if.v",
                     "rtl/sync_fifo.v", "rtl/net/csum_calc.v", "rtl/eth_mac_rx.v",
-                    "rtl/eth_mac_tx.v", "rtl/eth_stats.v", "rtl/eth_pause.v",
+                    "rtl/eth_mac_tx.v", "rtl/eth_stats.v", "rtl/eth_pause_rx.v", "rtl/eth_pause.v",
                     "rtl/axilite_regs.v", "rtl/mdio_master.v", "rtl/ddr_output.v",
                     "rtl/ddr_input.v", "rtl/rgmii_if.v", "rtl/gmii_if.v",
                     "rtl/gmii_cdc.v", "rtl/net/tx_csum_off.v", "rtl/mii_tx_saf.v",
@@ -252,7 +253,9 @@ async def tb_eth_mac_sys_pause(dut):
             f"{phy.wire_len[n0 + 1]}",
             phy.wire_len[n0 + 1] == 112)
 
-    # ---- 3b. PAUSE requested mid user frame: waits for the frame to end ----
+    # ---- 3b. PAUSE requested mid user frame: the user frame is still entering
+    #      the store-and-forward TX FIFO, so the PAUSE frame, on its own control
+    #      path, goes out first; the user frame follows intact ----
     n0 = phy.wire_n
 
     async def mid():
@@ -264,13 +267,12 @@ async def tb_eth_mac_sys_pause(dut):
     await t1
     await t2
     await wait_wire(n0 + 2)
-    # The RX CDC drains the 312-byte frame before the looped-back PAUSE frame,
-    # so wait long enough for it to be counted before section 4.
     await ClockCycles(clk, 600)
-    c.check(f"PAUSE mid user frame: user frame intact (312 bytes): {phy.wire_len[n0]}",
-            phy.wire_len[n0] == 312)
-    c.check(f"PAUSE mid user frame: PAUSE frame follows (72 bytes): {phy.wire_len[n0 + 1]}",
-            phy.wire_len[n0 + 1] == 72)
+    c.check(f"PAUSE mid user frame: PAUSE frame goes first (72 bytes): {phy.wire_len[n0]}",
+            phy.wire_len[n0] == 72)
+    c.check(f"PAUSE mid user frame: user frame follows intact (312 bytes): "
+            f"{phy.wire_len[n0 + 1]}",
+            phy.wire_len[n0 + 1] == 312)
 
     # ---- 4. Injected frames: only a valid PAUSE frame counts ----
     await axil.write(0x8C, 0)                     # clears both counters

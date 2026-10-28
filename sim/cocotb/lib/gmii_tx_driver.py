@@ -16,6 +16,10 @@ class GmiiTxDriver:
         dut.gmii_txd_in.value = 0
         dut.gmii_tx_en_in.value = 0
         dut.gmii_tx_er_in.value = 0
+        dut.gmii_ctl_txd_in.value = 0
+        dut.gmii_ctl_tx_en_in.value = 0
+        dut.gmii_ctl_tx_er_in.value = 0
+        dut.tx_hold.value = 0
 
     async def _beat(self, data, en, er=0):
         self.dut.gmii_txd_in.value = data

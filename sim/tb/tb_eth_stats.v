@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
 // tb_eth_stats.v - Testbench for eth_stats.v
-// Tests: basic counting, saturation, clear-on-pulse
+// Tests: basic counting, two TX sources at once, saturation, clear-on-pulse
 // =============================================================================
 `timescale 1ns / 1ps
 
@@ -13,6 +13,8 @@ module tb_eth_stats;
     reg         gmii_tx_en;
     reg         gmii_rx_dv;
     reg         tx_frame_done;
+    reg         gmii_tx_en2;
+    reg         tx_frame_done2;
     reg         rx_frame_good;
     reg         rx_frame_bad;
     reg         clr_tx;
@@ -33,6 +35,8 @@ module tb_eth_stats;
         .gmii_tx_en     (gmii_tx_en),
         .gmii_rx_dv     (gmii_rx_dv),
         .tx_frame_done  (tx_frame_done),
+        .gmii_tx_en2    (gmii_tx_en2),
+        .tx_frame_done2 (tx_frame_done2),
         .rx_frame_good  (rx_frame_good),
         .rx_frame_bad   (rx_frame_bad),
         // Extended RX classification not exercised in this TB
@@ -136,6 +140,8 @@ module tb_eth_stats;
         gmii_tx_en = 0;
         gmii_rx_dv = 0;
         tx_frame_done = 0;
+        gmii_tx_en2 = 0;
+        tx_frame_done2 = 0;
         rx_frame_good = 0;
         rx_frame_bad = 0;
         clr_tx = 0;
@@ -159,6 +165,32 @@ module tb_eth_stats;
 
         check("tx_byte_cnt after 10+5B", tx_byte_cnt, 32'd15);
         check("tx_frame_cnt after 2 frames", tx_frame_cnt, 32'd2);
+
+        // Both TX sources on the same cycles (the two framers of a GMII /
+        // RGMII build): 3 bytes and 1 frame from each, then the second alone.
+        @(negedge clk);
+        gmii_tx_en = 1; gmii_tx_en2 = 1;
+        repeat (3) @(negedge clk);
+        gmii_tx_en = 0; gmii_tx_en2 = 0;
+        tx_frame_done = 1; tx_frame_done2 = 1;
+        @(negedge clk);
+        tx_frame_done = 0; tx_frame_done2 = 0;
+        @(posedge clk); #1;
+
+        check("tx_byte_cnt after 3 cycles of both", tx_byte_cnt, 32'd21);
+        check("tx_frame_cnt after both done", tx_frame_cnt, 32'd4);
+
+        @(negedge clk);
+        gmii_tx_en2 = 1;
+        repeat (2) @(negedge clk);
+        gmii_tx_en2 = 0;
+        tx_frame_done2 = 1;
+        @(negedge clk);
+        tx_frame_done2 = 0;
+        @(posedge clk); #1;
+
+        check("tx_byte_cnt after source 2 alone", tx_byte_cnt, 32'd23);
+        check("tx_frame_cnt after source 2 alone", tx_frame_cnt, 32'd5);
 
         // -----------------------------------------------------------------
         // Test 2: RX good frame counting (20 bytes)
@@ -233,6 +265,31 @@ module tb_eth_stats;
         @(posedge clk); #1;
 
         check("tx_frame_cnt saturated", tx_frame_cnt, 32'hFFFFFFFF);
+
+        // Two events at once: max - 2 reaches max exactly, max - 1 holds there.
+        force uut.tx_frame_cnt = 32'hFFFFFFFD;
+        @(posedge clk); #1;
+        release uut.tx_frame_cnt;
+
+        @(negedge clk);
+        tx_frame_done = 1; tx_frame_done2 = 1;
+        @(negedge clk);
+        tx_frame_done = 0; tx_frame_done2 = 0;
+        @(posedge clk); #1;
+
+        check("tx_frame_cnt max-2 plus two", tx_frame_cnt, 32'hFFFFFFFF);
+
+        force uut.tx_frame_cnt = 32'hFFFFFFFE;
+        @(posedge clk); #1;
+        release uut.tx_frame_cnt;
+
+        @(negedge clk);
+        tx_frame_done = 1; tx_frame_done2 = 1;
+        @(negedge clk);
+        tx_frame_done = 0; tx_frame_done2 = 0;
+        @(posedge clk); #1;
+
+        check("tx_frame_cnt max-1 plus two", tx_frame_cnt, 32'hFFFFFFFF);
 `endif
 
         // -----------------------------------------------------------------

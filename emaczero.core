@@ -19,6 +19,7 @@ filesets:
       - rtl/eth_mac.v
       - rtl/mdio_master.v
       - rtl/eth_stats.v
+      - rtl/eth_pause_rx.v
       - rtl/eth_pause.v
       - rtl/axilite_regs.v
       - rtl/ddr_output.v
@@ -53,6 +54,7 @@ filesets:
       - rtl/vhdl/eth_mac.vhd
       - rtl/vhdl/mdio_master.vhd
       - rtl/vhdl/eth_stats.vhd
+      - rtl/vhdl/eth_pause_rx.vhd
       - rtl/vhdl/eth_pause.vhd
       - rtl/vhdl/axilite_regs.vhd
       - rtl/vhdl/ddr_output.vhd

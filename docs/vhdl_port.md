@@ -33,8 +33,9 @@ wherever it is enabled. Parameters not listed are the Verilog defaults.
 | `mdio_master` | default, CLK_FREQ_HZ 125 MHz and 1 MHz | 25% |
 | `axilite_regs` | MCAST_HASH_FILTER 0 and 1 | 40% |
 | `eth_stats` | default, STAT_CNT_W=3 | 10% |
-| `eth_pause` | default, two TICK_DIV sets (incl. 0 and 17-bit dividers) | 30% |
-| `eth_mac_tx` | MAX_FRAME 1518 and 9018 | 10% |
+| `eth_pause` | default, two TICK_DIV sets (incl. 0 and 17-bit dividers) | 35% |
+| `eth_pause_rx` | RX_NIBBLE 0 and 1 | 30% |
+| `eth_mac_tx` | MAX_FRAME 1518, 9018 and 60 | 10% |
 | `eth_mac_rx` | MCAST_HASH_FILTER × RX_CSUM_OFFLOAD, RX FIFO AW 2 to 4 | 10% |
 | `tx_csum_off` | MAX_FRAME 6/20/60, buffer AW 3 to 6 | 10% |
 | `gmii_cdc` | default, MAX_FRAME=1518 | 10% |

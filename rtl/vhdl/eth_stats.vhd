@@ -31,6 +31,11 @@ entity eth_stats is
 
         -- ---- Frame completion pulses (single-cycle, sys_clk domain) ----
         tx_frame_done         : in  std_logic;    -- falling edge of gmii_tx_en
+        -- Second TX source, counted alongside the first: the GMII/RGMII control-
+        -- frame framer, which can emit on the same cycle as the data framer.
+        -- Tie both to '0' when there is only one TX source.
+        gmii_tx_en2           : in  std_logic;
+        tx_frame_done2        : in  std_logic;
         rx_frame_good         : in  std_logic;    -- TLAST handshake (tvalid && tready) && !terror
         rx_frame_bad          : in  std_logic;    -- TLAST handshake (tvalid && tready) && terror
 
@@ -99,6 +104,23 @@ architecture rtl of eth_stats is
         end if;
     end function sat_inc;
 
+    -- Saturating add of two 1-bit events (0, 1 or 2): the TX counters see one
+    -- event from each of two framers, possibly on the same cycle.
+    function sat_add2(cnt : unsigned; a, b : std_logic) return unsigned is
+        variable sum    : unsigned(cnt'length downto 0);
+        variable ua, ub : unsigned(cnt'length downto 0);
+    begin
+        ua    := (others => '0');
+        ua(0) := a;
+        ub    := (others => '0');
+        ub(0) := b;
+        sum   := resize(cnt, cnt'length + 1) + ua + ub;
+        if sum(sum'high) = '1' then
+            return (cnt'range => '1');
+        end if;
+        return sum(cnt'length - 1 downto 0);
+    end function sat_add2;
+
     signal tx_frame_cnt_i          : cnt_t;
     signal tx_byte_cnt_i           : cnt_t;
     signal rx_frame_cnt_i          : cnt_t;
@@ -142,12 +164,12 @@ begin
                 tx_frame_cnt_i <= CNT_ZERO;
                 tx_byte_cnt_i  <= CNT_ZERO;
             else
-                if tx_frame_done = '1' then
-                    tx_frame_cnt_i <= sat_inc(tx_frame_cnt_i);
+                if tx_frame_done = '1' or tx_frame_done2 = '1' then
+                    tx_frame_cnt_i <= sat_add2(tx_frame_cnt_i, tx_frame_done, tx_frame_done2);
                 end if;
 
-                if gmii_tx_en = '1' then
-                    tx_byte_cnt_i <= sat_inc(tx_byte_cnt_i);
+                if gmii_tx_en = '1' or gmii_tx_en2 = '1' then
+                    tx_byte_cnt_i <= sat_add2(tx_byte_cnt_i, gmii_tx_en, gmii_tx_en2);
                 end if;
             end if;
         end if;

@@ -20,6 +20,9 @@
 #   3. gmii_cdc.v == gmii_cdc.vhd over (2)      modules gmii_cdc* below
 # Not covered: gmii_cdc with the full-depth array in place.
 #
+# The control-frame TX FIFO is a fixed DISTRIBUTED async_fifo of 10 x 128
+# words (ADDR_WIDTH 7); its model pair is proven at that config too.
+#
 # Configs: eth_mac_sys instantiates gmii_cdc with FIFO_RAM_STYLE = CDC_RAM_STYLE
 # ("BLOCK" default; nothing in the repo overrides it) and MAX_FRAME 9018
 # (default, RX ADDR_WIDTH 14) or 1518 (RX ADDR_WIDTH 12); both are proven.
@@ -65,6 +68,7 @@ formal:
       param_sets:
         - {DATA_WIDTH: 10, ADDR_WIDTH: 14}
         - {DATA_WIDTH: 10, ADDR_WIDTH: 12}
+        - {DATA_WIDTH: 10, ADDR_WIDTH: 7}
     - name: async_fifo_block
       param_sets:
         - {DATA_WIDTH: 10, ADDR_WIDTH: 14}
