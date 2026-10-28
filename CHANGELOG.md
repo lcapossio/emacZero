@@ -73,9 +73,11 @@ This project does not yet maintain long-lived release branches.
   (`TB_NO_HIER_FORCE`), so both also run against a VHDL DUT in xsim.
 - `fcapz` submodule updated from 0.4.9 (1d65741) to fpgacapZero main
   (478d7c8, 0.5.0 plus fixes). It includes the fix for an ELA built with the
-  default single-chain burst reading zeros on Zynq UltraScale+ MPSoC
-  (ZCU106). The cores the board builds use keep their ports and parameters.
-  The host tools should match: install fcapz 0.5.0 or later.
+  default single-chain burst reading zeros on Zynq UltraScale+ MPSoC; the
+  committed ZCU106 build has no ELA, but a local one now works. The cores the
+  board builds use keep their existing ports and parameter defaults (0.5.0 adds
+  an ELA `RLE_W` parameter, off by default). fcapz 0.5.0 host tools are
+  recommended; 0.4.9 still reads these bitstreams.
 
 ### Known issues
 
