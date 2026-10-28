@@ -71,6 +71,11 @@ This project does not yet maintain long-lived release branches.
 - `tb_gmii_cdc_rx_overflow.v` reads its FIFO-word probe through a wire, and
   `tb_eth_stats.v` can leave out its force-based saturation test
   (`TB_NO_HIER_FORCE`), so both also run against a VHDL DUT in xsim.
+- `fcapz` submodule updated from 0.4.9 (1d65741) to fpgacapZero main
+  (478d7c8, 0.5.0 plus fixes). It includes the fix for an ELA built with the
+  default single-chain burst reading zeros on Zynq UltraScale+ MPSoC
+  (ZCU106). The cores the board builds use keep their ports and parameters.
+  The host tools should match: install fcapz 0.5.0 or later.
 
 ### Known issues
 
