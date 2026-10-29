@@ -41,6 +41,21 @@ This project does not yet maintain long-lived release branches.
   and `zcu106_eth_demo` are not ported yet, so board builds stay mixed
   language. `udp_blast`'s delay generics are VHDL integers: pass a delay of
   2^31 cycles or more as its negative 32-bit equivalent.
+- **Arty RGMII pad-loopback self-test** (`fpga/arty_a7/rtl/rgmii_lb_selftest.v`,
+  built with `fpga/arty_a7/scripts/build_arty_rgmii_lb.tcl`). A second
+  `eth_mac_sys` in RGMII mode (`MAX_FRAME=9018`) drives TXD[3:0], TX_CTL and
+  TXC out of six Pmod JC pins and reads each pad back through its own IOBUF
+  as RXD, RX_CTL and RXC, so `rgmii_if` runs on silicon with real ODDR/IDDR
+  cells and I/O buffers. RXD and RX_CTL pass through an IDELAYE2 whose tap
+  `fpga/arty_a7/scripts/rgmii_lb_selftest.py` sweeps at 1G before it runs the
+  `gmii_lb_selftest` generator and checker at 1G, 100M and 10M. Nothing may be
+  plugged into JC. On an Arty A7-100T taps 19-31 of 0-31 passed at 1G; at tap
+  25 every frame came back exact for 20 s at each speed (648,329 at 1G, 70,265
+  at 100M, 7,023 at 10M, the largest 9018 bytes with FCS). No JC pin is
+  clock-capable, so RXC reaches its BUFG over general routing and post-route
+  STA reports RX hold violations at tap 0; the sweep is the check.
+  `RGMII-LB-SELFTEST` simulates it at all three speeds, including an injected
+  RX corruption.
 - `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
   The phase is skipped when GHDL is not installed. It also analyses and
