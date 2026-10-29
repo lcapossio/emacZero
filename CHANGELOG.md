@@ -54,8 +54,13 @@ This project does not yet maintain long-lived release branches.
   at 100M, 7,023 at 10M, the largest 9018 bytes with FCS). No JC pin is
   clock-capable, so RXC reaches its BUFG over general routing and post-route
   STA reports RX hold violations at tap 0; the sweep is the check.
-  `RGMII-LB-SELFTEST` simulates it at all three speeds, including an injected
-  RX corruption.
+  At each speed the MAC also sends PAUSE frames to itself: each comes back
+  exact, and the longest gap between frames it accepts shows TX pausing for
+  the quanta sent (0x2000 quanta: 4196 us at 1G, 42.3 ms at 100M, 427 ms at
+  10M, each within one longest-frame time of 0x2000 x 512 bit times), not
+  pausing with `PAUSE_CTRL` rx_en clear, and resuming on a quanta-0 PAUSE.
+  `RGMII-LB-SELFTEST` simulates it at all three speeds, PAUSE at 1G and 100M,
+  and an injected RX corruption.
 - `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
   The phase is skipped when GHDL is not installed. It also analyses and

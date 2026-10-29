@@ -5,10 +5,14 @@
 // Runs rgmii_lb_selftest at 1G for two passes of its 8-entry length table
 // (46..9000-byte payloads), then at 100M for one pass and at 10M for the two
 // shortest frames, checking the counters it will report on hardware after each
-// speed: every frame exact and clean, in order. The pads are modelled as plain
-// wires (no buffer or IDELAY delays), so this checks the self-test logic, the
-// speed switching and the RGMII path, not the pad timing. Then corrupts one
-// looped-back RX nibble to prove the checker flags bad frames.
+// speed: every frame exact and clean, in order. At 1G and 100M it also sends
+// a PAUSE frame to itself, with PAUSE_CTRL rx_en set (the longest gap between
+// generator frames must be the pause, within two frame times) and, at 1G,
+// clear (the gap stays normal); each time the PAUSE frame must come back
+// exact. The pads are modelled as plain wires (no buffer or IDELAY delays),
+// so this checks the self-test logic, the speed switching and the RGMII path,
+// not the pad timing. Then corrupts one looped-back RX nibble to prove the
+// checker flags bad frames.
 // =============================================================================
 `timescale 1ns / 1ps
 
@@ -16,8 +20,8 @@ module tb_rgmii_lb_selftest;
 
     reg clk = 1'b0;
     reg rst_n = 1'b0;
-    reg [9:0] ctrl = 10'd0;
-    wire [263:0] st;
+    reg [31:0] ctrl = 32'd0;
+    wire [327:0] st;
     wire [5:0] pad;
     always #5 clk = ~clk;
 
@@ -32,6 +36,10 @@ module tb_rgmii_lb_selftest;
     wire [15:0] max_ok    = st[207:192];
     wire [1:0]  spd_cur   = st[257:256];
     wire [4:0]  tap_cur   = st[262:258];
+    wire        p_rx_cur  = st[263];
+    wire [31:0] max_gap   = st[295:264];
+    wire [15:0] p_ok      = st[311:296];
+    wire [15:0] p_bad     = st[327:312];
 
     integer pass_cnt = 0, fail_cnt = 0;
     task check;
@@ -81,6 +89,59 @@ module tb_rgmii_lb_selftest;
         end
     endtask
 
+    // With PAUSE_CTRL rx_en = rx_en: clear, run, send a PAUSE of q quanta once
+    // two frames have gone, run on for the pause (dur_cyc clk_125 cycles) and
+    // three frame times (fm_cyc each), stop and drain.
+    task pause_run;
+        input [15:0]  q;
+        input         rx_en;
+        input integer dur_cyc;
+        input integer fm_cyc;
+        integer waited;
+        begin
+            ctrl[26] = rx_en;
+            wait (p_rx_cur == rx_en && st[240]);
+            ctrl[25:10] = q;
+            ctrl[1] = 1'b1; #100; ctrl[1] = 1'b0; #100;
+            ctrl[0] = 1'b1;
+            wait (tx_frames >= 2);
+            ctrl[27] = 1'b1; #100; ctrl[27] = 1'b0;
+            wait (p_ok + p_bad >= 1);
+            #(8 * (dur_cyc + 3 * fm_cyc));
+            ctrl[0] = 1'b0;
+            waited = 0;
+            while (rx_ok + rx_bad < tx_frames && waited < 16 * fm_cyc) begin
+                #1000;
+                waited = waited + 1000;
+            end
+            #10000;
+            show;
+            $display("INFO: PAUSE q=%0d rx_en=%0d: p_ok=%0d p_bad=%0d max_gap=%0d (pause %0d, frame %0d cycles)",
+                     q, rx_en, p_ok, p_bad, max_gap, dur_cyc, fm_cyc);
+        end
+    endtask
+
+    // PAUSE checks after pause_run: the frame came back exact, the data
+    // frames are still all exact and in order, and the longest gap is the
+    // pause (honored) or no longer than two frame times (not honored).
+    task pause_check;
+        input [8*8-1:0] tag;
+        input           honored;
+        input integer   dur_cyc;
+        input integer   fm_cyc;
+        begin
+            check({tag, ": PAUSE frame came back exact"}, p_ok == 1 && p_bad == 0);
+            check({tag, ": data frames still exact and in order"},
+                  tx_frames >= 2 && rx_ok == tx_frames && rx_bad == 0 && seq_gap == 0);
+            if (honored)
+                check({tag, ": longest gap is the pause, within two frames"},
+                      max_gap + 2 * fm_cyc >= dur_cyc && max_gap <= dur_cyc + 2 * fm_cyc);
+            else
+                check({tag, ": longest gap stays within two frames"},
+                      max_gap <= 2 * fm_cyc);
+        end
+    endtask
+
     initial begin
         #200 rst_n = 1'b1;
         #2000;
@@ -101,6 +162,13 @@ module tb_rgmii_lb_selftest;
         check("1G: no bad frames, terror or gaps",
               rx_bad == 0 && rx_terr == 0 && seq_gap == 0);
 
+        // 1G PAUSE: 1024 quanta x 512 ns = 65536 cycles; the longest frame
+        // (9018 B + preamble + IFG) is 9038 cycles.
+        pause_run(16'd1024, 1'b1, 65536, 9038);
+        pause_check("1G on", 1'b1, 65536, 9038);
+        pause_run(16'd1024, 1'b0, 65536, 9038);
+        pause_check("1G off", 1'b0, 65536, 9038);
+
         // 100M: one pass, ending back at the start of the table.
         set_speed(2'b01);
         check("100M: CTRL speed written", spd_cur == 2'b01);
@@ -110,6 +178,11 @@ module tb_rgmii_lb_selftest;
         check("100M: max exact frame is 9014 B", max_ok == 16'd9014);
         check("100M: no bad frames, terror or gaps",
               rx_bad == 0 && rx_terr == 0 && seq_gap == 0);
+
+        // 100M PAUSE: 1024 quanta x 5.12 us = 655360 cycles; the longest
+        // frame is 90380 cycles. Through rgmii_if's nibble pairing.
+        pause_run(16'd1024, 1'b1, 655360, 90380);
+        pause_check("100M on", 1'b1, 655360, 90380);
 
         // 10M: the two shortest frames (46 and 60-byte payloads).
         set_speed(2'b10);
@@ -144,5 +217,5 @@ module tb_rgmii_lb_selftest;
         $finish;
     end
 
-    initial begin #40000000; $display("FAIL: simulation timeout"); $finish; end
+    initial begin #60000000; $display("FAIL: simulation timeout"); $finish; end
 endmodule

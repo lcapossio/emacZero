@@ -35,18 +35,37 @@
 // route STA cannot judge the RX inputs here: it sees only the IDELAY_INIT tap
 // and its slow-corner RXC delay is well above what the sweep measures.
 //
+// PAUSE. The MAC receives its own PAUSE frames, so a PAUSE it sends pauses
+// its own TX: the frame goes out through rgmii_if, comes back through the
+// pads, the IDDRs and (at 10/100) the nibble pairing, and eth_pause_rx must
+// recognize it there. The checker sees the frame too (promiscuous mode) and
+// counts it as a PAUSE frame, good if every byte but the source address is
+// as sent and it is 60 bytes long, instead of as a data frame. The gap
+// between generator frames shows the pause: max_gap is the longest run of
+// clk_125 cycles between two frames the MAC accepted while run was high, so
+// a PAUSE of Q quanta with PAUSE_CTRL rx_en set should make it about
+// Q x 512 bit times, and leave it at about one frame time with rx_en clear.
+//
 // Control (ctrl, async - synchronized here):
-//   [0]   run   - generate traffic while high (the current frame completes)
-//   [1]   clear - hold high to zero all counters
-//   [3:2] speed - 00 = 1G, 01 = 100M, 10 = 10M; written to CTRL[4:3] once it
-//                 has been stable for 16 clk_125 cycles. Change it only while
-//                 traffic is stopped.
-//   [8:4] tap   - IDELAYE2 tap for all five RX data inputs
-//   [9]   load  - a rising edge loads tap into the IDELAYE2s
+//   [0]     run    - generate traffic while high (the current frame completes)
+//   [1]     clear  - hold high to zero all counters
+//   [3:2]   speed  - 00 = 1G, 01 = 100M, 10 = 10M; written to CTRL[4:3] once
+//                    it has been stable for 16 clk_125 cycles. Change it only
+//                    while traffic is stopped.
+//   [8:4]   tap    - IDELAYE2 tap for all five RX data inputs
+//   [9]     load   - a rising edge loads tap into the IDELAYE2s
+//   [25:10] quanta - PAUSE_QUANTA for the next send; set it before send
+//   [26]    rx_en  - PAUSE_CTRL rx_en (honor received PAUSE frames)
+//   [27]    send   - a rising edge writes PAUSE_QUANTA = quanta, then
+//                    PAUSE_CTRL = {rx_en, tx_send}
+//   [31:28] spare
 // Status (clk_125 domain; stop traffic before reading for a coherent view):
-//   [255:0] as gmii_lb_selftest.v, except [243] = IDELAYCTRL RDY and
-//           [255:244] = 12'hB0C (marker: this bitstream has this self-test)
-//   [257:256] speed written to CTRL   [262:258] tap loaded   [263] spare
+//   [255:0] as gmii_lb_selftest.v, except [240] = no CSR write in flight,
+//           [243] = IDELAYCTRL RDY and [255:244] = 12'hB0C (marker: this
+//           bitstream has this self-test)
+//   [257:256] speed written to CTRL   [262:258] tap loaded
+//   [263] rx_en written to PAUSE_CTRL [295:264] max_gap (clk_125 cycles)
+//   [311:296] PAUSE frames good       [327:312] PAUSE frames bad
 // =============================================================================
 `ifdef SIM
 `timescale 1ns / 1ps
@@ -58,8 +77,8 @@ module rgmii_lb_selftest #(
 )(
     input  wire         clk,        // 100 MHz system clock
     input  wire         rst_n,
-    input  wire [9:0]   ctrl,
-    output wire [263:0] status,
+    input  wire [31:0]  ctrl,
+    output wire [327:0] status,
     inout  wire [5:0]   pad         // [3:0] TXD/RXD, [4] TX_CTL/RX_CTL, [5] TXC/RXC
 );
 
@@ -117,11 +136,11 @@ module rgmii_lb_selftest #(
     end
     wire lb_rst_n = rst_n & lock_s[1];
 
-    (* ASYNC_REG = "TRUE" *) reg [9:0] ctrl_s1, ctrl_s2;
+    (* ASYNC_REG = "TRUE" *) reg [31:0] ctrl_s1, ctrl_s2;
     always @(posedge clk_125 or negedge lb_rst_n) begin
         if (!lb_rst_n) begin
-            ctrl_s1 <= 10'd0;
-            ctrl_s2 <= 10'd0;
+            ctrl_s1 <= 32'd0;
+            ctrl_s2 <= 32'd0;
         end else begin
             ctrl_s1 <= ctrl;
             ctrl_s2 <= ctrl_s1;
@@ -132,6 +151,11 @@ module rgmii_lb_selftest #(
     wire [1:0] spd_req = ctrl_s2[3:2];
     wire [4:0] tap_req = ctrl_s2[8:4];
     wire       tap_ld  = ctrl_s2[9];
+    // quanta has been synchronized for at least as long as send and is
+    // stable by the time send rises.
+    wire [15:0] p_quanta = ctrl_s2[25:10];
+    wire        p_rx_en  = ctrl_s2[26];
+    wire        p_send   = ctrl_s2[27];
 
     // =========================================================================
     // RGMII pads: each output leaves through an IOBUF whose input buffer reads
@@ -318,9 +342,15 @@ module rgmii_lb_selftest #(
     );
 
     // =========================================================================
-    // CSR init: CTRL = tx_en | rx_en | promisc | speed | full_duplex | jumbo_en
-    // Rewritten whenever the requested speed has been stable for 16 cycles
-    // and differs from the one last written.
+    // CSR writes, one at a time:
+    //   CTRL = tx_en | rx_en | promisc | speed | full_duplex | jumbo_en after
+    //     reset, and whenever the requested speed has been stable for 16
+    //     cycles and differs from the one last written;
+    //   PAUSE_QUANTA = quanta, then PAUSE_CTRL = {rx_en, tx_send}, on a rising
+    //     edge of send (PAUSE_CTRL takes rx_en from every write, so the send
+    //     carries it);
+    //   PAUSE_CTRL = {rx_en, 0} when rx_en differs from the one last written.
+    // init_done is high while no write is in flight.
     // =========================================================================
     reg  [1:0] spd_last, spd_cur;
     reg  [3:0] spd_stable;
@@ -338,6 +368,8 @@ module rgmii_lb_selftest #(
 
     reg init_done;
     reg aw_done, w_done;
+    reg p_rx_cur;               // rx_en last written to PAUSE_CTRL
+    reg p_send_d, p_pend, p_chain;
     always @(posedge clk_125 or negedge lb_rst_n) begin
         if (!lb_rst_n) begin
             awaddr    <= 8'h04;
@@ -349,22 +381,55 @@ module rgmii_lb_selftest #(
             aw_done   <= 1'b0;
             w_done    <= 1'b0;
             init_done <= 1'b0;
-        end else if (!init_done) begin
-            awvalid <= !aw_done && !(awvalid && awready);
-            wvalid  <= !w_done  && !(wvalid  && wready);
-            if (awvalid && awready) aw_done <= 1'b1;
-            if (wvalid  && wready)  w_done  <= 1'b1;
-            bready <= 1'b1;
-            if (bvalid && bready) begin
-                bready    <= 1'b0;
-                init_done <= 1'b1;
+            p_rx_cur  <= 1'b0;
+            p_send_d  <= 1'b0;
+            p_pend    <= 1'b0;
+            p_chain   <= 1'b0;
+        end else begin
+            if (!init_done) begin
+                awvalid <= !aw_done && !(awvalid && awready);
+                wvalid  <= !w_done  && !(wvalid  && wready);
+                if (awvalid && awready) aw_done <= 1'b1;
+                if (wvalid  && wready)  w_done  <= 1'b1;
+                bready <= 1'b1;
+                if (bvalid && bready) begin
+                    bready <= 1'b0;
+                    if (p_chain) begin          // PAUSE_QUANTA written
+                        awaddr   <= 8'h84;
+                        wdata    <= {30'd0, p_rx_en, 1'b1};
+                        p_rx_cur <= p_rx_en;
+                        p_chain  <= 1'b0;
+                        aw_done  <= 1'b0;
+                        w_done   <= 1'b0;
+                    end else begin
+                        init_done <= 1'b1;
+                    end
+                end
+            end else if (spd_new) begin
+                awaddr    <= 8'h04;
+                wdata     <= 32'h0000_0067 | {27'd0, spd_last, 3'd0};
+                spd_cur   <= spd_last;
+                aw_done   <= 1'b0;
+                w_done    <= 1'b0;
+                init_done <= 1'b0;
+            end else if (p_pend) begin
+                awaddr    <= 8'h88;
+                wdata     <= {16'd0, p_quanta};
+                p_pend    <= 1'b0;
+                p_chain   <= 1'b1;
+                aw_done   <= 1'b0;
+                w_done    <= 1'b0;
+                init_done <= 1'b0;
+            end else if (p_rx_en != p_rx_cur) begin
+                awaddr    <= 8'h84;
+                wdata     <= {30'd0, p_rx_en, 1'b0};
+                p_rx_cur  <= p_rx_en;
+                aw_done   <= 1'b0;
+                w_done    <= 1'b0;
+                init_done <= 1'b0;
             end
-        end else if (spd_new) begin
-            wdata     <= 32'h0000_0067 | {27'd0, spd_last, 3'd0};
-            spd_cur   <= spd_last;
-            aw_done   <= 1'b0;
-            w_done    <= 1'b0;
-            init_done <= 1'b0;
+            p_send_d <= p_send;
+            if (p_send && !p_send_d) p_pend <= 1'b1;
         end
     end
 
@@ -451,6 +516,21 @@ module rgmii_lb_selftest #(
         end
     end
 
+    // Longest gap between frames the MAC accepted while run was high.
+    wire       tx_accept = tx_busy && tx_tready && tx_tlast;
+    reg [31:0] gap_cnt, max_gap;
+    always @(posedge clk_125 or negedge lb_rst_n) begin
+        if (!lb_rst_n) begin
+            gap_cnt <= 32'd0;
+            max_gap <= 32'd0;
+        end else begin
+            if (!run || tx_accept)      gap_cnt <= 32'd0;
+            else if (gap_cnt != ~32'd0) gap_cnt <= gap_cnt + 1'b1;
+            if (clear)                  max_gap <= 32'd0;
+            else if (gap_cnt > max_gap) max_gap <= gap_cnt;
+        end
+    end
+
     // =========================================================================
     // Checker
     // =========================================================================
@@ -491,8 +571,29 @@ module rgmii_lb_selftest #(
     // Header bytes and the pattern are checked; the seq bytes define the frame.
     wire byte_bad = ((cur_idx < 14'd14) || (cur_idx > 14'd17)) &&
                     (rx_tdata != frame_byte(cur_seq, cur_idx));
+    // A frame whose first byte is 01 (data frames start FF) is judged as a
+    // PAUSE frame from eth_pause: DA 01:80:C2:00:00:01, type 0x8808, opcode
+    // 0x0001, the quanta last sent, zero padding. The SA is not checked.
+    reg        rx_pfr;
+    wire       cur_pfr = rx_tsof ? (rx_tdata == 8'h01) : rx_pfr;
+    reg  [7:0] p_exp;
+    always @* begin
+        case (cur_idx)
+            14'd0:   p_exp = 8'h01;
+            14'd1:   p_exp = 8'h80;
+            14'd2:   p_exp = 8'hC2;
+            14'd5:   p_exp = 8'h01;
+            14'd12:  p_exp = 8'h88;
+            14'd13:  p_exp = 8'h08;
+            14'd15:  p_exp = 8'h01;
+            14'd16:  p_exp = p_quanta[15:8];
+            14'd17:  p_exp = p_quanta[7:0];
+            default: p_exp = 8'h00;
+        endcase
+    end
+    wire pbyte_bad = ((cur_idx < 14'd6) || (cur_idx > 14'd11)) && (rx_tdata != p_exp);
     // Stage 1: track index and sequence, compare each byte.
-    reg        s_valid, s_first, s_last, s_terror, s_bad;
+    reg        s_valid, s_first, s_last, s_terror, s_bad, s_pfr, s_pbad;
     reg [13:0] s_idx;
     reg [31:0] s_seq;
 
@@ -500,6 +601,9 @@ module rgmii_lb_selftest #(
         if (!lb_rst_n) begin
             rx_idx   <= 14'd0;
             rx_seq   <= 32'd0;
+            rx_pfr   <= 1'b0;
+            s_pfr    <= 1'b0;
+            s_pbad   <= 1'b0;
             s_valid  <= 1'b0;
             s_first  <= 1'b0;
             s_last   <= 1'b0;
@@ -511,6 +615,9 @@ module rgmii_lb_selftest #(
             s_valid <= rx_tvalid;
             if (rx_tvalid) begin
                 rx_seq   <= cur_seq;
+                rx_pfr   <= cur_pfr;
+                s_pfr    <= cur_pfr;
+                s_pbad   <= pbyte_bad;
                 rx_idx   <= rx_tlast ? 14'd0 :
                             (cur_idx == 14'h3FFF) ? cur_idx : cur_idx + 1'b1;
                 s_first  <= rx_tsof;
@@ -528,13 +635,37 @@ module rgmii_lb_selftest #(
     wire [15:0] fr_len  = {2'b00, s_idx} + 16'd1;
     wire [15:0] exp_len = 16'd14 + {2'b00, payload_len(s_seq[2:0])};
     wire fr_good = !mism_now && !s_terror && (fr_len == exp_len);
+    reg  p_mismatch;
+    wire p_mism_now = (s_first ? 1'b0 : p_mismatch) | s_pbad;
+    wire p_good     = !p_mism_now && !s_terror && (fr_len == 16'd60);
 
-    // The mismatch flag follows every beat, clear or not: a bad byte that
+    // The mismatch flags follow every beat, clear or not: a bad byte that
     // arrives while clear is high must still fail its frame if clear drops
     // before the frame ends.
     always @(posedge clk_125 or negedge lb_rst_n) begin
-        if (!lb_rst_n)    rx_mismatch <= 1'b0;
-        else if (s_valid) rx_mismatch <= mism_now;
+        if (!lb_rst_n) begin
+            rx_mismatch <= 1'b0;
+            p_mismatch  <= 1'b0;
+        end else if (s_valid) begin
+            rx_mismatch <= mism_now;
+            p_mismatch  <= p_mism_now;
+        end
+    end
+
+    // PAUSE frames are counted here and nowhere else: they carry no sequence
+    // number, so they neither count as data frames nor break the sequence.
+    reg [15:0] p_ok, p_bad;
+    always @(posedge clk_125 or negedge lb_rst_n) begin
+        if (!lb_rst_n) begin
+            p_ok  <= 16'd0;
+            p_bad <= 16'd0;
+        end else if (clear) begin
+            p_ok  <= 16'd0;
+            p_bad <= 16'd0;
+        end else if (s_valid && s_last && s_pfr) begin
+            if (p_good) p_ok  <= p_ok + 1'b1;
+            else        p_bad <= p_bad + 1'b1;
+        end
     end
 
     always @(posedge clk_125 or negedge lb_rst_n) begin
@@ -562,7 +693,7 @@ module rgmii_lb_selftest #(
             first_bad_set <= 1'b0;
             rx_seen_any   <= 1'b0;
         end else if (s_valid) begin
-            if (s_last) begin
+            if (s_last && !s_pfr) begin
                 if (fr_good) begin
                     rx_ok <= rx_ok + 1'b1;
                     if (fr_len > 16'd4083) rx_ok_big <= rx_ok_big + 1'b1;
@@ -583,7 +714,7 @@ module rgmii_lb_selftest #(
         end
     end
 
-    assign status = {1'b0, tap_cur, spd_cur,
+    assign status = {p_bad, p_ok, max_gap, p_rx_cur, tap_cur, spd_cur,
                      12'hB0C, dly_rdy, mmcm_locked, run, init_done,
                      first_bad_seq, first_bad_len, max_ok_len,
                      seq_gap, rx_terr, rx_bad, rx_ok_big, rx_ok, tx_frames};

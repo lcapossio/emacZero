@@ -6,13 +6,26 @@
 Needs the build_arty_rgmii_lb.tcl bitstream on the board, nothing plugged into
 Pmod JC, and a hw_server on :3121. Drives rgmii_lb_selftest.v through the
 fcapz EIO (eio-write bits: [0] run, [1] clear, [3:2] speed, [8:4] RX IDELAY
-tap, [9] tap load) and decodes its counters from eio-read bits [327:64].
+tap, [9] tap load, [25:10] PAUSE quanta, [26] PAUSE rx_en, [27] PAUSE send)
+and decodes its counters from eio-read bits [391:64].
 
 For each speed (1G, 100M, 10M by default) it stops traffic, selects the speed,
 clears the counters, runs traffic, stops, drains, and requires: every frame
 sent came back exact and clean, frames longer than 4083 bytes came back exact,
 the longest exact frame is 9014 bytes (9018 on the wire with FCS), and no bad
 frames, terror or sequence gaps.
+
+Then, at each speed, the MAC sends PAUSE frames to itself while traffic runs
+(skip with --no-pause). Each must come back exact, the data frames must stay
+exact and in order, and the longest gap between frames the MAC accepted
+(max_gap) shows whether TX paused:
+  honored  PAUSE_CTRL rx_en set, --pause-quanta Q (default 0x2000, about 58
+           longest-frame times at every speed): max_gap is Q x 512 bit times
+           within two longest-frame times;
+  ignored  rx_en clear, same Q: max_gap stays within two frame times;
+  XON      rx_en set, Q = 0xFFFF, then Q = 0 a quarter of that pause later:
+           TX resumes, so max_gap is well short of the 0xFFFF pause, and both
+           PAUSE frames come back (the second is sent while TX is paused).
 
 --sweep first steps the RX IDELAY tap through 0..31 at 1G, runs traffic
 briefly at each tap, prints which taps pass, and uses the middle of the
@@ -33,8 +46,8 @@ from fcapz.eio import EioController  # noqa: E402
 from fcapz.transport import XilinxHwServerTransport  # noqa: E402
 
 MARKER = 0xB0C
-IN_W, OUT_W = 64 + 264, 10
-FIELDS = [  # (name, lsb, width) within the 264-bit self-test status
+IN_W, OUT_W = 64 + 328, 32
+FIELDS = [  # (name, lsb, width) within the 328-bit self-test status
     ("tx_frames", 0, 32),
     ("rx_ok", 32, 32),
     ("rx_ok_big", 64, 32),
@@ -51,8 +64,16 @@ FIELDS = [  # (name, lsb, width) within the 264-bit self-test status
     ("marker", 244, 12),
     ("speed", 256, 2),
     ("tap", 258, 5),
+    ("pause_rx_en", 263, 1),
+    ("max_gap", 264, 32),
+    ("pause_ok", 296, 16),
+    ("pause_bad", 312, 16),
 ]
 SPEEDS = {"1000": 0b00, "100": 0b01, "10": 0b10}
+CLK_NS = 8                                    # clk_125 period, max_gap unit
+QUANTUM_NS = {"1000": 512, "100": 5120, "10": 51200}   # 512 bit times
+# Longest frame on the wire: 9018 B + 8 preamble/SFD + 12 IFG.
+FRAME_NS = {name: 9038 * 8 * q // 512 for name, q in QUANTUM_NS.items()}
 
 
 class SelfTest:
@@ -65,9 +86,16 @@ class SelfTest:
                      f"{IN_W}/{OUT_W} - is the build_arty_rgmii_lb bitstream programmed?")
         self.speed = 0
         self.tap = 0
+        self.quanta = 0
+        self.rx_en = 0
+        self.running = 0
 
-    def write(self, run=0, clear=0, load=0):
-        self.eio.write_outputs(run | clear << 1 | self.speed << 2 | self.tap << 4 | load << 9)
+    def write(self, run=None, clear=0, load=0, send=0):
+        if run is not None:
+            self.running = run
+        self.eio.write_outputs(self.running | clear << 1 | self.speed << 2 | self.tap << 4
+                               | load << 9 | self.quanta << 10 | self.rx_en << 26
+                               | send << 27)
 
     def status(self):
         st = self.eio.read_inputs() >> 64
@@ -75,7 +103,7 @@ class SelfTest:
 
     def set_tap(self, tap):
         self.tap = tap
-        self.write()
+        self.write(run=0)
         self.write(load=1)
         self.write()
         if self.status()["tap"] != tap:
@@ -83,7 +111,7 @@ class SelfTest:
 
     def set_speed(self, code):
         self.speed = code
-        self.write()                         # stopped, new speed
+        self.write(run=0)                    # stopped, new speed
         t0 = time.monotonic()
         while time.monotonic() - t0 < 2.0:
             s = self.status()
@@ -92,9 +120,37 @@ class SelfTest:
                 return
         sys.exit(f"ERROR: speed {code:#04b} was not written to CTRL")
 
+    def set_pause_rx(self, rx_en):
+        self.rx_en = rx_en
+        self.write()
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 2.0:
+            s = self.status()
+            if s["pause_rx_en"] == rx_en and s["init_done"]:
+                return
+        sys.exit(f"ERROR: PAUSE rx_en {rx_en} was not written to PAUSE_CTRL")
+
+    def send_pause(self, quanta):
+        """Set the quanta, then raise send: PAUSE_QUANTA, PAUSE_CTRL tx_send."""
+        self.quanta = quanta
+        self.write()
+        self.write(send=1)
+        self.write()
+
+    def start(self):
+        self.write(run=0, clear=1)
+        time.sleep(0.05)
+        self.write()
+        self.write(run=1)
+
+    def stop(self):
+        self.write(run=0)                    # in-flight frames drain
+        time.sleep(1.0)
+        return self.status()
+
     def run(self, seconds, interval=None, label=""):
         """Clear, run for seconds, stop, drain; return the final status."""
-        self.write(clear=1)
+        self.write(run=0, clear=1)
         time.sleep(0.05)
         self.write()
         self.write(run=1)
@@ -105,9 +161,7 @@ class SelfTest:
             if interval:
                 # Progress only: the counters move while this reads them.
                 show(self.status(), f"  {label}t={time.monotonic() - t0:5.1f}s")
-        self.write()                         # stop; in-flight frames drain
-        time.sleep(1.0)
-        return self.status()
+        return self.stop()
 
 
 def show(s, label):
@@ -137,6 +191,55 @@ def sweep(t, seconds):
     return passing
 
 
+def pause_tests(t, name, quanta):
+    """PAUSE honored, ignored and cancelled by XON at the current speed."""
+    q_ns, f_ns = QUANTUM_NS[name], FRAME_NS[name]
+    fails = 0
+
+    def report(check, ok):
+        nonlocal fails
+        print(f"{'PASS' if ok else 'FAIL'}: {name}M PAUSE {check}")
+        fails += not ok
+
+    def one(label, rx_en, q, then_q=None, then_after=0.0):
+        t.set_pause_rx(rx_en)
+        t.start()
+        time.sleep(0.1 + 3 * f_ns * 1e-9)    # traffic flowing
+        t.send_pause(q)
+        wait = q * q_ns * 1e-9
+        if then_q is not None:
+            time.sleep(then_after)
+            t.send_pause(then_q)
+            wait = 0.0
+        time.sleep(wait + 3 * f_ns * 1e-9 + 0.1)
+        s = t.stop()
+        gap_ns = s["max_gap"] * CLK_NS
+        print(f"  {name}M PAUSE {label}: max_gap={gap_ns / 1e3:.1f} us "
+              f"pause_ok={s['pause_ok']} pause_bad={s['pause_bad']} "
+              f"tx={s['tx_frames']} ok={s['rx_ok']} bad={s['rx_bad']}", flush=True)
+        report(f"{label}: data frames exact and in order", clean(s))
+        return s, gap_ns
+
+    dur = quanta * q_ns
+    s, gap = one(f"honored (Q={quanta:#x}, {dur / 1e3:.0f} us)", 1, quanta)
+    report("honored: frame came back exact", s["pause_ok"] == 1 and s["pause_bad"] == 0)
+    report(f"honored: max_gap {gap / 1e3:.1f} us is the pause within two frames "
+           f"({gap / dur:.3f} x)", abs(gap - dur) <= 2 * f_ns)
+
+    s, gap = one(f"ignored (Q={quanta:#x}, rx_en clear)", 0, quanta)
+    report("ignored: frame came back exact", s["pause_ok"] == 1 and s["pause_bad"] == 0)
+    report(f"ignored: max_gap {gap / 1e3:.1f} us within two frames", gap <= 2 * f_ns)
+
+    full = 0xFFFF * q_ns
+    s, gap = one(f"XON (Q=0xffff, then Q=0 after {full / 4e6:.1f} ms)", 1, 0xFFFF,
+                 then_q=0, then_after=full / 4 * 1e-9)
+    report("XON: both frames came back exact", s["pause_ok"] == 2 and s["pause_bad"] == 0)
+    report(f"XON: max_gap {gap / 1e3:.1f} us is under half the 0xffff pause "
+           f"({full / 1e3:.0f} us)", gap < full / 2)
+    t.set_pause_rx(0)
+    return fails
+
+
 def longest_run(taps):
     best, cur = [], []
     for tap in taps:
@@ -157,6 +260,9 @@ def main():
                     help="traffic per tap in the sweep")
     ap.add_argument("--port", default="3121", help="hw_server port")
     ap.add_argument("--interval", type=float, default=10.0, help="progress read period")
+    ap.add_argument("--no-pause", action="store_true", help="skip the PAUSE tests")
+    ap.add_argument("--pause-quanta", type=lambda v: int(v, 0), default=0x2000,
+                    help="quanta for the honored/ignored PAUSE tests")
     a = ap.parse_args()
 
     t = SelfTest(a.port)
@@ -167,7 +273,7 @@ def main():
     if not (s["init_done"] and s["mmcm_locked"] and s["idelay_rdy"]):
         sys.exit(f"ERROR: self-test not ready (init_done={s['init_done']}, "
                  f"mmcm_locked={s['mmcm_locked']}, idelay_rdy={s['idelay_rdy']})")
-    t.speed, t.tap = s["speed"], s["tap"]
+    t.speed, t.tap, t.rx_en = s["speed"], s["tap"], s["pause_rx_en"]
 
     fails = 0
     tap = a.tap
@@ -205,6 +311,8 @@ def main():
         if s["rx_bad"]:
             print(f"INFO: {name}M first bad frame seq[15:0]={s['first_bad_seq']} "
                   f"len={s['first_bad_len']}")
+        if not a.no_pause:
+            fails += pause_tests(t, name, a.pause_quanta)
 
     t.set_speed(SPEEDS["1000"])
     print("ALL TESTS PASSED" if not fails else f"{fails} check(s) FAILED")

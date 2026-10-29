@@ -872,8 +872,8 @@ module arty_a7_top (
     // JC. Its status rides above the base EIO bits: eio-read bits [327:64];
     // eio-write bits [9:0] = load, tap[4:0], speed[1:0], clear, run. See
     // fpga/arty_a7/scripts/rgmii_lb_selftest.py.
-    wire [9:0]   lb_ctrl;
-    wire [263:0] lb_status;
+    wire [31:0]  lb_ctrl;
+    wire [327:0] lb_status;
 
     rgmii_lb_selftest u_rgmii_lb (
         .clk    (sys_clk),
@@ -884,8 +884,8 @@ module arty_a7_top (
     );
 
     fcapz_eio_xilinx7 #(
-        .IN_W  (64 + 264),
-        .OUT_W (10),
+        .IN_W  (64 + 328),
+        .OUT_W (32),
         .CHAIN (3)
     ) u_eio (
         .probe_in  ({lb_status, eio_in}),
