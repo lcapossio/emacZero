@@ -163,7 +163,8 @@ puts out (MMCM outputs, the `BUFGCE_DIV` output, the 1000BASE-X PCS/PMA
 `userclk`/`rxuserclk` outputs) are bits of that register, not wires from or
 gates of its input clocks, so logic moved from one clock domain to another
 diverges. A wrong
-port, generic or clock therefore fails the proof.
+port, generic or clock therefore changes paired stand-in state, which the
+proof catches, within the limits below.
 
 A stand-in is still a deterministic register, so its outputs cannot have
 every possible history, and a rotation alone gives them a simple one: each
@@ -175,8 +176,9 @@ failure under `--strict`, at induction depths 4 and 20: the solver did not
 close it, but the stand-in did not rule it out.) The `eth_mac_sys`, MMCM/BUFG
 and IDELAYE2/IDELAYCTRL stand-ins therefore also XOR into each bit the AND of
 two other bits that no output shows (for `eth_mac_sys`, bit i takes
-`bb_q[i+150] & bb_q[i+220]`), so no output follows from the earlier values
-of the outputs. A mutant that rebuilt a stand-in
+`bb_q[i+150] & bb_q[i+220]`). That removes the one-cycle correlation
+between outputs, not every constraint on their history: equivalence still
+holds only against these deterministic stand-ins. A mutant that rebuilt a stand-in
 output from the stand-in's own recurrence would still pass; none of the
 mutants below is of that kind, but the proofs exclude only what the mutants
 and this argument cover. The `zcu106_top` children stand-ins still use the

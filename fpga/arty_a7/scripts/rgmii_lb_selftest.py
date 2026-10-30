@@ -16,26 +16,28 @@ the longest exact frame is 9014 bytes (9018 on the wire with FCS), and no bad
 frames, terror or sequence gaps.
 
 Then, at each speed, the MAC sends PAUSE frames to itself while traffic runs
-(skip with --no-pause). Each must come back exact, the data frames must stay
-exact and in order, and the longest gap between frames the MAC accepted
+(skip with --no-pause). Each must come back with every checked field right
+(all but the source address), the data frames must stay exact and in order, and the longest gap between frames the MAC accepted
 (max_gap) shows whether TX paused:
   honored  PAUSE_CTRL rx_en set, --pause-quanta Q (default 0x2000, about 58
            longest-frame times at every speed): max_gap is Q x 512 bit times
            within two longest-frame times;
   ignored  rx_en clear, same Q: max_gap stays within two frame times;
   XON      rx_en set, Q = 0xFFFF, refreshed every eighth of that pause for
-           about 0.5 s, then Q = 0: max_gap, against host timestamps of the
-           EIO writes, must cover the time from the first 0xFFFF frame to the
-           Q = 0 frame (TX paused) and end by the Q = 0 frame's write (TX
-           resumed), and every PAUSE frame must come back exact (all but the
-           first are sent while TX is paused). That also shows it was the
-           Q = 0 frame that resumed TX, not the 0xFFFF pause running out, as
-           long as the EIO writes are fast against the pause: at 1G, where
-           0xFFFF quanta are only 33.5 ms, slow JTAG writes can make the two
+           about 0.5 s, then Q = 0. Host timestamps around every EIO send
+           write must show each PAUSE frame taking effect before the one
+           before it could run out; max_gap must then cover the time from the
+           first 0xFFFF frame to the Q = 0 frame (TX paused) and end within
+           two frame times (+1 ms) of the Q = 0 frame's write (TX resumed),
+           and every PAUSE frame must come back right (all but the first are
+           sent while TX is paused). That also shows it was the Q = 0 frame
+           that resumed TX, not the 0xFFFF pause running out, as long as the
+           EIO writes are fast against the pause: at 1G, where 0xFFFF quanta
+           are only 33.5 ms, slow JTAG writes can make the two
            indistinguishable, and the script then says so instead of
-           counting it. An attempt in which the host stalled between two
-           writes for longer than the pause is void and repeated (up to three
-           attempts).
+           counting it. An attempt in which a host stall may have let a pause
+           run out before the next one took effect is void and repeated (up
+           to three attempts).
 
 --sweep first steps the RX IDELAY tap through 0..31 at 1G, runs traffic
 briefly at each tap, prints which taps pass, and uses the middle of the
@@ -231,27 +233,31 @@ def pause_tests(t, name, quanta):
 
     dur = quanta * q_ns
     s, gap = one(f"honored (Q={quanta:#x}, {dur / 1e3:.0f} us)", 1, quanta)
-    report("honored: frame came back exact", s["pause_ok"] == 1 and s["pause_bad"] == 0)
+    report("honored: frame came back with every checked field right", s["pause_ok"] == 1 and s["pause_bad"] == 0)
     report(f"honored: max_gap {gap / 1e3:.1f} us is the pause within two frames "
            f"({gap / dur:.3f} x)", abs(gap - dur) <= 2 * f_ns)
 
     s, gap = one(f"ignored (Q={quanta:#x}, rx_en clear)", 0, quanta)
-    report("ignored: frame came back exact", s["pause_ok"] == 1 and s["pause_bad"] == 0)
+    report("ignored: frame came back with every checked field right", s["pause_ok"] == 1 and s["pause_bad"] == 0)
     report(f"ignored: max_gap {gap / 1e3:.1f} us within two frames", gap <= 2 * f_ns)
 
     # XON. Hold a 0xFFFF pause for about XON_HOLD_S, refreshing it well
     # before it can run out, then send Q = 0. Each PAUSE frame leaves during
-    # the EIO write that raises send; host timestamps (perf_counter:
-    # time.monotonic ticks in ~16 ms steps on Windows) around those writes
-    # bound the stall. It starts within a frame of the first send write
-    # (on0..on1) and ends within a frame of the Q = 0 one (x0..x1), so
-    #   max_gap >= x0 - on1 - 2 frames  (TX stayed paused until Q = 0)
-    #   max_gap <= x1 - on0 + 2 frames + 1 ms  (TX resumed at Q = 0).
-    # Had Q = 0 been ignored, TX would have stayed paused until the last
-    # 0xFFFF pause ran out, at least `full` after the last refresh write
-    # started (last0); the upper bound tells the two apart only while that
-    # end lies beyond it, which slow JTAG writes (5-10 ms each) can rule out
-    # at 1G, where 0xFFFF quanta are only 33.5 ms.
+    # the EIO write that raises send, behind at most the data frame on the
+    # wire, so it takes effect between that write's start and two frames
+    # after its end. Host timestamps (perf_counter: time.monotonic ticks in
+    # ~16 ms steps on Windows) around every send write therefore give:
+    #   - continuity: each pause takes effect before the one before it can
+    #     run out, i.e. end(next) + 2 frames < start(prev) + full, for every
+    #     refresh and for the Q = 0 frame; `slack` is the smallest margin;
+    #   - max_gap >= x0 - on1 - 2 frames  (TX stayed paused until Q = 0)
+    #   - max_gap <= x1 - on0 + 2 frames + 1 ms  (TX resumed at Q = 0).
+    # Had Q = 0 been ignored, TX would have stayed paused (continuously, by
+    # the above) until the last 0xFFFF pause ran out, no earlier than `full`
+    # after the last refresh write started (last0); the upper bound tells
+    # the two apart only while that end lies beyond it, which slow JTAG
+    # writes (5-10 ms each) can rule out at 1G, where 0xFFFF quanta are only
+    # 33.5 ms.
     full_s = 0xFFFF * q_ns * 1e-9
     f_s = f_ns * 1e-9
     refresh_s = full_s / 8
@@ -266,53 +272,55 @@ def pause_tests(t, name, quanta):
         t.quanta = 0xFFFF
         t.start()                            # also writes the quanta
         time.sleep(0.1 + 3 * f_s)            # traffic flowing
-        on0, on1 = send_edge()
+        edges = [send_edge()]
         t.write()
-        last0, sent, spacing = on0, 1, 0.0
-        while time.perf_counter() + refresh_s < on0 + XON_HOLD_S:
-            time.sleep(max(0.0, last0 + refresh_s - time.perf_counter()))
-            r0, _ = send_edge()
+        while time.perf_counter() + refresh_s < edges[0][0] + XON_HOLD_S:
+            time.sleep(max(0.0, edges[-1][0] + refresh_s - time.perf_counter()))
+            edges.append(send_edge())
             t.write()
-            last0, sent, spacing = r0, sent + 1, max(spacing, r0 - last0)
-        r0, _ = send_edge()                  # last refresh
-        last0, sent, spacing = r0, sent + 1, max(spacing, r0 - last0)
+        edges.append(send_edge())            # last refresh
         t.quanta = 0
         t.write()                            # send low, quanta 0
         x0, x1 = send_edge()                 # Q = 0
         t.write()
-        spacing = max(spacing, x0 - last0)
+        last0 = edges[-1][0]
         # Run on past the end of the last 0xFFFF pause, so a Q = 0 frame
         # that did not resume TX shows as a longer stall.
         time.sleep(max(0.0, last0 + full_s - time.perf_counter()) + 3 * f_s + 0.1)
-        return t.stop(), on0, on1, last0, x0, x1, sent, spacing
+        nxt = edges[1:] + [(x0, x1)]
+        slack = min(p0 + full_s - (n1 + 2 * f_s) for (p0, _), (_, n1) in zip(edges, nxt))
+        return t.stop(), edges[0], last0, x0, x1, len(edges), slack
 
-    # A host stall (Windows, USB) longer than the pause between two writes
-    # lets the pause run out, which says nothing about the MAC: the attempt
-    # is void and is repeated, up to three times.
+    # A host stall (Windows, USB) between two writes can let a pause run out
+    # before the next one lands, which says nothing about the MAC: the
+    # attempt is void and is repeated, up to three times.
     for attempt in range(1, 4):
-        s, on0, on1, last0, x0, x1, sent, spacing = xon_once()
-        if spacing < full_s:
+        s, (on0, on1), last0, x0, x1, sent, slack = xon_once()
+        if slack > 0:
             break
-        print(f"INFO: {name}M PAUSE XON attempt {attempt}: two writes were "
-              f"{spacing * 1e3:.1f} ms apart, longer than the {full_s * 1e3:.1f} ms "
-              "pause; the host stalled, so this attempt does not count", flush=True)
+        print(f"INFO: {name}M PAUSE XON attempt {attempt}: a pause may have run out "
+              f"before the next one took effect ({-slack * 1e3:.1f} ms short against "
+              f"the {full_s * 1e3:.1f} ms pause); the host stalled, so this attempt "
+              "does not count", flush=True)
+    valid = slack > 0
     gap = s["max_gap"] * CLK_NS * 1e-9
     lo = x0 - on1 - 2 * f_s
     hi = x1 - on0 + 2 * f_s + 1e-3
-    ignored = last0 + full_s - on1 - f_s     # shortest stall had Q = 0 been ignored
-    print(f"  {name}M PAUSE XON (Q=0xffff x{sent}, at most {spacing * 1e3:.1f} ms apart, "
+    ignored = last0 + full_s - on1 - 2 * f_s     # shortest stall had Q = 0 been ignored
+    print(f"  {name}M PAUSE XON (Q=0xffff x{sent}, continuity margin {slack * 1e3:.1f} ms, "
           f"then Q=0 after {x0 - on0:.3f} s): max_gap={gap * 1e3:.1f} ms "
           f"(host bounds {lo * 1e3:.1f}..{hi * 1e3:.1f} ms; ignoring Q=0 would give "
           f">= {ignored * 1e3:.1f} ms) pause_ok={s['pause_ok']} pause_bad={s['pause_bad']}",
           flush=True)
     report("XON: data frames exact and in order", clean(s))
-    report(f"XON: all {sent + 1} PAUSE frames came back exact",
+    report(f"XON: all {sent + 1} PAUSE frames came back with every checked field right",
            s["pause_ok"] == sent + 1 and s["pause_bad"] == 0)
-    report("XON: the 0xffff pause stopped TX until the Q=0 frame",
-           gap >= lo and spacing < full_s)
-    report("XON: TX resumed by the end of the Q=0 frame's write", gap <= hi)
+    report("XON: each pause took effect before the last could run out", valid)
+    report("XON: the 0xffff pauses stopped TX until the Q=0 frame", valid and gap >= lo)
+    report("XON: TX resumed within two frames (+1 ms) of the Q=0 frame's write", gap <= hi)
     if ignored > hi:
-        report("XON: that was the Q=0 frame, not the 0xffff pause running out", True)
+        report("XON: that was the Q=0 frame, not the 0xffff pause running out",
+               valid and lo <= gap <= hi)
     else:
         print(f"INFO: {name}M PAUSE XON: JTAG write times are too long against a "
               f"{full_s * 1e3:.1f} ms pause to tell the Q=0 frame from the pause "

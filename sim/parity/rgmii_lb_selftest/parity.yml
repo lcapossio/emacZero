@@ -29,8 +29,9 @@
 #     MAX_FRAME 9018, CLK_FREQ_HZ 125 MHz), not the MAC. In the induction step
 #     the MAC outputs take arbitrary values at any one cycle, but not every
 #     history: they come from a deterministic register. Each of its bits also
-#     takes the AND of two bits no output shows, so no output follows from
-#     the outputs' earlier values (with the rotation alone, m_axis_tlast was
+#     takes the AND of two bits no output shows, which removes the one-cycle
+#     correlation between outputs but not every constraint on their history
+#     (with the rotation alone, m_axis_tlast was
 #     m_axis_tvalid one cycle late, so the stand-in did not tell a VHDL
 #     rx_tlast taken from rx_tvalid from the real one; that mutant still ended
 #     BOUNDED, at induction depths 4 and 20).

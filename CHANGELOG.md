@@ -51,7 +51,7 @@ This project does not yet maintain long-lived release branches.
   `gmii_lb_selftest` generator and checker at 1G, 100M and 10M. Nothing may be
   plugged into JC. On an Arty A7-100T taps 20-31 of 0-31 passed at 1G (19-31
   on earlier runs); at tap 26 every frame came back exact for 20 s at each
-  speed (648,849 at 1G, 70,225 at 100M, 7,030 at 10M, the largest 9018 bytes
+  speed (648,999 at 1G, 70,231 at 100M, 7,029 at 10M, the largest 9018 bytes
   with FCS). No JC pin is clock-capable, so RXC reaches its BUFG over general
   routing and post-route STA reports RX hold violations at the IDELAY_INIT
   tap; the sweep is the check. The taps load `IDELAY_INIT` after each reset
@@ -62,12 +62,14 @@ This project does not yet maintain long-lived release branches.
   with the destination, type, opcode and quanta it was sent with (the source
   address is not checked), and the longest gap between frames the MAC
   accepts from the generator shows TX pausing for the quanta sent (0x2000
-  quanta: 4267 us at 1G, 42.6 ms at 100M, 426 ms at 10M, each within two
+  quanta: 4196 us at 1G, 42.3 ms at 100M, 423 ms at 10M, each within two
   longest-frame times of 0x2000 x 512 bit times) and not pausing with
   `PAUSE_CTRL` rx_en clear. With a 0xFFFF pause held for 0.5 s and then
-  quanta 0, TX stays paused until the quanta-0 frame and resumes at it, not
-  when the pause runs out; host timestamps of the JTAG writes bound this, so
-  it is a coarse check.
+  quanta 0, the longest stall lies within bounds from host timestamps of the
+  JTAG writes: from the first 0xFFFF frame to the quanta-0 frame, ending
+  within two frame times (+1 ms) of it, with each refresh shown to land
+  before the previous pause could run out, and short of where the pause
+  would have run out had quanta 0 been ignored. It is a coarse check.
   `RGMII-LB-SELFTEST` simulates it at all three speeds, PAUSE at 1G and 100M,
   and an injected RX corruption. The VHDL port, `rgmii_lb_selftest.vhd`, is
   formally proven equivalent with `eth_mac_sys` and the Xilinx primitives
@@ -118,7 +120,9 @@ This project does not yet maintain long-lived release branches.
   one. (On `rgmii_lb_selftest` that mutant ended BOUNDED, a failure under
   `--strict`, with the old stand-ins too; the solver did not close it.) The
   `clk_gen`, `sfp_lb_tester`, `gmii_lb_selftest` and
-  `rgmii_lb_selftest` proofs pass with them. The `zcu106_top` children
+  `rgmii_lb_selftest` proofs pass with them. This removes that one-cycle
+  correlation; equivalence still holds only against deterministic
+  stand-ins. The `zcu106_top` children
   stand-ins still use the rotation alone.
 - `tb_gmii_cdc_rx_overflow.v` reads its FIFO-word probe through a wire, and
   `tb_eth_stats.v` can leave out its force-based saturation test

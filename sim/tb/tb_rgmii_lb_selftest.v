@@ -9,7 +9,8 @@
 // a PAUSE frame to itself, with PAUSE_CTRL rx_en set (the longest gap between
 // generator frames must be the pause, within two frame times) and, at 1G,
 // clear (the gap stays normal); each time the PAUSE frame must come back
-// exact. The pads are modelled as plain wires (no buffer or IDELAY delays),
+// with every field but the SA right. The pads are modelled as wires with a
+// 1 ns delay (no buffer or IDELAY timing),
 // so this checks the self-test logic, the speed switching and the RGMII path,
 // not the pad timing. Then corrupts one looped-back RX nibble to prove the
 // checker flags bad frames.
@@ -121,16 +122,17 @@ module tb_rgmii_lb_selftest;
         end
     endtask
 
-    // PAUSE checks after pause_run: the frame came back exact, the data
-    // frames are still all exact and in order, and the longest gap is the
-    // pause (honored) or no longer than two frame times (not honored).
+    // PAUSE checks after pause_run: the frame came back with every checked
+    // field right (all but the SA), the data frames are still all exact and
+    // in order, and the longest gap is the pause (honored) or no longer than
+    // two frame times (not honored).
     task pause_check;
         input [8*8-1:0] tag;
         input           honored;
         input integer   dur_cyc;
         input integer   fm_cyc;
         begin
-            check({tag, ": PAUSE frame came back exact"}, p_ok == 1 && p_bad == 0);
+            check({tag, ": PAUSE frame fields right (SA not checked)"}, p_ok == 1 && p_bad == 0);
             check({tag, ": data frames still exact and in order"},
                   tx_frames >= 2 && rx_ok == tx_frames && rx_bad == 0 && seq_gap == 0);
             if (honored)

@@ -27,9 +27,9 @@
 //     alone made each output the previous cycle's value of the output below
 //     it plus a constant (m_axis_tlast was m_axis_tvalid one cycle late), so
 //     nothing here told an output from a registered copy of its neighbour.
-//     With the AND term no output follows from earlier outputs, though a
-//     deterministic register still cannot give the outputs every possible
-//     history;
+//     The AND term removes that one-cycle correlation, not every constraint
+//     on the outputs' history: a deterministic register cannot give them
+//     every possible history, so equivalence holds against this stand-in;
 //   - outputs are registered only, so a loopback from outputs to inputs
 //     (gmii_lb_selftest) makes no combinational loop.
 // RX_AXIS_ADDR_WIDTH enters the fingerprint as its resolved value, so the
