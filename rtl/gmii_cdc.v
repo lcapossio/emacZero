@@ -4,6 +4,14 @@
 // gmii_cdc.v - GMII Clock Domain Crossing Bridge (for RGMII/Gigabit)
 // Store-and-forward CDC between system clock and media clock domains.
 // No nibble conversion — both sides are 8-bit GMII.
+//
+// TX carries two streams, each through its own FIFO: data frames
+// (gmii_txd_in) and MAC Control frames (gmii_ctl_txd_in, e.g. PAUSE). The
+// media side picks the next frame to send: a control frame first, else a data
+// frame unless tx_hold is set. A data frame chosen but still in its start gap
+// gives way when a control frame arrives or tx_hold rises, so tx_hold stops
+// data frames at the media side, not just as they enter the FIFO. A frame
+// that has started is always sent whole.
 // Verilog 2001
 // =============================================================================
 
@@ -34,6 +42,17 @@ module gmii_cdc #(
     input  wire        gmii_tx_en_in,
     input  wire        gmii_tx_er_in,
 
+    // ---- GMII control frames from MAC (sys_clk domain) ----
+    // Frames of at most 72 bytes (preamble to FCS); start one only while
+    // tx_ctl_busy is low. Tie gmii_ctl_tx_en_in low when unused.
+    input  wire [7:0]  gmii_ctl_txd_in,
+    input  wire        gmii_ctl_tx_en_in,
+    input  wire        gmii_ctl_tx_er_in,
+
+    // 1 = start no new data frame on the media side (sys_clk domain, e.g. a
+    // received PAUSE). Control frames are not held.
+    input  wire        tx_hold,
+
     // ---- GMII to MAC (sys_clk domain) ----
     output reg  [7:0]  gmii_rxd_out,
     output reg         gmii_rx_dv_out,
@@ -52,6 +71,7 @@ module gmii_cdc #(
 
     // ---- Status ----
     output wire        tx_busy,
+    output wire        tx_ctl_busy,    // control FIFO cannot take a whole frame
     output wire [11:0] tx_fifo_level
 );
 
@@ -329,17 +349,33 @@ module gmii_cdc #(
     wire       tx_wr_accept = tx_wr_en && !tx_wr_full;
     wire       tx_eof_wr    = tx_wr_accept && tx_wr_data[8];
 
-    wire [9:0] tx_rd_data;
-    wire       tx_rd_empty;
-    reg        tx_rd_en;
+    wire [9:0] txd_rd_data;     // data FIFO head
+    wire       txd_rd_empty;
+    wire       txd_rd_en;
+    reg        tx_rd_en;        // pop the selected FIFO (tx_sel_ctl)
 
     // FIFO occupancy (sys_clk / write domain), taken directly from the async
     // FIFO's exact write-side data count (wr_ptr - synced rd_ptr).
     wire [14:0] tx_fifo_count;
 
+    // A frame takes MAX_FRAME (at least the 9018-byte jumbo frame) plus 12
+    // preamble / SFD / FCS words in the FIFO, and one more may still be in the
+    // tx_*_d1 stage when tx_busy is sampled. With tx_hold the media side can
+    // stop reading, so a frame started at TX_START_LIMIT must still fit.
     localparam [14:0] TX_FIFO_DEPTH      = 15'd16383;
-    localparam [14:0] TX_MAX_FRAME_BYTES = 15'd9018;   // jumbo MTU + headers
-    localparam [14:0] TX_START_LIMIT     = TX_FIFO_DEPTH - TX_MAX_FRAME_BYTES;
+    localparam [14:0] TX_MAX_FRAME_BYTES = (MAX_FRAME > 9018) ? MAX_FRAME : 15'd9018;
+    localparam [14:0] TX_START_LIMIT     = TX_FIFO_DEPTH - TX_MAX_FRAME_BYTES - 15'd13;
+
+    // So MAX_FRAME + 13 words must fit in the 16K-word TX FIFO: MAX_FRAME at
+    // most 16370 (above that TX_START_LIMIT wraps and tx_busy never rises).
+    // Verilog-2001 has no elaboration-time $error, so an unsupported value
+    // instantiates a module that does not exist; its name is the error message.
+    generate
+        if (MAX_FRAME > 16370) begin : gen_max_frame_check
+            EMACZERO_CONFIG_ERROR_gmii_cdc_MAX_FRAME_must_be_at_most_16370
+                u_max_frame_too_large ();
+        end
+    endgenerate
 
     // Committed-frame counter (sys_clk): increments when a frame's EOF byte is
     // accepted, i.e. a whole frame is now buffered. Gray-coded for the CDC to the
@@ -380,11 +416,85 @@ module gmii_cdc #(
         .wr_full (tx_wr_full),
         .rd_clk  (media_clk),
         .rd_rst_n(media_rst_n_s2),
-        .rd_data (tx_rd_data),
-        .rd_en   (tx_rd_en),
-        .rd_empty(tx_rd_empty),
+        .rd_data (txd_rd_data),
+        .rd_en   (txd_rd_en),
+        .rd_empty(txd_rd_empty),
         .wr_data_count(tx_fifo_count)
     );
+
+    // =========================================================================
+    // TX control path: sys_clk GMII -> control packet FIFO -> media_clk, the
+    // same word format and committed-frame counter as the data path. 128
+    // words hold one 72-byte control frame plus the tail of the one before.
+    // =========================================================================
+    reg        ctl_en_d1;
+    reg  [7:0] ctl_data_d1;
+    reg        ctl_er_d1;
+    always @(posedge sys_clk or negedge sys_rst_n) begin
+        if (!sys_rst_n) begin
+            ctl_en_d1   <= 1'b0;
+            ctl_data_d1 <= 8'd0;
+            ctl_er_d1   <= 1'b0;
+        end else begin
+            ctl_en_d1   <= gmii_ctl_tx_en_in;
+            ctl_data_d1 <= gmii_ctl_txd_in;
+            ctl_er_d1   <= gmii_ctl_tx_er_in;
+        end
+    end
+    wire ctl_en_fall = ctl_en_d1 && !gmii_ctl_tx_en_in;
+
+    wire [9:0] ctl_wr_data   = {ctl_er_d1, ctl_en_fall, ctl_data_d1};
+    wire       ctl_wr_full;
+    wire       ctl_wr_accept = ctl_en_d1 && !ctl_wr_full;
+    wire       ctl_eof_wr    = ctl_wr_accept && ctl_wr_data[8];
+    wire [9:0] ctl_rd_data;
+    wire       ctl_rd_empty;
+    wire       ctl_rd_en;
+    wire [7:0] ctl_fifo_count;
+
+    // A 72-byte frame started with at most 55 words queued (and one more in
+    // ctl_*_d1) fits the 128 words.
+    assign tx_ctl_busy = (ctl_fifo_count > 8'd55);
+
+    localparam CTL_CNT_W = 8;   // 7 (ADDR_WIDTH) + 1
+    reg [CTL_CNT_W-1:0] ctl_frame_wr_count_bin;
+    reg [CTL_CNT_W-1:0] ctl_frame_wr_count_gray;
+    wire [CTL_CNT_W-1:0] ctl_frame_wr_count_next = ctl_frame_wr_count_bin + 1'b1;
+    always @(posedge sys_clk or negedge sys_rst_n) begin
+        if (!sys_rst_n) begin
+            ctl_frame_wr_count_bin  <= {CTL_CNT_W{1'b0}};
+            ctl_frame_wr_count_gray <= {CTL_CNT_W{1'b0}};
+        end else if (ctl_eof_wr) begin
+            ctl_frame_wr_count_bin  <= ctl_frame_wr_count_next;
+            ctl_frame_wr_count_gray <= ctl_frame_wr_count_next ^
+                                       (ctl_frame_wr_count_next >> 1);
+        end
+    end
+
+    async_fifo #(.DATA_WIDTH(10), .ADDR_WIDTH(7),
+                 .RAM_STYLE("DISTRIBUTED")) u_ctl_fifo (
+        .wr_clk  (sys_clk),
+        .wr_rst_n(sys_rst_n),
+        .wr_data (ctl_wr_data),
+        .wr_en   (ctl_wr_accept),
+        .wr_full (ctl_wr_full),
+        .rd_clk  (media_clk),
+        .rd_rst_n(media_rst_n_s2),
+        .rd_data (ctl_rd_data),
+        .rd_en   (ctl_rd_en),
+        .rd_empty(ctl_rd_empty),
+        .wr_data_count(ctl_fifo_count)
+    );
+
+    function [CTL_CNT_W-1:0] ctl_gray_to_bin;
+        input [CTL_CNT_W-1:0] gray;
+        integer i;
+        begin
+            ctl_gray_to_bin[CTL_CNT_W-1] = gray[CTL_CNT_W-1];
+            for (i = CTL_CNT_W-2; i >= 0; i = i - 1)
+                ctl_gray_to_bin[i] = ctl_gray_to_bin[i+1] ^ gray[i];
+        end
+    endfunction
 
     function [FRAME_CNT_W-1:0] gray_to_bin;
         input [FRAME_CNT_W-1:0] gray;
@@ -451,6 +561,47 @@ module gmii_cdc #(
     wire       tx_frame_pending_media  =
                    (tx_frame_wr_count_media != tx_frame_rd_count_bin);
 
+    // The same for the control FIFO.
+    (* ASYNC_REG = "TRUE" *) reg [CTL_CNT_W-1:0] ctl_frame_wr_count_s1;
+    (* ASYNC_REG = "TRUE" *) reg [CTL_CNT_W-1:0] ctl_frame_wr_count_s2;
+    (* ASYNC_REG = "TRUE" *) reg [CTL_CNT_W-1:0] ctl_frame_wr_count_s3;
+    reg [CTL_CNT_W-1:0] ctl_frame_rd_count_bin;
+    always @(posedge media_clk or negedge media_rst_n_s2) begin
+        if (!media_rst_n_s2) begin
+            ctl_frame_wr_count_s1 <= {CTL_CNT_W{1'b0}};
+            ctl_frame_wr_count_s2 <= {CTL_CNT_W{1'b0}};
+            ctl_frame_wr_count_s3 <= {CTL_CNT_W{1'b0}};
+        end else begin
+            ctl_frame_wr_count_s1 <= ctl_frame_wr_count_gray;
+            ctl_frame_wr_count_s2 <= ctl_frame_wr_count_s1;
+            ctl_frame_wr_count_s3 <= ctl_frame_wr_count_s2;
+        end
+    end
+    wire [CTL_CNT_W-1:0] ctl_frame_wr_count_media = ctl_gray_to_bin(ctl_frame_wr_count_s3);
+    wire       ctl_frame_pending_media =
+                   (ctl_frame_wr_count_media != ctl_frame_rd_count_bin);
+
+    // tx_hold into the media domain.
+    (* ASYNC_REG = "TRUE" *) reg tx_hold_s1, tx_hold_s2;
+    always @(posedge media_clk or negedge media_rst_n_s2) begin
+        if (!media_rst_n_s2) begin
+            tx_hold_s1 <= 1'b0;
+            tx_hold_s2 <= 1'b0;
+        end else begin
+            tx_hold_s1 <= tx_hold;
+            tx_hold_s2 <= tx_hold_s1;
+        end
+    end
+
+    // The selected FIFO: tx_sel_ctl is set when a frame is loaded and held
+    // until the next one is, so the close-out pop (applied the cycle after the
+    // frame ends) still reaches the FIFO the frame came from.
+    reg        tx_sel_ctl;
+    wire [9:0] tx_rd_data  = tx_sel_ctl ? ctl_rd_data  : txd_rd_data;
+    wire       tx_rd_empty = tx_sel_ctl ? ctl_rd_empty : txd_rd_empty;
+    assign     txd_rd_en   = tx_rd_en && !tx_sel_ctl;
+    assign     ctl_rd_en   = tx_rd_en &&  tx_sel_ctl;
+
     // =========================================================================
     // TX readout state machine (media_clk domain)
     // =========================================================================
@@ -478,6 +629,8 @@ module gmii_cdc #(
             tx_frame_end          <= 1'b0;
             tx_start_delay        <= 11'd0;
             tx_frame_rd_count_bin <= {FRAME_CNT_W{1'b0}};
+            ctl_frame_rd_count_bin <= {CTL_CNT_W{1'b0}};
+            tx_sel_ctl            <= 1'b0;
             pace_cnt              <= 10'd0;
         end else begin
             tx_rd_en <= 1'b0;
@@ -487,12 +640,26 @@ module gmii_cdc #(
             else
                 pace_cnt <= pace_cnt - 10'd1;
 
-            if (!tx_frame_loaded && tx_frame_pending_media) begin
-                tx_start_delay  <= tx_gap;
-                tx_frame_loaded <= 1'b1;
-                pace_cnt        <= pace_max;
-            end else if (tx_frame_loaded) begin
-                if (tx_start_delay != 11'd0) begin
+            if (!tx_frame_loaded) begin
+                gmii_tx_en_out <= 1'b0;
+                // Pick the next frame: a control frame first, else a data
+                // frame unless held.
+                if (ctl_frame_pending_media ||
+                    (tx_frame_pending_media && !tx_hold_s2)) begin
+                    tx_sel_ctl      <= ctl_frame_pending_media;
+                    tx_start_delay  <= tx_gap;
+                    tx_frame_loaded <= 1'b1;
+                    pace_cnt        <= pace_max;
+                end
+            end else begin
+                if (tx_start_delay > 11'd1 && !tx_sel_ctl &&
+                    (tx_hold_s2 || ctl_frame_pending_media)) begin
+                    // A data frame still in its start gap, before the prefetch
+                    // below has touched the FIFO, gives way to a control frame
+                    // or a hold. The next cycle picks again and the gap
+                    // restarts, so it only grows.
+                    tx_frame_loaded <= 1'b0;
+                end else if (tx_start_delay != 11'd0) begin
                     tx_start_delay <= tx_start_delay - 11'd1;
                     gmii_tx_en_out <= 1'b0;
                     // Prefetch: pulse rd_en one cycle before start_delay==0 so
@@ -523,7 +690,10 @@ module gmii_cdc #(
                         gmii_tx_en_out        <= 1'b0;
                         tx_frame_loaded       <= 1'b0;
                         tx_frame_end          <= 1'b0;
-                        tx_frame_rd_count_bin <= tx_frame_rd_count_bin + 1'b1;
+                        if (tx_sel_ctl)
+                            ctl_frame_rd_count_bin <= ctl_frame_rd_count_bin + 1'b1;
+                        else
+                            tx_frame_rd_count_bin  <= tx_frame_rd_count_bin + 1'b1;
                     end
                 end else if (!tx_rd_empty) begin
                     if (pace_tick) begin
@@ -541,8 +711,6 @@ module gmii_cdc #(
                     // Hold gmii_tx_en_out high between paced beats so the RGMII
                     // PHY sees a continuous frame.
                 end
-            end else begin
-                gmii_tx_en_out <= 1'b0;
             end
         end
     end

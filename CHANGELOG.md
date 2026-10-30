@@ -41,6 +41,48 @@ This project does not yet maintain long-lived release branches.
   and `zcu106_eth_demo` are not ported yet, so board builds stay mixed
   language. `udp_blast`'s delay generics are VHDL integers: pass a delay of
   2^31 cycles or more as its negative 32-bit equivalent.
+- **Arty RGMII pad-loopback self-test** (`fpga/arty_a7/rtl/rgmii_lb_selftest.v`,
+  built with `fpga/arty_a7/scripts/build_arty_rgmii_lb.tcl`). A second
+  `eth_mac_sys` in RGMII mode (`MAX_FRAME=9018`) drives TXD[3:0], TX_CTL and
+  TXC out of six Pmod JC pins and reads each pad back through its own IOBUF
+  as RXD, RX_CTL and RXC, so `rgmii_if` runs on silicon with real ODDR/IDDR
+  cells and I/O buffers. RXD and RX_CTL pass through an IDELAYE2 whose tap
+  `fpga/arty_a7/scripts/rgmii_lb_selftest.py` sweeps at 1G before it runs the
+  `gmii_lb_selftest` generator and checker at 1G, 100M and 10M. Nothing may be
+  plugged into JC. On an Arty A7-100T taps 20-31 of 0-31 passed at 1G (19-31
+  on earlier runs); at tap 26 every frame came back exact for 20 s at each
+  speed (648,999 at 1G, 70,231 at 100M, 7,029 at 10M, the largest 9018 bytes
+  with FCS). No JC pin is clock-capable, so RXC reaches its BUFG over general
+  routing and post-route STA reports RX hold violations at the IDELAY_INIT
+  tap; the sweep is the check. The taps load `IDELAY_INIT` after each reset
+  (`VAR_LOAD` ignores `IDELAY_VALUE`): a build with `IDELAY_INIT=25` passed at
+  1G with no tap set by the host, where the same build without that load
+  passed no frame.
+  At each speed the MAC also sends PAUSE frames to itself. Each comes back
+  with the destination, type, opcode and quanta it was sent with (the source
+  address is not checked), and the longest gap between frames the MAC
+  accepts from the generator shows TX pausing for the quanta sent (0x2000
+  quanta: 4196 us at 1G, 42.3 ms at 100M, 423 ms at 10M, each within two
+  longest-frame times of 0x2000 x 512 bit times) and not pausing with
+  `PAUSE_CTRL` rx_en clear. With a 0xFFFF pause held for 0.5 s and then
+  quanta 0, the longest stall lies within bounds from host timestamps of the
+  JTAG writes: from the first 0xFFFF frame to the quanta-0 frame, ending
+  within two frame times (+1 ms) of it, with each refresh shown to land
+  before the previous pause could run out, and short of where the pause
+  would have run out had quanta 0 been ignored. It is a coarse check.
+  `RGMII-LB-SELFTEST` simulates it at all three speeds, PAUSE at 1G and 100M,
+  and an injected RX corruption. The VHDL port, `rgmii_lb_selftest.vhd`, is
+  formally proven equivalent with `eth_mac_sys` and the Xilinx primitives
+  replaced by stateful stand-ins (new: `sim/parity/stubs/xilinx_io_standin`
+  for IOBUF, IDELAYE2 and IDELAYCTRL). L2 runs on a split-pad model that
+  `sim/parity/rgmii_lb_selftest/gen_split.py` generates from the real files.
+  `rgmii_lb_selftest.xdc` matches the cells as `u?bufg_rxc` / `u?mmcm`, so it
+  applies to both (Vivado names the VHDL's generate cells `u.bufg_rxc`,
+  `u.mmcm`). An Arty build with the VHDL self-test in place of the Verilog
+  passed the same run: taps 20-31, every frame exact at all three speeds, and
+  all PAUSE checks. Post-route WNS is about -0.2 ns on these builds, from 10
+  `rgmii_if` flops in the 90-degree TXC domain released straight from reset
+  (see Known issues).
 - `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
   The phase is skipped when GHDL is not installed. It also analyses and
@@ -74,12 +116,39 @@ This project does not yet maintain long-lived release branches.
 
 ### Changed
 
+- The parity stand-ins for `eth_mac_sys`, MMCME2_BASE/BUFG and
+  IDELAYE2/IDELAYCTRL (`sim/parity/sfp_lb_tester/eth_mac_sys_standin`,
+  `sim/parity/stubs/xilinx_clk_standin`, `xilinx_io_standin`) also XOR into
+  each register bit the AND of two bits no output shows. With the rotation
+  alone, each output was the output below it one cycle earlier, XOR a
+  constant (`m_axis_tlast` was `m_axis_tvalid` one cycle late), so nothing in
+  the stand-in told a registered `tlast` taken from `tvalid` from the real
+  one. (On `rgmii_lb_selftest` that mutant ended BOUNDED, a failure under
+  `--strict`, with the old stand-ins too; the solver did not close it.) The
+  `clk_gen`, `sfp_lb_tester`, `gmii_lb_selftest` and
+  `rgmii_lb_selftest` proofs pass with them. This removes that one-cycle
+  correlation; equivalence still holds only against deterministic
+  stand-ins. The `zcu106_top` children
+  stand-ins still use the rotation alone.
 - `tb_gmii_cdc_rx_overflow.v` reads its FIFO-word probe through a wire, and
   `tb_eth_stats.v` can leave out its force-based saturation test
   (`TB_NO_HIER_FORCE`), so both also run against a VHDL DUT in xsim.
+- `fcapz` submodule updated from 0.4.9 (1d65741) to fpgacapZero main
+  (478d7c8, 0.5.0 plus fixes). It includes the fix for an ELA built with the
+  default single-chain burst reading zeros on Zynq UltraScale+ MPSoC; the
+  committed ZCU106 build has no ELA, but a local one now works. The cores the
+  board builds use keep their existing ports and parameter defaults (0.5.0 adds
+  an ELA `RLE_W` parameter, off by default). fcapz 0.5.0 host tools are
+  recommended; 0.4.9 still reads these bitstreams.
 
 ### Known issues
 
+- `rgmii_if`: its TXC-domain speed and TX-reset synchronizers (`spd_s1`,
+  `spd_s2`, `spd_s3`, `spd_run`, `tx_rst_n_s1`, `tx_rst_n_s2`) take `rst_n`
+  as an asynchronous reset with no release synchronizer. In a 1G build with
+  TXC 90 degrees behind the system clock, the release has a 2 ns window and
+  fails recovery timing (WNS -0.2 to -0.35 ns on the Arty RGMII self-test
+  builds). It has not shown up on hardware.
 - `udp_echo` (Verilog, and the VHDL port, which reproduces it): at `BUF_SIZE`
   1536 the received payload length wraps every 4096 bytes. A payload of
   exactly 4096 or 8192 bytes is accepted with length 0, and the echo then
@@ -90,6 +159,61 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **Received PAUSE frames now hold TX within the 802.3 Annex 31B bound on
+  every PHY.** A received PAUSE frame was recognized only after the RX CDC
+  FIFO had delivered it, behind any frames received before it, and on GMII
+  and RGMII it only stopped frames entering the TX CDC FIFO, so frames
+  already in it (up to about 7 KB) still went out; this was the known limit
+  listed under v0.2.0. Measured in simulation from RX_DV falling at the PHY
+  pins to the TX gate, GMII 1G with a 125 MHz sys clock: 42 ns, for a lone
+  PAUSE frame (was 714 ns) and for one right behind a 1514-byte frame (was
+  12.26 us). On an Arty A7 (MII, 100M, PHY in MII loopback, 100 MHz sys
+  clock) the gate closed 130 ns after RX_DV fell at the FPGA pins, with
+  1518-byte frames queued at line rate. On a ZCU106 (1000BASE-X, GMII 1G,
+  125 MHz sys clock, PCS/PMA transceiver in internal loopback) it closed
+  48 ns after RX_DV fell at the MAC's GMII, also with 1518-byte frames
+  queued at line rate. The changes, alike in Verilog and VHDL:
+  - New `eth_pause_rx` recognizes PAUSE frames on the PHY receive stream in
+    the receive clock domain, before the RX FIFO, and hands the quanta to
+    `eth_pause` through a toggle synchronizer. `eth_pause` keeps the TX gate
+    timer and the PAUSE generator; its receive inputs are replaced by
+    `rx_pause_tgl` / `rx_pause_quanta`. `mii_if` gains `mii_rxd_q`,
+    `mii_rx_dv_q`, `mii_rx_er_q` (its registered receive inputs). On MII,
+    `eth_pause_rx` finds the SFD after an odd or an even number of preamble
+    nibbles, and rejects a frame with `rx_er` on any nibble, including a
+    trailing odd one.
+  - On GMII and RGMII, `gmii_cdc` gains `tx_hold`: while it is high no data
+    frame starts at the media side, and a data frame waiting in its start gap
+    is put back. `eth_mac_sys` drives it from the TX gate. `eth_pause`'s
+    `tx_paused` is now a flop, since it is synchronized into the TX clock
+    domain.
+  - PAUSE frames from `PAUSE_CTRL[0]` take their own path: a second
+    `eth_mac_tx` (`MAX_FRAME` 60) and a control-frame FIFO in `gmii_cdc`
+    (`gmii_ctl_*_in`, `tx_ctl_busy`), and a control-frame AXIS input and FIFO
+    in `mii_tx_saf` (`ctl_axis_*`). Once a control frame is complete in its
+    FIFO and has crossed to the media side, it starts ahead of queued data
+    frames the media side has not yet committed to, also while TX is held. Behaviour change: a PAUSE frame
+    requested while a user frame is still entering the TX FIFO can now go out
+    before that frame, if it reaches the media side before that frame is
+    committed; before, it always went out after. The PAUSE-priority mux in `eth_mac_sys`
+    is gone.
+  - The pause quantum prescaler restarts on each received PAUSE frame, so a
+    frame holds TX for at least its quanta; it could end up to one quantum
+    early.
+  - `gmii_cdc`'s TX start limit left 12 bytes too little room for a
+    `MAX_FRAME` frame with its preamble, SFD and FCS; with TX held the FIFO
+    can now fill that far. It is now `16383 - max(MAX_FRAME, 9018) - 13`, and
+    `MAX_FRAME` above 16370 is an elaboration error on GMII and RGMII (a held
+    frame that long cannot fit; before, such a frame could overrun the FIFO
+    at 10/100 even without PAUSE).
+  - `eth_stats` takes a second set of TX events (`gmii_tx_en2`,
+    `tx_frame_done2`), so TX_FRAME and TX_BYTE count both framers when they
+    run in the same clock.
+  New cocotb suites `eth_mac_sys_pause_rx_gmii`, `_mii`, `_rgmii100`,
+  `_rgmii10`, `gmii_cdc_hold` and `gmii_cdc_hold_big`; `ETH-MAC-SYS-PAUSE`
+  check 3b now expects the PAUSE frame first. New proof
+  `sim/parity/eth_pause_rx`; `eth_pause`, `eth_stats`, `mii_if`, `gmii_cdc`,
+  `mii_tx_saf`, `eth_mac_tx` (`MAX_FRAME` 60) and `eth_mac_sys` re-proven.
 - `eth_mac_sys`: the TX and RX frame-boundary gates that apply CTRL[0] and
   CTRL[1] reset to "enabled" whatever CTRL's own reset value was. For one
   clock after reset the gates followed their own reset value, so a core whose

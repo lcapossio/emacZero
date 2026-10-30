@@ -236,13 +236,21 @@ module eth_mac_sys #(
     // Internal GMII bus (sys_clk domain)
     // TX-side GMII now lives inside the RGMII generate branch (the MII branch
     // frames on the media clock in mii_tx_saf), so only the RX bus is top-level.
-    // tx_byte_ev / tx_frame_done_ev are the per-PHY TX events fed to eth_stats.
+    // tx_byte_ev / tx_frame_done_ev are the per-PHY TX events fed to eth_stats;
+    // tx_byte_ev2 / tx_frame_done_ev2 are those of the GMII/RGMII control-frame
+    // framer, which runs alongside the data framer (0 on MII).
     // =========================================================================
     wire       tx_byte_ev;        // 1 pulse per wire byte transmitted (sys_clk)
     wire       tx_frame_done_ev;  // 1 pulse per transmitted frame (sys_clk)
+    wire       tx_byte_ev2;
+    wire       tx_frame_done_ev2;
     wire [7:0] gmii_rxd;
     wire       gmii_rx_dv;
     wire       gmii_rx_er;
+    // PAUSE frames recognized by the eth_pause_rx in the PHY branch, on the
+    // receive stream ahead of the RX FIFO (PHY receive clock domain).
+    wire        rx_pause_tgl;
+    wire [15:0] rx_pause_quanta;
 
     // =========================================================================
     // TX/RX gating
@@ -272,7 +280,6 @@ module eth_mac_sys #(
         end
     end
     wire       s_axis_tvalid_gated = s_axis_tvalid & tx_en_eff;
-    wire       s_axis_tready_mac;
 
     // =========================================================================
     // Optional TX checksum offload.
@@ -315,26 +322,6 @@ module eth_mac_sys #(
         end
     endgenerate
 
-    // PAUSE-priority mux, switched only between user frames. A PAUSE frame
-    // requested while a user frame is part-way through waits (eth_pause holds
-    // in TX_RUN until pause_tready) for that frame's tlast; switching on
-    // pause_tvalid alone spliced the PAUSE bytes into the user frame. Once
-    // the PAUSE frame has the bus, user_tx_tready is low, so user_mid stays
-    // clear and the PAUSE frame keeps the bus until its own tlast.
-    reg        user_mid;           // a user frame is part-way accepted
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            user_mid <= 1'b0;
-        else if (user_tx_tvalid && user_tx_tready)
-            user_mid <= !user_tx_tlast;
-    end
-    wire       pause_sel        = pause_tvalid & ~user_mid;
-    wire [7:0] mac_tx_in_tdata  = pause_sel ? pause_tdata  : user_tx_tdata;
-    wire       mac_tx_in_tvalid = pause_sel ? pause_tvalid : user_tx_tvalid;
-    wire       mac_tx_in_tlast  = pause_sel ? pause_tlast  : user_tx_tlast;
-    assign     pause_tready     = pause_sel &  s_axis_tready_mac;
-    assign     user_tx_tready   = ~pause_sel & s_axis_tready_mac;
-
     // RX gating: while RX is disabled, tvalid is masked and the MAC's own
     // stream is drained (tready forced high). CTRL[1] takes effect only
     // between frames of that stream: rx_en_eff follows cfg_rx_en when no
@@ -375,9 +362,13 @@ module eth_mac_sys #(
     // MAC TX framer is instantiated per-PHY below:
     //   - MII:  mii_tx_saf   (store-and-forward, single frame FIFO, media-clk
     //           framer; tolerates AXIS bubbles - no cut-through underrun)
-    //   - RGMII: eth_mac_tx  (cut-through framer) -> gmii_cdc
-    // Both are fed by the pause-muxed AXIS (mac_tx_in_*) and drive the shared
-    // tx_active / tx_fifo_busy / tx_byte_ev / tx_frame_done_ev / s_axis_tready_mac.
+    //   - GMII / RGMII: eth_mac_tx (cut-through framer) -> gmii_cdc
+    // User frames (user_tx_*) take the data path and eth_pause's PAUSE frames
+    // (pause_*) a separate control path to the media side, which sends a
+    // control frame ahead of queued data frames and holds data frames that
+    // have not started while tx_paused (802.3 Annex 31B). Each branch drives
+    // tx_active / tx_fifo_busy / tx_byte_ev(2) / tx_frame_done_ev(2) /
+    // user_tx_tready / pause_tready.
     // =========================================================================
 
     // =========================================================================
@@ -472,9 +463,8 @@ module eth_mac_sys #(
         .cfg_pause_rx_en     (cfg_pause_rx_en),
         .cfg_pause_tx_send   (cfg_pause_tx_send),
         .cfg_pause_tx_quanta (cfg_pause_tx_quanta),
-        .gmii_rxd            (gmii_rxd),
-        .gmii_rx_dv          (gmii_rx_dv),
-        .gmii_rx_er          (gmii_rx_er),
+        .rx_pause_tgl        (rx_pause_tgl),
+        .rx_pause_quanta     (rx_pause_quanta),
         .tx_paused           (tx_paused),
         .pause_tdata         (pause_tdata),
         .pause_tvalid        (pause_tvalid),
@@ -496,6 +486,10 @@ module eth_mac_sys #(
             // MAX_FRAME=1518 for MII; jumbo requires PHY_INTERFACE="RGMII".
             // TX_ENABLE(0): mii_tx_saf (u_mii_tx) drives the MII TX pins on this
             // branch, so mii_if is RX-only here - omit its dead TX FIFO's BRAM.
+            wire [3:0] mii_rxd_q;
+            wire       mii_rx_dv_q;
+            wire       mii_rx_er_q;
+
             mii_if #(.MII_DEBUG(MII_DEBUG), .TX_ENABLE(0)) u_mii_if (
                 .clk            (clk),
                 .rst_n          (rst_n),
@@ -517,6 +511,9 @@ module eth_mac_sys #(
                 .gmii_rxd       (gmii_rxd),
                 .gmii_rx_dv     (gmii_rx_dv),
                 .gmii_rx_er     (gmii_rx_er),
+                .mii_rxd_q      (mii_rxd_q),
+                .mii_rx_dv_q    (mii_rx_dv_q),
+                .mii_rx_er_q    (mii_rx_er_q),
                 .mii_tx_clk_out (),
                 .tx_busy               (),
                 .tx_fifo_level         (),
@@ -588,6 +585,19 @@ module eth_mac_sys #(
                 .dbg_tx_er_frames    ()
             );
 
+            // PAUSE recognition on the IOB-registered MII receive nibbles,
+            // ahead of the RX FIFO.
+            eth_pause_rx #(.RX_NIBBLE(1)) u_pause_rx (
+                .rx_clk      (mii_rx_clk),
+                .rst_n       (rst_n),
+                .rx_d        ({4'd0, mii_rxd_q}),
+                .rx_dv       (mii_rx_dv_q),
+                .rx_er       (mii_rx_er_q),
+                .rx_ce       (1'b1),
+                .pause_tgl   (rx_pause_tgl),
+                .pause_quanta(rx_pause_quanta)
+            );
+
             // Store-and-forward MII transmit: single frame FIFO + media-clk
             // framer. Drives the MII TX pins and the shared TX status/stats.
             // Size the frame FIFO from MAX_FRAME so it always holds one whole
@@ -602,10 +612,14 @@ module eth_mac_sys #(
             ) u_mii_tx (
                 .clk           (clk),
                 .rst_n         (rst_n),
-                .s_axis_tdata  (mac_tx_in_tdata),
-                .s_axis_tvalid (mac_tx_in_tvalid),
-                .s_axis_tready (s_axis_tready_mac),
-                .s_axis_tlast  (mac_tx_in_tlast),
+                .s_axis_tdata  (user_tx_tdata),
+                .s_axis_tvalid (user_tx_tvalid),
+                .s_axis_tready (user_tx_tready),
+                .s_axis_tlast  (user_tx_tlast),
+                .ctl_axis_tdata  (pause_tdata),
+                .ctl_axis_tvalid (pause_tvalid),
+                .ctl_axis_tready (pause_tready),
+                .ctl_axis_tlast  (pause_tlast),
                 .tx_start_ok   (~tx_paused),
                 .mii_tx_clk    (mii_tx_clk),
                 .mii_txd       (mii_txd),
@@ -617,6 +631,8 @@ module eth_mac_sys #(
                 .tx_frame_done (tx_frame_done_ev),
                 .dbg_saf       (dbg_mii_tx_saf)
             );
+            assign tx_byte_ev2       = 1'b0;
+            assign tx_frame_done_ev2 = 1'b0;
 
             // Tie off RGMII outputs
             assign rgmii_txd   = 4'd0;
@@ -642,6 +658,19 @@ module eth_mac_sys #(
 
             wire [11:0] gmii_tx_fifo_level;
 
+            // PAUSE recognition on the registered GMII receive bytes, ahead of
+            // the RX FIFO.
+            eth_pause_rx #(.RX_NIBBLE(0)) u_pause_rx (
+                .rx_clk      (phy_gmii_rx_clk),
+                .rst_n       (rst_n),
+                .rx_d        (media_gmii_rxd),
+                .rx_dv       (media_gmii_rx_dv),
+                .rx_er       (media_gmii_rx_er),
+                .rx_ce       (1'b1),
+                .pause_tgl   (rx_pause_tgl),
+                .pause_quanta(rx_pause_quanta)
+            );
+
             wire [7:0] gmii_txd_mac;
             wire       gmii_tx_en_mac;
             wire       gmii_tx_er_mac;
@@ -653,26 +682,58 @@ module eth_mac_sys #(
                 .gmii_txd      (gmii_txd_mac),
                 .gmii_tx_en    (gmii_tx_en_mac),
                 .gmii_tx_er    (gmii_tx_er_mac),
-                .s_axis_tdata  (mac_tx_in_tdata),
-                .s_axis_tvalid (mac_tx_in_tvalid),
-                .s_axis_tready (s_axis_tready_mac),
+                .s_axis_tdata  (user_tx_tdata),
+                .s_axis_tvalid (user_tx_tvalid),
+                .s_axis_tready (user_tx_tready),
                 .s_axis_tkeep  (1'b1),
-                .s_axis_tlast  (mac_tx_in_tlast),
+                .s_axis_tlast  (user_tx_tlast),
                 .tx_active     (mac_tx_active),
                 .dbg_state     (),
                 .dbg_stall_cnt ()
             );
 
-            // TX stats events: one byte per cycle while tx_en is high, plus a
-            // frame-done pulse on its falling edge.
+            // Control-frame framer (PAUSE): its own path into gmii_cdc, which
+            // sends it ahead of queued data frames, also while tx_paused.
+            wire [7:0] gmii_ctl_txd;
+            wire       gmii_ctl_tx_en;
+            wire       gmii_ctl_tx_er;
+            wire       ctl_tx_active;
+            wire       tx_ctl_busy;
+            eth_mac_tx #(.MAX_FRAME(60)) u_ctl_tx (
+                .clk           (clk),
+                .rst_n         (rst_n),
+                .tx_start_ok   (~tx_ctl_busy),
+                .gmii_txd      (gmii_ctl_txd),
+                .gmii_tx_en    (gmii_ctl_tx_en),
+                .gmii_tx_er    (gmii_ctl_tx_er),
+                .s_axis_tdata  (pause_tdata),
+                .s_axis_tvalid (pause_tvalid),
+                .s_axis_tready (pause_tready),
+                .s_axis_tkeep  (1'b1),
+                .s_axis_tlast  (pause_tlast),
+                .tx_active     (ctl_tx_active),
+                .dbg_state     (),
+                .dbg_stall_cnt ()
+            );
+
+            // TX stats events, from each framer: one byte per cycle while its
+            // tx_en is high, plus a frame-done pulse on its falling edge.
             reg gmii_tx_en_mac_d1;
+            reg gmii_ctl_tx_en_d1;
             always @(posedge clk or negedge rst_n) begin
-                if (!rst_n) gmii_tx_en_mac_d1 <= 1'b0;
-                else        gmii_tx_en_mac_d1 <= gmii_tx_en_mac;
+                if (!rst_n) begin
+                    gmii_tx_en_mac_d1 <= 1'b0;
+                    gmii_ctl_tx_en_d1 <= 1'b0;
+                end else begin
+                    gmii_tx_en_mac_d1 <= gmii_tx_en_mac;
+                    gmii_ctl_tx_en_d1 <= gmii_ctl_tx_en;
+                end
             end
-            assign tx_byte_ev       = gmii_tx_en_mac;
-            assign tx_frame_done_ev = gmii_tx_en_mac_d1 & ~gmii_tx_en_mac;
-            assign tx_active        = mac_tx_active;
+            assign tx_byte_ev        = gmii_tx_en_mac;
+            assign tx_frame_done_ev  = gmii_tx_en_mac_d1 & ~gmii_tx_en_mac;
+            assign tx_byte_ev2       = gmii_ctl_tx_en;
+            assign tx_frame_done_ev2 = gmii_ctl_tx_en_d1 & ~gmii_ctl_tx_en;
+            assign tx_active         = mac_tx_active | ctl_tx_active;
 
             // cfg_speed is pinned to 2'b00 (1G): GMII has no 10/100 mode, so
             // gmii_cdc must never engage its byte-pacing dividers here. A CSR
@@ -686,6 +747,10 @@ module eth_mac_sys #(
                 .gmii_txd_in    (gmii_txd_mac),
                 .gmii_tx_en_in  (gmii_tx_en_mac),
                 .gmii_tx_er_in  (gmii_tx_er_mac),
+                .gmii_ctl_txd_in   (gmii_ctl_txd),
+                .gmii_ctl_tx_en_in (gmii_ctl_tx_en),
+                .gmii_ctl_tx_er_in (gmii_ctl_tx_er),
+                .tx_hold           (tx_paused),
                 .gmii_rxd_out   (gmii_rxd),
                 .gmii_rx_dv_out (gmii_rx_dv),
                 .gmii_rx_er_out (gmii_rx_er),
@@ -697,6 +762,7 @@ module eth_mac_sys #(
                 .gmii_rx_er_in  (media_gmii_rx_er),
                 .gmii_rx_ce_in  (1'b1),
                 .tx_busy        (tx_fifo_busy),
+                .tx_ctl_busy    (tx_ctl_busy),
                 .tx_fifo_level  (gmii_tx_fifo_level)
             );
 
@@ -742,6 +808,18 @@ module eth_mac_sys #(
 
             wire [11:0] rgmii_tx_fifo_level;
 
+            // PAUSE recognition on the RGMII receive bytes, ahead of the RX FIFO.
+            eth_pause_rx #(.RX_NIBBLE(0)) u_pause_rx (
+                .rx_clk      (rgmii_rxc),
+                .rst_n       (rst_n),
+                .rx_d        (media_gmii_rxd),
+                .rx_dv       (media_gmii_rx_dv),
+                .rx_er       (media_gmii_rx_er),
+                .rx_ce       (media_gmii_rx_ce),
+                .pause_tgl   (rx_pause_tgl),
+                .pause_quanta(rx_pause_quanta)
+            );
+
             // Cut-through MAC TX framer -> GMII (sys_clk), then CDC to media.
             wire [7:0] gmii_txd;
             wire       gmii_tx_en;
@@ -752,31 +830,64 @@ module eth_mac_sys #(
                 .rst_n         (rst_n),
                 // tx_start_ok blocked by tx_fifo_busy (store-and-forward FIFO
                 // headroom) and tx_paused (inbound PAUSE). eth_mac_tx samples it
-                // only in S_IDLE, so an in-flight frame always completes.
+                // only in S_IDLE, so an in-flight frame always completes;
+                // gmii_cdc holds the frames already queued while tx_paused.
                 .tx_start_ok   (~tx_fifo_busy & ~tx_paused),
                 .gmii_txd      (gmii_txd),
                 .gmii_tx_en    (gmii_tx_en),
                 .gmii_tx_er    (gmii_tx_er),
-                .s_axis_tdata  (mac_tx_in_tdata),
-                .s_axis_tvalid (mac_tx_in_tvalid),
-                .s_axis_tready (s_axis_tready_mac),
+                .s_axis_tdata  (user_tx_tdata),
+                .s_axis_tvalid (user_tx_tvalid),
+                .s_axis_tready (user_tx_tready),
                 .s_axis_tkeep  (1'b1),
-                .s_axis_tlast  (mac_tx_in_tlast),
+                .s_axis_tlast  (user_tx_tlast),
                 .tx_active     (mac_tx_active),
                 .dbg_state     (),
                 .dbg_stall_cnt ()
             );
 
-            // TX stats events: one byte per cycle while gmii_tx_en is high, plus
-            // a frame-done pulse on its falling edge.
+            // Control-frame framer (PAUSE): its own path into gmii_cdc, which
+            // sends it ahead of queued data frames, also while tx_paused.
+            wire [7:0] gmii_ctl_txd;
+            wire       gmii_ctl_tx_en;
+            wire       gmii_ctl_tx_er;
+            wire       ctl_tx_active;
+            wire       tx_ctl_busy;
+            eth_mac_tx #(.MAX_FRAME(60)) u_ctl_tx (
+                .clk           (clk),
+                .rst_n         (rst_n),
+                .tx_start_ok   (~tx_ctl_busy),
+                .gmii_txd      (gmii_ctl_txd),
+                .gmii_tx_en    (gmii_ctl_tx_en),
+                .gmii_tx_er    (gmii_ctl_tx_er),
+                .s_axis_tdata  (pause_tdata),
+                .s_axis_tvalid (pause_tvalid),
+                .s_axis_tready (pause_tready),
+                .s_axis_tkeep  (1'b1),
+                .s_axis_tlast  (pause_tlast),
+                .tx_active     (ctl_tx_active),
+                .dbg_state     (),
+                .dbg_stall_cnt ()
+            );
+
+            // TX stats events, from each framer: one byte per cycle while its
+            // tx_en is high, plus a frame-done pulse on its falling edge.
             reg gmii_tx_en_d1;
+            reg gmii_ctl_tx_en_d1;
             always @(posedge clk or negedge rst_n) begin
-                if (!rst_n) gmii_tx_en_d1 <= 1'b0;
-                else        gmii_tx_en_d1 <= gmii_tx_en;
+                if (!rst_n) begin
+                    gmii_tx_en_d1     <= 1'b0;
+                    gmii_ctl_tx_en_d1 <= 1'b0;
+                end else begin
+                    gmii_tx_en_d1     <= gmii_tx_en;
+                    gmii_ctl_tx_en_d1 <= gmii_ctl_tx_en;
+                end
             end
-            assign tx_byte_ev       = gmii_tx_en;
-            assign tx_frame_done_ev = gmii_tx_en_d1 & ~gmii_tx_en;
-            assign tx_active        = mac_tx_active;
+            assign tx_byte_ev        = gmii_tx_en;
+            assign tx_frame_done_ev  = gmii_tx_en_d1 & ~gmii_tx_en;
+            assign tx_byte_ev2       = gmii_ctl_tx_en;
+            assign tx_frame_done_ev2 = gmii_ctl_tx_en_d1 & ~gmii_ctl_tx_en;
+            assign tx_active         = mac_tx_active | ctl_tx_active;
 
             gmii_cdc #(.MAX_FRAME(MAX_FRAME), .FIFO_RAM_STYLE(CDC_RAM_STYLE)) u_gmii_cdc (
                 .sys_clk        (clk),
@@ -787,6 +898,10 @@ module eth_mac_sys #(
                 .gmii_txd_in    (gmii_txd),
                 .gmii_tx_en_in  (gmii_tx_en),
                 .gmii_tx_er_in  (gmii_tx_er),
+                .gmii_ctl_txd_in   (gmii_ctl_txd),
+                .gmii_ctl_tx_en_in (gmii_ctl_tx_en),
+                .gmii_ctl_tx_er_in (gmii_ctl_tx_er),
+                .tx_hold           (tx_paused),
                 .gmii_rxd_out   (gmii_rxd),
                 .gmii_rx_dv_out (gmii_rx_dv),
                 .gmii_rx_er_out (gmii_rx_er),
@@ -798,6 +913,7 @@ module eth_mac_sys #(
                 .gmii_rx_er_in  (media_gmii_rx_er),
                 .gmii_rx_ce_in  (media_gmii_rx_ce),
                 .tx_busy        (tx_fifo_busy),
+                .tx_ctl_busy    (tx_ctl_busy),
                 .tx_fifo_level  (rgmii_tx_fifo_level)
             );
 
@@ -854,6 +970,8 @@ module eth_mac_sys #(
         .gmii_tx_en     (tx_byte_ev),
         .gmii_rx_dv     (gmii_rx_dv),
         .tx_frame_done  (tx_frame_done_ev),
+        .gmii_tx_en2    (tx_byte_ev2),
+        .tx_frame_done2 (tx_frame_done_ev2),
         .rx_frame_good  (rx_frame_good),
         .rx_frame_bad   (rx_frame_bad),
         .rx_stat_done         (rx_stat_done),

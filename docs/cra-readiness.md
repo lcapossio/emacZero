@@ -90,7 +90,7 @@ supplied. The maintainer has not yet stated which of these applies:
 | RX backpressure and overflow framing | `ETH-MAC-RX-BACKPRESSURE`, `MII-STORE-FORWARD`; cocotb `eth_mac_rx_robust` |
 | TX wedge and oversize protection | `MII-TX-SAF`, `MII-TX-SAF-BURST-STALL`, `MII-TX-SAF-OVERSIZE`, `MII-TX-BURST-BACKPRESSURE` |
 | Multicast filtering | `MCAST-FILTER`; cocotb `eth_mac_rx_mcast` |
-| 802.3x PAUSE validation | `ETH-MAC-SYS-PAUSE` |
+| 802.3x PAUSE validation | `ETH-MAC-SYS-PAUSE`; cocotb `eth_mac_sys_pause_rx_*` (Annex 31B timing per PHY), `gmii_cdc_hold*` |
 | AXI4-Lite register behavior | `AXILITE-REGS`, `ETH-MAC-SYS` |
 | Statistics/counter behavior | `ETH-STATS`, `ETH-MAC-SYS` |
 | MDIO sequencing | `MDIO-MASTER`, `ETH-MAC-SYS` |

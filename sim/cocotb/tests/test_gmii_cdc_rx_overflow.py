@@ -202,6 +202,10 @@ async def tb_gmii_cdc_rx_overflow(dut):
     dut.gmii_txd_in.value = 0
     dut.gmii_tx_en_in.value = 0
     dut.gmii_tx_er_in.value = 0
+    dut.gmii_ctl_txd_in.value = 0
+    dut.gmii_ctl_tx_en_in.value = 0
+    dut.gmii_ctl_tx_er_in.value = 0
+    dut.tx_hold.value = 0
     dut.gmii_rx_ce_in.value = 1
 
     dut.gmii_rxd_in.value = 0

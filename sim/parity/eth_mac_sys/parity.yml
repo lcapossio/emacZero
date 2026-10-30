@@ -5,8 +5,8 @@
 # Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/eth_mac_sys/parity.yml --strict
 #
 # Every submodule is proven on its own in its sim/parity/<module>/ directory.
-# This proof covers eth_mac_sys's own logic (TX/RX gating, PAUSE mux and
-# user_mid, stats events, generics plumbing, the PHY generate branches) in
+# This proof covers eth_mac_sys's own logic (TX/RX gating, the PAUSE control
+# path and its framer, stats events, generics plumbing, the PHY generate branches) in
 # composition, with these stand-ins, identical on both sides:
 #   - async_fifo -> sim/parity/gmii_cdc/async_fifo_smallmem.{v,vhd}: the real
 #     FIFO with only the memory array clamped to 8 words (see that manifest).
@@ -47,6 +47,7 @@ golden:
     - ../../../rtl/eth_mac_tx.v
     - ../../../rtl/mdio_master.v
     - ../../../rtl/eth_stats.v
+    - ../../../rtl/eth_pause_rx.v
     - ../../../rtl/eth_pause.v
     - ../../../rtl/axilite_regs.v
     - ../stubs/ddr_standin.v
@@ -74,6 +75,7 @@ candidate:
     - ../../../rtl/vhdl/eth_mac_tx.vhd
     - ../../../rtl/vhdl/mdio_master.vhd
     - ../../../rtl/vhdl/eth_stats.vhd
+    - ../../../rtl/vhdl/eth_pause_rx.vhd
     - ../../../rtl/vhdl/eth_pause.vhd
     - ../../../rtl/vhdl/axilite_regs.vhd
     - ../stubs/ddr_standin.vhd

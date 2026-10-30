@@ -15,7 +15,10 @@
 -- fingerprints, with two limits: reals are compared only to 0.001 (two values
 -- that round to the same thousandth share a field), and an illegal string sets
 -- no bit. A wrong value on either side diverges (`st` is a paired state
--- point). Every output is its own bit of `st`; CLKOUT0 also XORs
+-- point). Each bit i of `st` also XORs in st[i+100] AND st[i+200] (mod
+-- 839), two bits no output shows, so no output is a delayed copy of
+-- another (with the rotation alone CLKOUT1 was CLKOUT0B one edge late).
+-- Every output is its own bit of `st`; CLKOUT0 also XORs
 -- CLKFBIN, so the feedback connection is checked. The output clocks are
 -- therefore state, not the input clock: a process clocked from CLKOUT0 has
 -- different edges from one clocked from CLKIN1, and moving logic between the
@@ -131,7 +134,9 @@ begin
     process (CLKIN1)
     begin
         if rising_edge(CLKIN1) then
-            st <= (st(837 downto 0) & st(838)) xor (PWRDWN & RST & GEN_FP);
+            st <= (st(837 downto 0) & st(838)) xor (PWRDWN & RST & GEN_FP)
+                  xor ((st(99 downto 0) & st(838 downto 100)) and
+                       (st(199 downto 0) & st(838 downto 200)));
         end if;
     end process;
 

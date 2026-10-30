@@ -28,6 +28,11 @@ module arty_a7_top (
     // ---- UART ----
     output wire        UART_TXD,
 
+`ifdef RGMII_LB_SELFTEST
+    // ---- RGMII pad loopback on Pmod JC (rgmii_lb_selftest.v) ----
+    inout  wire [5:0]  RGMII_LB,
+`endif
+
     // ---- LEDs ----
     output wire [3:0]  LED
 );
@@ -813,7 +818,7 @@ module arty_a7_top (
     assign ela_probe[31]    = ETH_RX_CLK;
     assign ela_probe[34:32] = u_mac_sys.gen_mii.u_mii_tx.st;              // framer FSM
     assign ela_probe[35]    = u_mac_sys.gen_mii.u_mii_tx.tx_active_media; // frame on wire
-    assign ela_probe[36]    = u_mac_sys.gen_mii.u_mii_tx.rd_empty;        // FIFO empty
+    assign ela_probe[36]    = u_mac_sys.gen_mii.u_mii_tx.dat_rd_empty;    // data FIFO empty
     assign ela_probe[37]    = u_mac_sys.gen_mii.u_mii_tx.frame_pending;   // committed frame
     assign ela_probe[63:38] = 26'd0;
 
@@ -856,6 +861,31 @@ module arty_a7_top (
     fcapz_eio_xilinx7 #(
         .IN_W  (64 + 256),
         .OUT_W (2),
+        .CHAIN (3)
+    ) u_eio (
+        .probe_in  ({lb_status, eio_in}),
+        .probe_out (lb_ctrl)
+    );
+`elsif RGMII_LB_SELFTEST
+    // On-silicon RGMII-path self-test (rgmii_lb_selftest.v): a second MAC with
+    // PHY_INTERFACE="RGMII", MAX_FRAME=9018, looped back at the pads of Pmod
+    // JC. Its status rides above the base EIO bits: eio-read bits [327:64];
+    // eio-write bits [9:0] = load, tap[4:0], speed[1:0], clear, run. See
+    // fpga/arty_a7/scripts/rgmii_lb_selftest.py.
+    wire [31:0]  lb_ctrl;
+    wire [327:0] lb_status;
+
+    rgmii_lb_selftest u_rgmii_lb (
+        .clk    (sys_clk),
+        .rst_n  (int_rst_n),
+        .ctrl   (lb_ctrl),
+        .status (lb_status),
+        .pad    (RGMII_LB)
+    );
+
+    fcapz_eio_xilinx7 #(
+        .IN_W  (64 + 328),
+        .OUT_W (32),
         .CHAIN (3)
     ) u_eio (
         .probe_in  ({lb_status, eio_in}),

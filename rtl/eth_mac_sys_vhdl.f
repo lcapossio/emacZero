@@ -30,6 +30,7 @@ rtl/vhdl/eth_mac_tx.vhd
 rtl/vhdl/eth_mac.vhd
 rtl/vhdl/mdio_master.vhd
 rtl/vhdl/eth_stats.vhd
+rtl/vhdl/eth_pause_rx.vhd
 rtl/vhdl/eth_pause.vhd
 rtl/vhdl/axilite_regs.vhd
 rtl/vhdl/ddr_output.vhd

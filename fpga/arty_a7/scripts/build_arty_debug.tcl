@@ -16,6 +16,9 @@ if {$gmii_lb} { set outdir build_arty_gmii_lb }
 # GMII loopback self-test variant (build_arty_gmii_lb.tcl sets gmii_lb 1).
 if {![info exists gmii_lb]} { set gmii_lb 0 }
 if {$gmii_lb} { set outdir build_arty_gmii_lb }
+# RGMII pad-loopback self-test variant (build_arty_rgmii_lb.tcl sets rgmii_lb 1).
+if {![info exists rgmii_lb]} { set rgmii_lb 0 }
+if {$rgmii_lb} { set outdir build_arty_rgmii_lb }
 set fcapz_rtl fcapz/rtl
 set mac_filelist rtl/eth_mac_sys.f
 set l3_filelist rtl/eth_mac_sys_l3.f
@@ -47,6 +50,7 @@ set rtl_files [list \
     fpga/arty_a7/rtl/arty_a7_top.v \
 ]
 if {$gmii_lb} { lappend rtl_files fpga/arty_a7/rtl/gmii_lb_selftest.v }
+if {$rgmii_lb} { lappend rtl_files fpga/arty_a7/rtl/rgmii_lb_selftest.v }
 
 # fpgacapZero debug core files
 set fcapz_files [list \
@@ -80,10 +84,12 @@ read_verilog $rtl_files
 read_verilog $fcapz_files
 read_xdc $xdc_file
 if {$gmii_lb} { read_xdc fpga/arty_a7/constraints/gmii_lb_selftest.xdc }
+if {$rgmii_lb} { read_xdc fpga/arty_a7/constraints/rgmii_lb_selftest.xdc }
 
 # Set Verilog defines for synthesis
 set defines {SYNTHESIS=1 XILINX_7SERIES=1 FCAPZ_DEBUG=1}
 if {$gmii_lb} { lappend defines GMII_LB_SELFTEST=1 }
+if {$rgmii_lb} { lappend defines RGMII_LB_SELFTEST=1 }
 set_property verilog_define $defines [current_fileset]
 
 # Synthesis

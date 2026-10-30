@@ -20,6 +20,7 @@ rtl/eth_mac_tx.v
 rtl/eth_mac.v
 rtl/mdio_master.v
 rtl/eth_stats.v
+rtl/eth_pause_rx.v
 rtl/eth_pause.v
 rtl/axilite_regs.v
 rtl/ddr_output.v

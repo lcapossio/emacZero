@@ -148,7 +148,9 @@ begin
         if rst_n = '0' then
             bb_q <= (others => '0');
         elsif rising_edge(clk) then
-            bb_q <= (bb_q(362 downto 0) & bb_q(363)) xor (in_bits & GEN_FP);
+            bb_q <= (bb_q(362 downto 0) & bb_q(363)) xor (in_bits & GEN_FP)
+                    xor ((bb_q(149 downto 0) & bb_q(363 downto 150)) and
+                         (bb_q(219 downto 0) & bb_q(363 downto 220)));
         end if;
     end process;
 

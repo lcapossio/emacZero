@@ -1,0 +1,123 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+# translateHDL parity manifest: fpga/arty_a7/rtl/rgmii_lb_selftest.v (golden) vs
+# fpga/arty_a7/rtl/rgmii_lb_selftest.vhd, XILINX_7SERIES target (the Arty build).
+# Run (needs ghdl + yosys): python <translateHDL>/scripts/parity.py sim/parity/rgmii_lb_selftest/parity.yml --strict
+#
+# L2 runs on rgmii_lb_selftest_split.{v,vhd}, which gen_split.py generates from
+# the real files (build_and_test.py checks they are current): the six inout
+# pads are split into pad_o / pad_i (translateHDL's L2 does not model inout
+# ports, and the solver folds 'Z' to a constant), and the five IDELAYE2s are
+# unrolled out of their for-generate so the stand-in state inside them pairs by
+# name (Yosys gen_dly[0].u_idelay vs GHDL gen_dly_n1_u_idelay otherwise); the
+# Verilog u_idelayctrl is renamed u_dlyctrl, the name the VHDL label flattens
+# to (a VHDL label cannot be idelayctrl, the component's name). Labels only: a
+# wrong pairing can leave state unproven, never hide a divergence.
+# The IOBUF connections the split replaces, T tied to 0 included, are matched
+# as exact text on both sides by gen_split.py. L0, L1 and L4 run on the real
+# module.
+#
+# Stand-ins, read identically by both sides:
+#   - eth_mac_sys -> ../sfp_lb_tester/eth_mac_sys_standin.{v,vhd}. eth_mac_sys
+#     is proven on its own in sim/parity/eth_mac_sys and is not flattened in
+#     here. The stand-in has its name, generics and ports; it is a register
+#     that mixes every input and a fingerprint of every generic, and drives
+#     every output from its own register bit. So this proof covers
+#     rgmii_lb_selftest's own logic, the wiring of every eth_mac_sys port
+#     (RGMII TX out to the pads, the IDELAYed pads and the BUFGed RXC back in,
+#     both 125 MHz clocks) and the generic values (PHY_INTERFACE "RGMII",
+#     MAX_FRAME 9018, CLK_FREQ_HZ 125 MHz), not the MAC. In the induction step
+#     the MAC outputs take arbitrary values at any one cycle, but not every
+#     history: they come from a deterministic register. Each of its bits also
+#     takes the AND of two bits no output shows, which removes the one-cycle
+#     correlation between outputs but not every constraint on their history
+#     (with the rotation alone, m_axis_tlast was
+#     m_axis_tvalid one cycle late, so the stand-in did not tell a VHDL
+#     rx_tlast taken from rx_tvalid from the real one; that mutant still ended
+#     BOUNDED, at induction depths 4 and 20).
+#   - MMCME2_BASE, BUFG -> ../stubs/xilinx_clk_standin.{v,vhd} (shared with
+#     clk_gen and gmii_lb_selftest): every MMCM parameter (CLKOUT1_PHASE =
+#     TXC_PHASE included) is fingerprinted and every output, the three clocks
+#     too, is its own register bit, so clk_125, clk_125_90 and clk_200 are
+#     three different clocks and logic moved between them diverges (under
+#     this stand-in model). BUFG is a
+#     wire.
+#   - IDELAYE2, IDELAYCTRL, IOBUF -> ../stubs/xilinx_io_standin.{v,vhd}: the
+#     same scheme (a register on C / REFCLK mixing every input above a
+#     full-width fingerprint of every parameter and the AND term, every
+#     output its own bit).
+#     IOBUF is a tri-state buffer and appears only in L0, L1 and L4.
+#   Attributes (ASYNC_REG, DONT_TOUCH, IODELAY_GROUP) are not seen by any
+#   proof.
+#
+# Target: XILINX_7SERIES on both sides (defines/xilinx_7series.vh,
+# emz_target_xilinx_7series.vhd). The SIM branch (`ifdef SIM: behavioural
+# clocks, plain-wire pads with a 1 ns inertial delay) is not synthesizable and
+# is not proven; it only replaces the clock and pad sources.
+#
+# Param sets: the default (IDELAY_INIT 0, as the build) and IDELAY_INIT 26,
+# which checks tap_cur's reset value and the IDELAY_VALUE generic path.
+# TXC_PHASE (a real) stays at its default 90.0; its one use is the MMCM's
+# CLKOUT1_PHASE, which the MMCM fingerprint covers. The generator/checker
+# counters are proven at full width; equiv_induct pairs them by name.
+#
+# Mutants (each a one-line change to the VHDL split model, L2 only, induct
+# depth 4, probe 8 steps); none passes: PHY_INTERFACE "GMII", IDELAY_VALUE 0 on
+# one IDELAYE2 (IDELAY_INIT 26), LD from the level instead of the pulse on one
+# IDELAYE2, CNTVALUEIN from tap_req instead of tap_cur on one IDELAYE2, no LD
+# pulse for the load after reset, tap_init never cleared, MMCM
+# CLKOUT2_DIVIDE 4, the IDELAYCTRL reset counter moved from clk_200 to
+# clk_125, TXC and TX_CTL swapped on the pads, p_ok and p_bad swapped in
+# status, tap_cur reset to 0 (IDELAY_INIT 26), a wrong PAUSE DA byte, and
+# rx_tlast taken from rx_tvalid. The tap_cur one fails with a counterexample;
+# the rest leave 1 to 32 $equiv cells unproven at the changed point, BOUNDED
+# at that probe depth and so a failure under --strict.
+version: 1
+name: rgmii_lb_selftest_parity
+description: rgmii_lb_selftest Verilog golden vs VHDL port, XILINX_7SERIES, eth_mac_sys and Xilinx primitives replaced by stand-ins
+
+golden:
+  language: verilog
+  top: rgmii_lb_selftest
+  sources:
+    - ../defines/xilinx_7series.vh
+    - ../stubs/xilinx_clk_standin.v
+    - ../stubs/xilinx_io_standin.v
+    - ../sfp_lb_tester/eth_mac_sys_standin.v
+    - ../../../fpga/arty_a7/rtl/rgmii_lb_selftest.v
+    - rgmii_lb_selftest_split.v
+
+candidate:
+  language: vhdl
+  std: "93"
+  top: rgmii_lb_selftest
+  sources:
+    - ../../../rtl/vhdl/target/emz_target_xilinx_7series.vhd
+    - ../../../rtl/vhdl/emz_util_pkg.vhd
+    - ../stubs/xilinx_clk_standin.vhd
+    - ../stubs/xilinx_io_standin.vhd
+    - ../sfp_lb_tester/eth_mac_sys_standin.vhd
+    - ../../../fpga/arty_a7/rtl/rgmii_lb_selftest.vhd
+    - rgmii_lb_selftest_split.vhd
+
+interface:
+  top: rgmii_lb_selftest
+
+formal:
+  enabled: true
+  engine: yosys
+  induct_depth: 20
+  modules:
+    - name: rgmii_lb_selftest
+      golden_top: rgmii_lb_selftest_split
+      candidate_top: rgmii_lb_selftest_split
+      param_sets:
+        - {}
+        - {IDELAY_INIT: 26}
+
+synth:
+  enabled: true
+  tolerance_pct: 15.0
+  param_sets:
+    - {}
+    - {IDELAY_INIT: 26}

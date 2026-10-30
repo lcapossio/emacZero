@@ -11,6 +11,11 @@
 -- mid-frame) with no wire underrun and no transmit error - the framer replaces
 -- the cut-through eth_mac_tx on the MII path.
 --
+-- MAC Control frames (e.g. PAUSE) come in on their own AXIS input and FIFO.
+-- Between frames the framer starts a control frame first, else a data frame
+-- if tx_start_ok, so control frames are not held by tx_start_ok and do not
+-- queue behind data frames.
+--
 -- Overflow policy: backpressure (tready = !full) for well-formed frames; size
 -- the FIFO >= MAX_FRAME so a valid frame always fits. A runaway frame whose
 -- no-tlast run reaches MAX_FRAME is force-terminated (synthetic EOF) and its
@@ -38,9 +43,16 @@ entity mii_tx_saf is
         s_axis_tready : out std_logic;
         s_axis_tlast  : in  std_logic;
 
-        -- Gate frame START (sys clk). Low pauses starting new frames (e.g. on an
-        -- inbound 802.3x PAUSE); an in-flight frame always completes. Tie high if
-        -- unused.
+        -- ---- AXIS control frame input (raw frame, at most 64 bytes, e.g. PAUSE).
+        --      Tie ctl_axis_tvalid low if unused.
+        ctl_axis_tdata  : in  std_logic_vector(7 downto 0);
+        ctl_axis_tvalid : in  std_logic;
+        ctl_axis_tready : out std_logic;
+        ctl_axis_tlast  : in  std_logic;
+
+        -- Gate data frame START (sys clk). Low pauses starting new data frames
+        -- (e.g. on an inbound 802.3x PAUSE); an in-flight frame always completes,
+        -- and control frames are not gated. Tie high if unused.
         tx_start_ok   : in  std_logic;
 
         -- ---- MII output (media clock) ----
@@ -144,9 +156,23 @@ architecture rtl of mii_tx_saf is
     -- truncated occupancy of 8192 would be reported as 0.
     signal fifo_count_pad : unsigned(FIFO_ADDR_WIDTH+13 downto 0);
 
-    signal rd_data  : std_logic_vector(8 downto 0);
-    signal rd_empty : std_logic;
-    signal rd_en    : std_logic;
+    signal dat_rd_data  : std_logic_vector(8 downto 0);   -- data FIFO head
+    signal dat_rd_empty : std_logic;
+    signal dat_rd_en    : std_logic;
+    signal rd_en        : std_logic;                      -- pop the selected FIFO (src_ctl)
+
+    -- Control frame FIFO
+    constant CTL_CNT_W : integer := 7;   -- 6 (ADDR_WIDTH) + 1
+    signal ctl_wr_full   : std_logic;
+    signal ctl_wr_accept : std_logic;
+    signal ctl_eof_wr    : std_logic;
+    signal ctl_wr_data   : std_logic_vector(8 downto 0);
+    signal ctl_rd_data   : std_logic_vector(8 downto 0);
+    signal ctl_rd_empty  : std_logic;
+    signal ctl_rd_en     : std_logic;
+    signal ctl_wr_bin    : unsigned(CTL_CNT_W-1 downto 0);
+    signal ctl_wr_gray   : unsigned(CTL_CNT_W-1 downto 0);
+    signal ctl_wr_next   : unsigned(CTL_CNT_W-1 downto 0);
 
     function gray_to_bin(gray : std_logic_vector) return std_logic_vector is
         variable r : std_logic_vector(gray'length-1 downto 0);
@@ -174,6 +200,21 @@ architecture rtl of mii_tx_saf is
     signal frame_rd_bin   : unsigned(FRAME_CNT_W-1 downto 0);
     signal frame_wr_media : unsigned(FRAME_CNT_W-1 downto 0);
     signal frame_pending  : std_logic;
+
+    -- The same for the control FIFO.
+    signal ctl_wr_s1 : std_logic_vector(CTL_CNT_W-1 downto 0);
+    signal ctl_wr_s2 : std_logic_vector(CTL_CNT_W-1 downto 0);
+    signal ctl_wr_s3 : std_logic_vector(CTL_CNT_W-1 downto 0);
+    attribute ASYNC_REG of ctl_wr_s1 : signal is "TRUE";
+    attribute ASYNC_REG of ctl_wr_s2 : signal is "TRUE";
+    attribute ASYNC_REG of ctl_wr_s3 : signal is "TRUE";
+    signal ctl_rd_bin   : unsigned(CTL_CNT_W-1 downto 0);
+    signal ctl_wr_media : unsigned(CTL_CNT_W-1 downto 0);
+    signal ctl_pending  : std_logic;
+
+    -- The FIFO of the frame being sent.
+    signal src_ctl : std_logic;
+    signal rd_data : std_logic_vector(8 downto 0);
 
     -- =========================================================================
     -- CRC-32 (Ethernet FCS), one byte per step - same polynomial as eth_mac_tx.
@@ -370,10 +411,50 @@ begin
             wr_full       => wr_full,
             rd_clk        => mii_tx_clk,
             rd_rst_n      => tx_rst_n_s2,
-            rd_data       => rd_data,
-            rd_en         => rd_en,
-            rd_empty      => rd_empty,
+            rd_data       => dat_rd_data,
+            rd_en         => dat_rd_en,
+            rd_empty      => dat_rd_empty,
             wr_data_count => fifo_count
+        );
+
+    -- =========================================================================
+    -- Control frame FIFO (sys clk write side): {tlast, data}, 64 entries, so a
+    -- control frame of up to 64 bytes always commits and backpressure only
+    -- waits for the one ahead of it to be sent.
+    -- =========================================================================
+    ctl_wr_accept   <= ctl_axis_tvalid and (not ctl_wr_full);
+    ctl_eof_wr      <= ctl_wr_accept and ctl_axis_tlast;
+    ctl_wr_data     <= ctl_axis_tlast & ctl_axis_tdata;
+    ctl_axis_tready <= not ctl_wr_full;
+
+    ctl_wr_next <= ctl_wr_bin + 1;
+    process (clk, rst_n)
+    begin
+        if rst_n = '0' then
+            ctl_wr_bin  <= (others => '0');
+            ctl_wr_gray <= (others => '0');
+        elsif rising_edge(clk) then
+            if ctl_eof_wr = '1' then
+                ctl_wr_bin  <= ctl_wr_next;
+                ctl_wr_gray <= ctl_wr_next xor shift_right(ctl_wr_next, 1);
+            end if;
+        end if;
+    end process;
+
+    u_ctl_fifo : entity work.async_fifo
+        generic map (DATA_WIDTH => 9, ADDR_WIDTH => 6, RAM_STYLE => "DISTRIBUTED")
+        port map (
+            wr_clk        => clk,
+            wr_rst_n      => rst_n,
+            wr_data       => ctl_wr_data,
+            wr_en         => ctl_wr_accept,
+            wr_full       => ctl_wr_full,
+            rd_clk        => mii_tx_clk,
+            rd_rst_n      => tx_rst_n_s2,
+            rd_data       => ctl_rd_data,
+            rd_en         => ctl_rd_en,
+            rd_empty      => ctl_rd_empty,
+            wr_data_count => open
         );
 
     -- Committed-frame counter CDC into the media domain.
@@ -396,6 +477,28 @@ begin
     frame_wr_media <= unsigned(gray_to_bin(frame_wr_s3));
     frame_pending  <= '1' when frame_wr_media /= frame_rd_bin else '0';
 
+    -- The same for the control FIFO.
+    process (mii_tx_clk, tx_rst_n_s2)
+    begin
+        if tx_rst_n_s2 = '0' then
+            ctl_wr_s1 <= (others => '0');
+            ctl_wr_s2 <= (others => '0');
+            ctl_wr_s3 <= (others => '0');
+        elsif rising_edge(mii_tx_clk) then
+            ctl_wr_s1 <= std_logic_vector(ctl_wr_gray);
+            ctl_wr_s2 <= ctl_wr_s1;
+            ctl_wr_s3 <= ctl_wr_s2;
+        end if;
+    end process;
+    ctl_wr_media <= unsigned(gray_to_bin(ctl_wr_s3));
+    ctl_pending  <= '1' when ctl_wr_media /= ctl_rd_bin else '0';
+
+    -- The FIFO of the frame being sent: src_ctl is set in S_IDLE and holds
+    -- through the frame and its IFG, past its last pop.
+    rd_data   <= ctl_rd_data when src_ctl = '1' else dat_rd_data;
+    dat_rd_en <= rd_en and (not src_ctl);
+    ctl_rd_en <= rd_en and src_ctl;
+
     crc_final <= not crc_step_byte(crc, cur);
     crc_pad0  <= not crc_step_byte(crc, x"00");
 
@@ -412,6 +515,8 @@ begin
                 crc_saved       <= (others => '0');
                 cur_last        <= '0';
                 frame_rd_bin    <= (others => '0');
+                ctl_rd_bin      <= (others => '0');
+                src_ctl         <= '0';
                 rd_en           <= '0';
                 mii_txd_int     <= (others => '0');
                 mii_tx_en_int   <= '0';
@@ -426,11 +531,15 @@ begin
                         mii_tx_en_int   <= '0';
                         nib             <= '0';
                         tx_active_media <= '0';
-                        if frame_pending = '1' and rd_empty = '0' and start_ok_s2 = '1' then
+                        -- A control frame first; a data frame only if
+                        -- tx_start_ok.
+                        if (ctl_pending = '1' and ctl_rd_empty = '0') or
+                           (frame_pending = '1' and dat_rd_empty = '0' and start_ok_s2 = '1') then
                             -- tx_en is raised in the first S_PRE cycle (default
                             -- branch) together with the first nibble, so it stays
                             -- aligned with mii_txd. Raising it here would emit one
                             -- stale nibble while tx_en is already high.
+                            src_ctl         <= ctl_pending and (not ctl_rd_empty);
                             st              <= S_PRE;
                             cur             <= x"55";
                             cnt             <= (others => '0');
@@ -529,7 +638,11 @@ begin
                                 when S_IFG =>
                                     if cnt = IFG_BYTES - 1 then
                                         st           <= S_IDLE;
-                                        frame_rd_bin <= frame_rd_bin + 1;
+                                        if src_ctl = '1' then
+                                            ctl_rd_bin   <= ctl_rd_bin + 1;
+                                        else
+                                            frame_rd_bin <= frame_rd_bin + 1;
+                                        end if;
                                         tx_done_tgl  <= not tx_done_tgl;
                                     else
                                         cnt <= cnt + 1;
@@ -590,7 +703,7 @@ begin
             st_ws1       <= (others => '0'); st_ws2       <= (others => '0');
         elsif rising_edge(clk) then
             frame_rd_ws1 <= std_logic_vector(frame_rd_bin); frame_rd_ws2 <= frame_rd_ws1;
-            rd_empty_ws1 <= rd_empty;                       rd_empty_ws2 <= rd_empty_ws1;
+            rd_empty_ws1 <= dat_rd_empty;                   rd_empty_ws2 <= rd_empty_ws1;
             st_ws1       <= std_logic_vector(st);           st_ws2       <= st_ws1;
         end if;
     end process;

@@ -48,6 +48,10 @@ module tb_gmii_cdc;
         .gmii_txd_in    (tx_data),
         .gmii_tx_en_in  (tx_en),
         .gmii_tx_er_in  (tx_er),
+        .gmii_ctl_txd_in   (8'd0),
+        .gmii_ctl_tx_en_in (1'b0),
+        .gmii_ctl_tx_er_in (1'b0),
+        .tx_hold         (1'b0),
         // RX to MAC
         .gmii_rxd_out   (rx_data),
         .gmii_rx_dv_out (rx_dv),
@@ -63,6 +67,7 @@ module tb_gmii_cdc;
         .gmii_rx_ce_in  (1'b1),
         // Status
         .tx_busy        (tx_busy),
+        .tx_ctl_busy    (),
         .tx_fifo_level  (tx_fifo_level)
     );
 
