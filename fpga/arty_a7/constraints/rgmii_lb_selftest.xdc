@@ -19,7 +19,10 @@ set_property -dict {PACKAGE_PIN V10 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get
 ## No JC pin is clock-capable, so the read-back RXC reaches its BUFG over
 ## general routing. That adds clock insertion delay, which the RX IDELAY tap
 ## sweep measures; a board with RXC on an MRCC/SRCC pin has less.
-set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_pins u_rgmii_lb/u_bufg_rxc/I]]
+## The cells are matched as u?<name>: the Verilog has u_bufg_rxc / u_mmcm, the
+## VHDL port (rgmii_lb_selftest.vhd) has bufg_rxc / mmcm in generate u, which
+## Vivado names u.bufg_rxc / u.mmcm.
+set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_pins u_rgmii_lb/u?bufg_rxc/I]]
 
 ## RXC as the pad sees it. At 1G, TXC leaves TXC_PHASE (90) degrees after the
 ## data, so at the pad the data is valid from 2 ns before to 2 ns after each
@@ -43,9 +46,9 @@ set_false_path -to [get_ports {RGMII_LB[*]}]
 ## them that way (see gmii_lb_selftest.xdc). clk_125 and the TXC clock stay in
 ## one group: rgmii_if times a path between them. The read-back RXC is
 ## asynchronous to both as far as the MAC's CDC is concerned.
-set lb_clk_125 [get_clocks -of_objects [get_pins u_rgmii_lb/u_mmcm/CLKOUT0]]
-set lb_clk_90  [get_clocks -of_objects [get_pins u_rgmii_lb/u_mmcm/CLKOUT1]]
-set lb_clk_200 [get_clocks -of_objects [get_pins u_rgmii_lb/u_mmcm/CLKOUT2]]
+set lb_clk_125 [get_clocks -of_objects [get_pins u_rgmii_lb/u?mmcm/CLKOUT0]]
+set lb_clk_90  [get_clocks -of_objects [get_pins u_rgmii_lb/u?mmcm/CLKOUT1]]
+set lb_clk_200 [get_clocks -of_objects [get_pins u_rgmii_lb/u?mmcm/CLKOUT2]]
 set_clock_groups -asynchronous \
     -group [get_clocks sys_clk] \
     -group [list $lb_clk_125 $lb_clk_90] \

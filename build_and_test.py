@@ -385,6 +385,7 @@ PARITY_GEN_CHECKS = (
     ("sim/parity/gmii_cdc/gen_smallmem.py", "async_fifo small-memory parity models"),
     ("sim/parity/gen_goldens.py", "test_sequencer and udp_echo x-refined parity goldens"),
     ("sim/parity/zcu106_top/gen_split.py", "zcu106_top split-pin parity models"),
+    ("sim/parity/rgmii_lb_selftest/gen_split.py", "rgmii_lb_selftest split-pad parity models"),
     ("sim/parity/i2c_init/check_rom.py", "Si5328 ROM: .vh table vs VHDL package"),
 )
 SENS_CHECK = os.path.join(PROJECT_DIR, "sim", "parity", "sens_check.py")
@@ -402,12 +403,14 @@ VHDL_BOARD_STEPS = (
       "fpga/arty_a7/rtl/arp_responder.vhd",
       "fpga/arty_a7/rtl/test_sequencer.vhd",
       "fpga/arty_a7/rtl/gmii_lb_selftest.vhd",
+      "fpga/arty_a7/rtl/rgmii_lb_selftest.vhd",
       "fpga/zcu106/rtl/zcu106_si5328_rom_pkg.vhd",
       "fpga/zcu106/rtl/i2c_init.vhd",
       "fpga/zcu106/rtl/sfp_lb_tester.vhd"],
      ["icmp_echo", "udp_echo", "udp_blast", "udp_blast_trigger", "udp_iperf_sink",
       "udp_stats_reply", "axil_arb2", "clk_gen", "uart_tx", "arp_responder",
-      "test_sequencer", "gmii_lb_selftest", "i2c_init", "sfp_lb_tester"]),
+      "test_sequencer", "gmii_lb_selftest", "rgmii_lb_selftest", "i2c_init",
+      "sfp_lb_tester"]),
     (["fpga/zcu106/rtl/zcu106_top.vhd"], ["zcu106_top"]),
     (["fpga/zcu106/rtl/zcu106_top_lb.vhd"], ["zcu106_top"]),
 )

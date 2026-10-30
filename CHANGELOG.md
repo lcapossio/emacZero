@@ -60,7 +60,16 @@ This project does not yet maintain long-lived release branches.
   10M, each within one longest-frame time of 0x2000 x 512 bit times), not
   pausing with `PAUSE_CTRL` rx_en clear, and resuming on a quanta-0 PAUSE.
   `RGMII-LB-SELFTEST` simulates it at all three speeds, PAUSE at 1G and 100M,
-  and an injected RX corruption.
+  and an injected RX corruption. The VHDL port, `rgmii_lb_selftest.vhd`, is
+  formally proven equivalent with `eth_mac_sys` and the Xilinx primitives
+  replaced by stateful stand-ins (new: `sim/parity/stubs/xilinx_io_standin`
+  for IOBUF, IDELAYE2 and IDELAYCTRL). L2 runs on a split-pad model that
+  `sim/parity/rgmii_lb_selftest/gen_split.py` generates from the real files.
+  `rgmii_lb_selftest.xdc` matches the cells as `u?bufg_rxc` / `u?mmcm`, so it
+  applies to both (Vivado names the VHDL's generate cells `u.bufg_rxc`,
+  `u.mmcm`). An Arty build with the VHDL self-test in place of the Verilog
+  passed the same run: taps 19-31, every frame exact at all three speeds, and
+  all PAUSE checks.
 - `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
   The phase is skipped when GHDL is not installed. It also analyses and
