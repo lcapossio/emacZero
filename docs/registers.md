@@ -86,8 +86,8 @@ across all three on every run.
 | `[31:10]` | reserved | `0` | Reads as 0; writes ignored. |
 
 \* `tx_en` and `rx_en` reset to the value of the `eth_mac_sys` parameter
-`TXRX_EN_AT_RESET` (default 1). With 0 the core neither takes nor delivers a
-frame until software sets them. The TX and RX frame-boundary gates leave reset
+`TXRX_EN_AT_RESET` (default 1). With 0 the core neither accepts an `s_axis`
+frame nor delivers an `m_axis` frame until software sets them. The TX and RX frame-boundary gates leave reset
 in the same state as these bits.
 
 Checksum offload scope (both directions): Ethernet II with at most one 802.1Q

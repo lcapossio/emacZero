@@ -6,7 +6,7 @@
 #
 # eth_mac_sys is NOT flattened in: it is proven on its own in
 # sim/parity/eth_mac_sys. Both sides read the stand-in eth_mac_sys_standin.{v,vhd}
-# instead (same name, generics and ports; a 128-bit register that mixes every
+# instead (same name, generics and ports; a 364-bit register that mixes every
 # input and a fingerprint of every generic, with every output its own register
 # bit; see the .v for why an empty port-only stub is unusable). So this proof
 # covers sfp_lb_tester's own logic, the wiring of every eth_mac_sys port and
@@ -19,7 +19,8 @@
 # (25000) timers are localparams and are proven at full width; equiv_induct
 # pairs them by name and does not unroll them.
 #
-# The stand-in is shared with sim/parity/gmii_lb_selftest.
+# The stand-in is shared with sim/parity/gmii_lb_selftest and
+# sim/parity/rgmii_lb_selftest.
 version: 1
 name: sfp_lb_tester_parity
 description: sfp_lb_tester Verilog golden vs VHDL port, eth_mac_sys replaced by a stand-in

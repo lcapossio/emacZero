@@ -38,7 +38,7 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 
 from lib.axil_master import AxiLiteMaster
 from lib.bench import Checks
-from lib.mac_sys_a import bit, start_clock
+from lib.mac_sys_a import bit, start_clock, val
 
 SUITES = {
     "eth_mac_sys_reset_txrx_off": {
@@ -108,7 +108,7 @@ class Watch:
                 if bit(d.m_axis_tready) == 1:
                     self.cur.append(int(d.m_axis_tdata.value))
                     if bit(d.m_axis_tlast) == 1:
-                        self.frames.append((bytes(self.cur), bit(d.m_axis_terror)))
+                        self.frames.append((bytes(self.cur), val(d.m_axis_terror)))
                         self.cur = []
 
 
@@ -191,14 +191,14 @@ async def reset_enables(dut):
     for _ in range(3):
         await RisingEdge(dut.clk)
     await ReadOnly()
-    c.eq("R0 tx_en_eff in reset", bit(dut.tx_en_eff), TXRX_EN)
-    c.eq("R0 rx_en_eff in reset", bit(dut.rx_en_eff), TXRX_EN)
+    c.eq("R0 tx_en_eff in reset", val(dut.tx_en_eff), TXRX_EN)
+    c.eq("R0 rx_en_eff in reset", val(dut.rx_en_eff), TXRX_EN)
     await Timer(1, "ns")
     dut.rst_n.value = 1
     await FallingEdge(dut.clk)
     await ReadOnly()
-    c.eq("R0 tx_en_eff before the first edge", bit(dut.tx_en_eff), TXRX_EN)
-    c.eq("R0 rx_en_eff before the first edge", bit(dut.rx_en_eff), TXRX_EN)
+    c.eq("R0 tx_en_eff before the first edge", val(dut.tx_en_eff), TXRX_EN)
+    c.eq("R0 rx_en_eff before the first edge", val(dut.rx_en_eff), TXRX_EN)
     accepted = await offering
     await Timer(40, "us")
 

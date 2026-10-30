@@ -110,8 +110,8 @@ This project does not yet maintain long-lived release branches.
 
 - `eth_mac_sys` / `axilite_regs` parameter `TXRX_EN_AT_RESET` (default 1,
   unchanged behaviour): with 0, CTRL resets to `0x20`, with `tx_en` and
-  `rx_en` clear, so the core neither takes nor delivers a frame until
-  software sets them. Verilog and VHDL alike, proven equivalent with the
+  `rx_en` clear, so the core neither accepts an `s_axis` frame nor
+  delivers an `m_axis` frame until software sets them. Verilog and VHDL alike, proven equivalent with the
   parameter at 0 as well.
 
 ### Changed
@@ -119,7 +119,8 @@ This project does not yet maintain long-lived release branches.
 - The parity stand-ins for `eth_mac_sys`, MMCME2_BASE/BUFG and
   IDELAYE2/IDELAYCTRL (`sim/parity/sfp_lb_tester/eth_mac_sys_standin`,
   `sim/parity/stubs/xilinx_clk_standin`, `xilinx_io_standin`) also XOR into
-  each register bit the AND of two bits no output shows. With the rotation
+  each register bit the AND of two others (for every output bit, two bits
+  no output shows). With the rotation
   alone, each output was the output below it one cycle earlier, XOR a
   constant (`m_axis_tlast` was `m_axis_tvalid` one cycle late), so nothing in
   the stand-in told a registered `tlast` taken from `tvalid` from the real
@@ -215,10 +216,11 @@ This project does not yet maintain long-lived release branches.
   `sim/parity/eth_pause_rx`; `eth_pause`, `eth_stats`, `mii_if`, `gmii_cdc`,
   `mii_tx_saf`, `eth_mac_tx` (`MAX_FRAME` 60) and `eth_mac_sys` re-proven.
 - `eth_mac_sys`: the TX and RX frame-boundary gates that apply CTRL[0] and
-  CTRL[1] reset to "enabled" whatever CTRL's own reset value was. For one
-  clock after reset the gates followed their own reset value, so a core whose
-  CTRL resets with TX disabled could take a frame whose first beat was
-  offered across the reset release, and then send it whole. Both gates now
+  CTRL[1] reset to "enabled" whatever CTRL's own reset value was. With
+  CTRL's reset value as shipped (TX and RX on) the two agreed; in a build
+  that reset CTRL with TX disabled they disagreed for one clock after reset,
+  so a frame whose first beat was offered across the reset release was taken
+  and sent whole. Both gates now
   reset from `TXRX_EN_AT_RESET`, as CTRL does. With the default (1) nothing
   changes. Verilog and VHDL changed alike. New cocotb suites
   `eth_mac_sys_reset_txrx_off` and `eth_mac_sys_reset_txrx_on`, on both

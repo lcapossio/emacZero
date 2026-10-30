@@ -175,8 +175,8 @@ one of `tvalid`. (On `rgmii_lb_selftest` that mutant still ended BOUNDED, a
 failure under `--strict`, at induction depths 4 and 20: the solver did not
 close it, but the stand-in did not rule it out.) The `eth_mac_sys`, MMCM/BUFG
 and IDELAYE2/IDELAYCTRL stand-ins therefore also XOR into each bit the AND of
-two other bits that no output shows (for `eth_mac_sys`, bit i takes
-`bb_q[i+150] & bb_q[i+220]`). That removes the one-cycle correlation
+two other bits, which for every output bit are bits no output shows (for
+`eth_mac_sys`, bit i takes `bb_q[i+150] & bb_q[i+220]`). That removes the one-cycle correlation
 between outputs, not every constraint on their history: equivalence still
 holds only against these deterministic stand-ins. A mutant that rebuilt a stand-in
 output from the stand-in's own recurrence would still pass; none of the
