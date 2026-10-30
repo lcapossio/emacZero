@@ -163,16 +163,34 @@ puts out (MMCM outputs, the `BUFGCE_DIV` output, the 1000BASE-X PCS/PMA
 `userclk`/`rxuserclk` outputs) are bits of that register, not wires from or
 gates of its input clocks, so logic moved from one clock domain to another
 diverges. A wrong
-port, generic or clock therefore fails the proof. Deliberate mutants were run
+port, generic or clock therefore fails the proof.
+
+A stand-in is still a deterministic register, so its outputs cannot have
+every possible history, and a rotation alone gives them a simple one: each
+output bit is the bit below it one cycle earlier, XOR a constant. In the
+`eth_mac_sys` stand-in that made `m_axis_tlast` equal `m_axis_tvalid` one
+cycle late, so nothing in the stand-in told a registered copy of `tlast` from
+one of `tvalid`. (On `rgmii_lb_selftest` that mutant still ended BOUNDED, a
+failure under `--strict`, at induction depths 4 and 20: the solver did not
+close it, but the stand-in did not rule it out.) The `eth_mac_sys`, MMCM/BUFG
+and IDELAYE2/IDELAYCTRL stand-ins therefore also XOR into each bit the AND of
+two other bits that no output shows (for `eth_mac_sys`, bit i takes
+`bb_q[i+150] & bb_q[i+220]`), so no output follows from the earlier values
+of the outputs. A mutant that rebuilt a stand-in
+output from the stand-in's own recurrence would still pass; none of the
+mutants below is of that kind, but the proofs exclude only what the mutants
+and this argument cover. The `zcu106_top` children stand-ins still use the
+rotation alone. Deliberate mutants were run
 against `clk_gen`, `sfp_lb_tester`, `gmii_lb_selftest` and `zcu106_top` (a
 swapped port, a wrong generic, a wrong constant, a wrong MMCM divider, a
 process moved to another clock, two generics changed so that an XOR
 fingerprint would cancel, a wrong divide plus an inverted enable on
 `BUFGCE_DIV`, a clock built from the two refclk pins with the AN
 synchronizer moved onto it, a changed EIO probe word), and none of them
-passes. The same holds for nine mutants of `rgmii_lb_selftest` (listed in its
-manifest), including a wrong IDELAYE2 generic, a wrong MMCM divider, a
-process moved from `clk_200` to `clk_125` and two swapped pads.
+passes. The same holds for thirteen mutants of `rgmii_lb_selftest` (listed
+in its manifest), including a wrong IDELAYE2 generic, a wrong MMCM divider,
+a process moved from `clk_200` to `clk_125`, two swapped pads, the IDELAY
+load after reset removed, and the `tlast`-from-`tvalid` one above.
 
 **Known Verilog bug, reproduced as-is.** `udp_echo` counts the received
 payload in ADDR_W+1 bits (12 at BUF_SIZE 1536), and the count wraps. A

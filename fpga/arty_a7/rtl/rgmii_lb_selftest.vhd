@@ -34,8 +34,9 @@
 -- 19..31 of 0..31). At 10/100 every TXC edge is at least 8 ns from a data
 -- change, so those taps pass there too. RXC has no IDELAY: the board-level
 -- delay the README asks for is modelled by delaying the data instead. Post-
--- route STA cannot judge the RX inputs here: it sees only the IDELAY_INIT tap
--- and its slow-corner RXC delay is well above what the sweep measures.
+-- route STA cannot judge the RX inputs here: it times the IDELAYs at the
+-- IDELAY_VALUE tap (IDELAY_INIT) only, and its slow-corner RXC delay is
+-- well above what the sweep measures.
 --
 -- PAUSE. The MAC receives its own PAUSE frames, so a PAUSE it sends pauses
 -- its own TX: the frame goes out through rgmii_if, comes back through the
@@ -91,7 +92,7 @@ use work.all;
 entity rgmii_lb_selftest is
     generic (
         TXC_PHASE   : real    := 90.0;    -- TXC clock phase behind clk_125, degrees
-        IDELAY_INIT : integer := 0        -- RX data tap after configuration
+        IDELAY_INIT : integer := 0        -- RX data tap loaded after reset
     );
     port (
         clk    : in    std_logic;                       -- 100 MHz system clock
@@ -230,9 +231,12 @@ architecture rtl of rgmii_lb_selftest is
     signal dly_rst      : std_logic;
     signal dly_rdy      : std_logic;
 
+    signal dly_rdy_s    : std_logic_vector(1 downto 0);
+    attribute ASYNC_REG of dly_rdy_s : signal is "TRUE";
     signal tap_ld_d     : std_logic;
-    signal tap_cur      : unsigned(4 downto 0);
+    signal tap_init     : std_logic;
     signal tap_ld_pulse : std_logic;
+    signal tap_cur      : unsigned(4 downto 0);
 
     signal rx_dly       : std_logic_vector(4 downto 0);   -- RXD[3:0], RX_CTL after the IDELAYE2s
     signal rx_clk       : std_logic;                      -- RXC after its BUFG
@@ -368,8 +372,8 @@ begin
         begin
             wait for 8 ns * (TXC_PHASE / 360.0);
             loop
-                clk_125_90_sim <= not clk_125_90_sim;
                 wait for 4 ns;
+                clk_125_90_sim <= not clk_125_90_sim;
             end loop;
         end process;
         clk_200_sim <= not clk_200_sim after 2500 ps;
@@ -465,7 +469,7 @@ begin
                     C           => clk_125,
                     CE          => '0',
                     CINVCTRL    => '0',
-                    CNTVALUEIN  => tap_req,
+                    CNTVALUEIN  => std_logic_vector(tap_cur),
                     DATAIN      => '0',
                     IDATAIN     => pad_in(i_pad),
                     INC         => '0',
@@ -532,19 +536,33 @@ begin
         end if;
     end process;
 
-    -- Tap load: one LD pulse per rising edge of ctrl[9]. tap_req has been
-    -- synchronized for at least as long as tap_ld and is stable by then.
+    -- Tap load: the IDELAYE2s load tap_cur on a one-cycle LD pulse. tap_cur
+    -- takes tap_req on each rising edge of ctrl[9] (tap_req has been
+    -- synchronized for at least as long as tap_ld and is stable by then) and
+    -- resets to IDELAY_INIT, which a load after each reset, once the
+    -- IDELAYCTRL is ready, puts in the taps: VAR_LOAD ignores IDELAY_VALUE,
+    -- and a fabric reset leaves the taps as they were.
     process (clk_125, lb_rst_n)
     begin
         if lb_rst_n = '0' then
-            tap_ld_d <= '0';
-            tap_cur  <= to_unsigned(IDELAY_INIT mod 32, 5);
+            dly_rdy_s    <= "00";
+            tap_ld_d     <= '0';
+            tap_init     <= '1';
+            tap_ld_pulse <= '0';
+            tap_cur      <= to_unsigned(IDELAY_INIT mod 32, 5);
         elsif rising_edge(clk_125) then
-            tap_ld_d <= tap_ld;
-            if tap_ld = '1' and tap_ld_d = '0' then tap_cur <= unsigned(tap_req); end if;
+            dly_rdy_s    <= dly_rdy_s(0) & dly_rdy;
+            tap_ld_d     <= tap_ld;
+            tap_ld_pulse <= '0';
+            if tap_ld = '1' and tap_ld_d = '0' then
+                tap_cur      <= unsigned(tap_req);
+                tap_ld_pulse <= '1';
+            elsif tap_init = '1' and dly_rdy_s(1) = '1' then
+                tap_init     <= '0';
+                tap_ld_pulse <= '1';
+            end if;
         end if;
     end process;
-    tap_ld_pulse <= tap_ld and not tap_ld_d;
 
     -- =========================================================================
     -- Loopback MAC
@@ -629,7 +647,13 @@ begin
     --     edge of send (PAUSE_CTRL takes rx_en from every write, so the send
     --     carries it);
     --   PAUSE_CTRL = {rx_en, 0} when rx_en differs from the one last written.
-    -- init_done is high while no write is in flight.
+    -- init_done is high while no write is in flight. A send is a pending flag,
+    -- not a queue entry: quanta and rx_en are read when its writes start, a
+    -- second send edge before then merges into it, and the PAUSE checker
+    -- compares against the live quanta. So the host keeps quanta and rx_en
+    -- steady from a send until its PAUSE frame has come back (the JTAG
+    -- writes of rgmii_lb_selftest.py are milliseconds apart, far longer than
+    -- a PAUSE frame's round trip).
     -- =========================================================================
     process (clk_125, lb_rst_n)
     begin

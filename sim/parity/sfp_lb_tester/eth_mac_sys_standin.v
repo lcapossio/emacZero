@@ -22,6 +22,14 @@
 //     legal value; disjoint from the inputs, so an input never cancels a
 //     parameter), so a miswired input or a wrong parameter value changes
 //     bb_q, a state point paired by name (u_mac.bb_q), and the proof fails;
+//   - each bit i also XORs in bb_q[i+150] AND bb_q[i+220] (mod 332), which
+//     for every output bit (0..111) are two bits no port shows. A rotation
+//     alone made each output the previous cycle's value of the output below
+//     it plus a constant (m_axis_tlast was m_axis_tvalid one cycle late), so
+//     nothing here told an output from a registered copy of its neighbour.
+//     With the AND term no output follows from earlier outputs, though a
+//     deterministic register still cannot give the outputs every possible
+//     history;
 //   - outputs are registered only, so a loopback from outputs to inputs
 //     (gmii_lb_selftest) makes no combinational loop.
 // RX_AXIS_ADDR_WIDTH enters the fingerprint as its resolved value, so the
@@ -133,7 +141,8 @@ module eth_mac_sys #(
     reg [331:0] bb_q;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) bb_q <= 332'd0;
-        else        bb_q <= {bb_q[330:0], bb_q[331]} ^ {in_bits, GEN_FP};
+        else        bb_q <= {bb_q[330:0], bb_q[331]} ^ {in_bits, GEN_FP}
+                            ^ ({bb_q[149:0], bb_q[331:150]} & {bb_q[219:0], bb_q[331:220]});
     end
 
     // Every output bit from its own register bit, in port order (112 bits)

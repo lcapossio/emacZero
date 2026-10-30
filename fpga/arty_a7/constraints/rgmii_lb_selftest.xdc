@@ -28,9 +28,10 @@ set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_pins u_rgmii
 ## data, so at the pad the data is valid from 2 ns before to 2 ns after each
 ## RXC edge. Allow 0.5 ns of output skew between the six ODDR/IOBUF paths:
 ## valid 1.5 ns either side of each edge (center-aligned DDR input template).
-## STA checks these at the IDELAY_INIT tap only, and its slow-corner RXC delay
-## over general routing is well above what the tap sweep measures, so the RX
-## hold violations it reports at tap 0 are expected: the sweep decides.
+## STA checks these at the IDELAY_VALUE tap (IDELAY_INIT) only, and its
+## slow-corner RXC delay over general routing is well above what the tap sweep
+## measures, so the RX hold violations it reports at tap 0 are expected: the
+## sweep decides.
 create_clock -name rgmii_lb_rxc -period 8.000 [get_ports {RGMII_LB[5]}]
 set rgmii_lb_rx [get_ports {RGMII_LB[0] RGMII_LB[1] RGMII_LB[2] RGMII_LB[3] RGMII_LB[4]}]
 set_input_delay -clock rgmii_lb_rxc -max 2.500 $rgmii_lb_rx

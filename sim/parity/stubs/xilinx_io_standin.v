@@ -14,9 +14,12 @@
 // IS_*_INVERTED bit as itself, and each string parameter as one bit per legal
 // value. Distinct legal values give distinct fingerprints, with two limits:
 // the real is compared only to 0.001, and an illegal string sets no bit.
-// Every output is its own bit of `st`. Nothing about real IDELAY behaviour is
-// modelled: DATAOUT is not IDATAIN delayed, only a register that IDATAIN and
-// every other input feed.
+// Each bit i also XORs in st[i+40] AND st[i+80] (mod 126; IDELAYCTRL: st[i+1]
+// AND st[i+2] mod 3), bits no output shows, so no output is a delayed copy
+// of another (with the rotation alone CNTVALUEOUT[0] was DATAOUT one cycle
+// late). Every output is its own bit of `st`. Nothing about real IDELAY
+// behaviour is modelled: DATAOUT is not IDATAIN delayed, only a register
+// that IDATAIN and every other input feed.
 //
 // IOBUF is a plain tri-state buffer, as on silicon (O reads the pad). The
 // proof's L2 runs on a split model with no IOBUF (translateHDL does not model
@@ -82,7 +85,8 @@ module IDELAYE2 #(
     reg  [125:0] st;
     always @(posedge C)
         st <= {st[124:0], st[125]} ^ {REGRST, LDPIPEEN, LD, INC, IDATAIN, DATAIN,
-                                      CNTVALUEIN, CINVCTRL, CE, GEN_FP};
+                                      CNTVALUEIN, CINVCTRL, CE, GEN_FP}
+              ^ ({st[39:0], st[125:40]} & {st[79:0], st[125:80]});
 
     assign DATAOUT     = st[0];
     assign CNTVALUEOUT = st[5:1];
@@ -99,7 +103,7 @@ module IDELAYCTRL #(
 
     reg  [2:0] st;
     always @(posedge REFCLK)
-        st <= {st[1:0], st[2]} ^ {RST, GEN_FP};
+        st <= {st[1:0], st[2]} ^ {RST, GEN_FP} ^ ({st[0], st[2:1]} & {st[1:0], st[2]});
 
     assign RDY = st[0];
 endmodule

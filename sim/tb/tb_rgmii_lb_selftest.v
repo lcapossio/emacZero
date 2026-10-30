@@ -3,8 +3,8 @@
 // =============================================================================
 // tb_rgmii_lb_selftest.v - Pre-silicon check of the Arty RGMII loopback self-test
 // Runs rgmii_lb_selftest at 1G for two passes of its 8-entry length table
-// (46..9000-byte payloads), then at 100M for one pass and at 10M for the two
-// shortest frames, checking the counters it will report on hardware after each
+// (46..9000-byte payloads), then at 100M for one pass and at 10M for two
+// frames, checking the counters it will report on hardware after each
 // speed: every frame exact and clean, in order. At 1G and 100M it also sends
 // a PAUSE frame to itself, with PAUSE_CTRL rx_en set (the longest gap between
 // generator frames must be the pause, within two frame times) and, at 1G,
@@ -169,7 +169,7 @@ module tb_rgmii_lb_selftest;
         pause_run(16'd1024, 1'b0, 65536, 9038);
         pause_check("1G off", 1'b0, 65536, 9038);
 
-        // 100M: one pass, ending back at the start of the table.
+        // 100M: eight frames, one pass of the table.
         set_speed(2'b01);
         check("100M: CTRL speed written", spd_cur == 2'b01);
         run_frames(8, 2000000);
@@ -184,7 +184,8 @@ module tb_rgmii_lb_selftest;
         pause_run(16'd1024, 1'b1, 655360, 90380);
         pause_check("100M on", 1'b1, 655360, 90380);
 
-        // 10M: the two shortest frames (46 and 60-byte payloads).
+        // 10M: two frames, of whatever lengths the table has reached (clear
+        // does not rewind it, and the PAUSE runs advance it).
         set_speed(2'b10);
         check("10M: CTRL speed written", spd_cur == 2'b10);
         run_frames(2, 10000000);

@@ -38,8 +38,9 @@
 // 19..31 of 0..31). At 10/100 every TXC edge is at least 8 ns from a data
 // change, so those taps pass there too. RXC has no IDELAY: the board-level
 // delay the README asks for is modelled by delaying the data instead. Post-
-// route STA cannot judge the RX inputs here: it sees only the IDELAY_INIT tap
-// and its slow-corner RXC delay is well above what the sweep measures.
+// route STA cannot judge the RX inputs here: it times the IDELAYs at the
+// IDELAY_VALUE tap (IDELAY_INIT) only, and its slow-corner RXC delay is
+// well above what the sweep measures.
 //
 // PAUSE. The MAC receives its own PAUSE frames, so a PAUSE it sends pauses
 // its own TX: the frame goes out through rgmii_if, comes back through the
@@ -79,7 +80,7 @@
 
 module rgmii_lb_selftest_split #(
     parameter real    TXC_PHASE   = 90.0, // TXC clock phase behind clk_125, degrees
-    parameter integer IDELAY_INIT = 0     // RX data tap after configuration
+    parameter integer IDELAY_INIT = 0     // RX data tap loaded after reset
 )(
     input  wire         clk,        // 100 MHz system clock
     input  wire         rst_n,
@@ -185,20 +186,35 @@ module rgmii_lb_selftest_split #(
         else if (dly_rst)  dly_rst_cnt <= dly_rst_cnt + 1'b1;
     end
 
-    // Tap load: one LD pulse per rising edge of ctrl[9]. tap_req has been
-    // synchronized for at least as long as tap_ld and is stable by then.
-    reg       tap_ld_d;
+    // Tap load: the IDELAYE2s load tap_cur on a one-cycle LD pulse. tap_cur
+    // takes tap_req on each rising edge of ctrl[9] (tap_req has been
+    // synchronized for at least as long as tap_ld and is stable by then) and
+    // resets to IDELAY_INIT, which a load after each reset, once the
+    // IDELAYCTRL is ready, puts in the taps: VAR_LOAD ignores IDELAY_VALUE,
+    // and a fabric reset leaves the taps as they were.
+    (* ASYNC_REG = "TRUE" *) reg [1:0] dly_rdy_s;
+    reg       tap_ld_d, tap_init, tap_ld_pulse;
     reg [4:0] tap_cur;
     always @(posedge clk_125 or negedge lb_rst_n) begin
         if (!lb_rst_n) begin
-            tap_ld_d <= 1'b0;
-            tap_cur  <= IDELAY_INIT[4:0];
+            dly_rdy_s    <= 2'b00;
+            tap_ld_d     <= 1'b0;
+            tap_init     <= 1'b1;
+            tap_ld_pulse <= 1'b0;
+            tap_cur      <= IDELAY_INIT[4:0];
         end else begin
-            tap_ld_d <= tap_ld;
-            if (tap_ld && !tap_ld_d) tap_cur <= tap_req;
+            dly_rdy_s    <= {dly_rdy_s[0], dly_rdy};
+            tap_ld_d     <= tap_ld;
+            tap_ld_pulse <= 1'b0;
+            if (tap_ld && !tap_ld_d) begin
+                tap_cur      <= tap_req;
+                tap_ld_pulse <= 1'b1;
+            end else if (tap_init && dly_rdy_s[1]) begin
+                tap_init     <= 1'b0;
+                tap_ld_pulse <= 1'b1;
+            end
         end
     end
-    wire tap_ld_pulse = tap_ld && !tap_ld_d;
 
     wire [4:0] rx_dly;   // RXD[3:0], RX_CTL after the IDELAYE2s
     wire       rx_clk;   // RXC after its BUFG
@@ -235,7 +251,7 @@ module rgmii_lb_selftest_split #(
                 .C          (clk_125),
                 .CE         (1'b0),
                 .CINVCTRL   (1'b0),
-                .CNTVALUEIN (tap_req),
+                .CNTVALUEIN (tap_cur),
                 .DATAIN     (1'b0),
                 .IDATAIN    (pad_in[0]),
                 .INC        (1'b0),
@@ -259,7 +275,7 @@ module rgmii_lb_selftest_split #(
                 .C          (clk_125),
                 .CE         (1'b0),
                 .CINVCTRL   (1'b0),
-                .CNTVALUEIN (tap_req),
+                .CNTVALUEIN (tap_cur),
                 .DATAIN     (1'b0),
                 .IDATAIN    (pad_in[1]),
                 .INC        (1'b0),
@@ -283,7 +299,7 @@ module rgmii_lb_selftest_split #(
                 .C          (clk_125),
                 .CE         (1'b0),
                 .CINVCTRL   (1'b0),
-                .CNTVALUEIN (tap_req),
+                .CNTVALUEIN (tap_cur),
                 .DATAIN     (1'b0),
                 .IDATAIN    (pad_in[2]),
                 .INC        (1'b0),
@@ -307,7 +323,7 @@ module rgmii_lb_selftest_split #(
                 .C          (clk_125),
                 .CE         (1'b0),
                 .CINVCTRL   (1'b0),
-                .CNTVALUEIN (tap_req),
+                .CNTVALUEIN (tap_cur),
                 .DATAIN     (1'b0),
                 .IDATAIN    (pad_in[3]),
                 .INC        (1'b0),
@@ -331,7 +347,7 @@ module rgmii_lb_selftest_split #(
                 .C          (clk_125),
                 .CE         (1'b0),
                 .CINVCTRL   (1'b0),
-                .CNTVALUEIN (tap_req),
+                .CNTVALUEIN (tap_cur),
                 .DATAIN     (1'b0),
                 .IDATAIN    (pad_in[4]),
                 .INC        (1'b0),
@@ -444,7 +460,13 @@ module rgmii_lb_selftest_split #(
     //     edge of send (PAUSE_CTRL takes rx_en from every write, so the send
     //     carries it);
     //   PAUSE_CTRL = {rx_en, 0} when rx_en differs from the one last written.
-    // init_done is high while no write is in flight.
+    // init_done is high while no write is in flight. A send is a pending flag,
+    // not a queue entry: quanta and rx_en are read when its writes start, a
+    // second send edge before then merges into it, and the PAUSE checker
+    // compares against the live quanta. So the host keeps quanta and rx_en
+    // steady from a send until its PAUSE frame has come back (the JTAG
+    // writes of rgmii_lb_selftest.py are milliseconds apart, far longer than
+    // a PAUSE frame's round trip).
     // =========================================================================
     reg  [1:0] spd_last, spd_cur;
     reg  [3:0] spd_stable;

@@ -27,7 +27,13 @@
 #     (RGMII TX out to the pads, the IDELAYed pads and the BUFGed RXC back in,
 #     both 125 MHz clocks) and the generic values (PHY_INTERFACE "RGMII",
 #     MAX_FRAME 9018, CLK_FREQ_HZ 125 MHz), not the MAC. In the induction step
-#     the MAC outputs take arbitrary values.
+#     the MAC outputs take arbitrary values at any one cycle, but not every
+#     history: they come from a deterministic register. Each of its bits also
+#     takes the AND of two bits no output shows, so no output follows from
+#     the outputs' earlier values (with the rotation alone, m_axis_tlast was
+#     m_axis_tvalid one cycle late, so the stand-in did not tell a VHDL
+#     rx_tlast taken from rx_tvalid from the real one; that mutant still ended
+#     BOUNDED, at induction depths 4 and 20).
 #   - MMCME2_BASE, BUFG -> ../stubs/xilinx_clk_standin.{v,vhd} (shared with
 #     clk_gen and gmii_lb_selftest): every MMCM parameter (CLKOUT1_PHASE =
 #     TXC_PHASE included) is fingerprinted and every output, the three clocks
@@ -36,7 +42,8 @@
 #     wire.
 #   - IDELAYE2, IDELAYCTRL, IOBUF -> ../stubs/xilinx_io_standin.{v,vhd}: the
 #     same scheme (a register on C / REFCLK mixing every input above a
-#     full-width fingerprint of every parameter, every output its own bit).
+#     full-width fingerprint of every parameter and the AND term, every
+#     output its own bit).
 #     IOBUF is a tri-state buffer and appears only in L0, L1 and L4.
 #   Attributes (ASYNC_REG, DONT_TOUCH, IODELAY_GROUP) are not seen by any
 #   proof.
@@ -55,12 +62,14 @@
 # Mutants (each a one-line change to the VHDL split model, L2 only, induct
 # depth 4, probe 8 steps); none passes: PHY_INTERFACE "GMII", IDELAY_VALUE 0 on
 # one IDELAYE2 (IDELAY_INIT 26), LD from the level instead of the pulse on one
-# IDELAYE2, MMCM CLKOUT2_DIVIDE 4, the IDELAYCTRL reset counter moved from
-# clk_200 to clk_125, TXC and TX_CTL swapped on the pads, p_ok and p_bad
-# swapped in status, tap_cur reset to 0 (IDELAY_INIT 26) and a wrong PAUSE DA
-# byte. The tap_cur one fails with a counterexample; the rest leave 1 to 32
-# $equiv cells unproven at the changed point, BOUNDED at that probe depth and
-# so a failure under --strict.
+# IDELAYE2, CNTVALUEIN from tap_req instead of tap_cur on one IDELAYE2, no LD
+# pulse for the load after reset, tap_init never cleared, MMCM
+# CLKOUT2_DIVIDE 4, the IDELAYCTRL reset counter moved from clk_200 to
+# clk_125, TXC and TX_CTL swapped on the pads, p_ok and p_bad swapped in
+# status, tap_cur reset to 0 (IDELAY_INIT 26), a wrong PAUSE DA byte, and
+# rx_tlast taken from rx_tvalid. The tap_cur one fails with a counterexample;
+# the rest leave 1 to 32 $equiv cells unproven at the changed point, BOUNDED
+# at that probe depth and so a failure under --strict.
 version: 1
 name: rgmii_lb_selftest_parity
 description: rgmii_lb_selftest Verilog golden vs VHDL port, XILINX_7SERIES, eth_mac_sys and Xilinx primitives replaced by stand-ins

@@ -14,9 +14,12 @@
 -- IS_*_INVERTED bit as itself, and each string parameter as one bit per legal
 -- value. Distinct legal values give distinct fingerprints, with two limits:
 -- the real is compared only to 0.001, and an illegal string sets no bit.
--- Every output is its own bit of `st`. Nothing about real IDELAY behaviour is
--- modelled: DATAOUT is not IDATAIN delayed, only a register that IDATAIN and
--- every other input feed.
+-- Each bit i also XORs in st[i+40] AND st[i+80] (mod 126; IDELAYCTRL: st[i+1]
+-- AND st[i+2] mod 3), bits no output shows, so no output is a delayed copy
+-- of another (with the rotation alone CNTVALUEOUT[0] was DATAOUT one cycle
+-- late). Every output is its own bit of `st`. Nothing about real IDELAY
+-- behaviour is modelled: DATAOUT is not IDATAIN delayed, only a register
+-- that IDATAIN and every other input feed.
 --
 -- IOBUF is a plain tri-state buffer, as on silicon (O reads the pad). The
 -- proof's L2 runs on a split model with no IOBUF (translateHDL does not model
@@ -115,7 +118,9 @@ begin
         if rising_edge(C) then
             st <= (st(124 downto 0) & st(125)) xor
                   (REGRST & LDPIPEEN & LD & INC & IDATAIN & DATAIN &
-                   CNTVALUEIN & CINVCTRL & CE & GEN_FP);
+                   CNTVALUEIN & CINVCTRL & CE & GEN_FP) xor
+                  ((st(39 downto 0) & st(125 downto 40)) and
+                   (st(79 downto 0) & st(125 downto 80)));
         end if;
     end process;
 
@@ -150,7 +155,8 @@ begin
     process (REFCLK)
     begin
         if rising_edge(REFCLK) then
-            st <= (st(1 downto 0) & st(2)) xor (RST & GEN_FP);
+            st <= (st(1 downto 0) & st(2)) xor (RST & GEN_FP) xor
+                  ((st(0) & st(2 downto 1)) and (st(1 downto 0) & st(2)));
         end if;
     end process;
 

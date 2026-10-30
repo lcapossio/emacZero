@@ -49,16 +49,25 @@ This project does not yet maintain long-lived release branches.
   cells and I/O buffers. RXD and RX_CTL pass through an IDELAYE2 whose tap
   `fpga/arty_a7/scripts/rgmii_lb_selftest.py` sweeps at 1G before it runs the
   `gmii_lb_selftest` generator and checker at 1G, 100M and 10M. Nothing may be
-  plugged into JC. On an Arty A7-100T taps 19-31 of 0-31 passed at 1G; at tap
-  25 every frame came back exact for 20 s at each speed (648,329 at 1G, 70,265
-  at 100M, 7,023 at 10M, the largest 9018 bytes with FCS). No JC pin is
-  clock-capable, so RXC reaches its BUFG over general routing and post-route
-  STA reports RX hold violations at tap 0; the sweep is the check.
-  At each speed the MAC also sends PAUSE frames to itself: each comes back
-  exact, and the longest gap between frames it accepts shows TX pausing for
-  the quanta sent (0x2000 quanta: 4196 us at 1G, 42.3 ms at 100M, 427 ms at
-  10M, each within one longest-frame time of 0x2000 x 512 bit times), not
-  pausing with `PAUSE_CTRL` rx_en clear, and resuming on a quanta-0 PAUSE.
+  plugged into JC. On an Arty A7-100T taps 20-31 of 0-31 passed at 1G (19-31
+  on earlier runs); at tap 26 every frame came back exact for 20 s at each
+  speed (648,849 at 1G, 70,225 at 100M, 7,030 at 10M, the largest 9018 bytes
+  with FCS). No JC pin is clock-capable, so RXC reaches its BUFG over general
+  routing and post-route STA reports RX hold violations at the IDELAY_INIT
+  tap; the sweep is the check. The taps load `IDELAY_INIT` after each reset
+  (`VAR_LOAD` ignores `IDELAY_VALUE`): a build with `IDELAY_INIT=25` passed at
+  1G with no tap set by the host, where the same build without that load
+  passed no frame.
+  At each speed the MAC also sends PAUSE frames to itself. Each comes back
+  with the destination, type, opcode and quanta it was sent with (the source
+  address is not checked), and the longest gap between frames the MAC
+  accepts from the generator shows TX pausing for the quanta sent (0x2000
+  quanta: 4267 us at 1G, 42.6 ms at 100M, 426 ms at 10M, each within two
+  longest-frame times of 0x2000 x 512 bit times) and not pausing with
+  `PAUSE_CTRL` rx_en clear. With a 0xFFFF pause held for 0.5 s and then
+  quanta 0, TX stays paused until the quanta-0 frame and resumes at it, not
+  when the pause runs out; host timestamps of the JTAG writes bound this, so
+  it is a coarse check.
   `RGMII-LB-SELFTEST` simulates it at all three speeds, PAUSE at 1G and 100M,
   and an injected RX corruption. The VHDL port, `rgmii_lb_selftest.vhd`, is
   formally proven equivalent with `eth_mac_sys` and the Xilinx primitives
@@ -68,8 +77,10 @@ This project does not yet maintain long-lived release branches.
   `rgmii_lb_selftest.xdc` matches the cells as `u?bufg_rxc` / `u?mmcm`, so it
   applies to both (Vivado names the VHDL's generate cells `u.bufg_rxc`,
   `u.mmcm`). An Arty build with the VHDL self-test in place of the Verilog
-  passed the same run: taps 19-31, every frame exact at all three speeds, and
-  all PAUSE checks.
+  passed the same run: taps 20-31, every frame exact at all three speeds, and
+  all PAUSE checks. Post-route WNS is about -0.2 ns on these builds, from 10
+  `rgmii_if` flops in the 90-degree TXC domain released straight from reset
+  (see Known issues).
 - `build_and_test.py` analyses and elaborates the VHDL port with GHDL for each
   vendor target, and checks `emz_version_pkg.vhd` against `rtl/version.vh`.
   The phase is skipped when GHDL is not installed. It also analyses and
@@ -97,6 +108,18 @@ This project does not yet maintain long-lived release branches.
 
 ### Changed
 
+- The parity stand-ins for `eth_mac_sys`, MMCME2_BASE/BUFG and
+  IDELAYE2/IDELAYCTRL (`sim/parity/sfp_lb_tester/eth_mac_sys_standin`,
+  `sim/parity/stubs/xilinx_clk_standin`, `xilinx_io_standin`) also XOR into
+  each register bit the AND of two bits no output shows. With the rotation
+  alone, each output was the output below it one cycle earlier, XOR a
+  constant (`m_axis_tlast` was `m_axis_tvalid` one cycle late), so nothing in
+  the stand-in told a registered `tlast` taken from `tvalid` from the real
+  one. (On `rgmii_lb_selftest` that mutant ended BOUNDED, a failure under
+  `--strict`, with the old stand-ins too; the solver did not close it.) The
+  `clk_gen`, `sfp_lb_tester`, `gmii_lb_selftest` and
+  `rgmii_lb_selftest` proofs pass with them. The `zcu106_top` children
+  stand-ins still use the rotation alone.
 - `tb_gmii_cdc_rx_overflow.v` reads its FIFO-word probe through a wire, and
   `tb_eth_stats.v` can leave out its force-based saturation test
   (`TB_NO_HIER_FORCE`), so both also run against a VHDL DUT in xsim.
@@ -110,6 +133,12 @@ This project does not yet maintain long-lived release branches.
 
 ### Known issues
 
+- `rgmii_if`: its TXC-domain speed and TX-reset synchronizers (`spd_s1`,
+  `spd_s2`, `spd_s3`, `spd_run`, `tx_rst_n_s1`, `tx_rst_n_s2`) take `rst_n`
+  as an asynchronous reset with no release synchronizer. In a 1G build with
+  TXC 90 degrees behind the system clock, the release has a 2 ns window and
+  fails recovery timing (WNS -0.2 to -0.35 ns on the Arty RGMII self-test
+  builds). It has not shown up on hardware.
 - `udp_echo` (Verilog, and the VHDL port, which reproduces it): at `BUF_SIZE`
   1536 the received payload length wraps every 4096 bytes. A payload of
   exactly 4096 or 8192 bytes is accepted with length 0, and the echo then
