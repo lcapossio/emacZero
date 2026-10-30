@@ -242,9 +242,9 @@ def pause_tests(t, name, quanta):
     report(f"ignored: max_gap {gap / 1e3:.1f} us within two frames", gap <= 2 * f_ns)
 
     # XON. Hold a 0xFFFF pause for about XON_HOLD_S, refreshing it well
-    # before it can run out, then send Q = 0. Each PAUSE frame leaves during
-    # the EIO write that raises send, behind at most the data frame on the
-    # wire, so it takes effect between that write's start and two frames
+    # before it can run out, then send Q = 0. The EIO write that raises send
+    # issues each PAUSE request; the frame leaves behind at most the data
+    # frame on the wire, so it takes effect between that write's start and two frames
     # after its end. Host timestamps (perf_counter: time.monotonic ticks in
     # ~16 ms steps on Windows) around every send write therefore give:
     #   - continuity: each pause takes effect before the one before it can

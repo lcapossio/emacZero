@@ -39,7 +39,8 @@
 #     clk_gen and gmii_lb_selftest): every MMCM parameter (CLKOUT1_PHASE =
 #     TXC_PHASE included) is fingerprinted and every output, the three clocks
 #     too, is its own register bit, so clk_125, clk_125_90 and clk_200 are
-#     three different clocks and logic moved between them diverges. BUFG is a
+#     three different clocks and logic moved between them diverges (under
+#     this stand-in model). BUFG is a
 #     wire.
 #   - IDELAYE2, IDELAYCTRL, IOBUF -> ../stubs/xilinx_io_standin.{v,vhd}: the
 #     same scheme (a register on C / REFCLK mixing every input above a

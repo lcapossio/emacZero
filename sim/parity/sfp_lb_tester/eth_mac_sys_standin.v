@@ -21,7 +21,8 @@
 //     231:0 (each integer in its own 32-bit field, each string one bit per
 //     legal value; disjoint from the inputs, so an input never cancels a
 //     parameter), so a miswired input or a wrong parameter value changes
-//     bb_q, a state point paired by name (u_mac.bb_q), and the proof fails;
+//     bb_q, a state point paired by name (u_mac.bb_q), and the proof fails
+//     (under this stand-in model);
 //   - each bit i also XORs in bb_q[i+150] AND bb_q[i+220] (mod 332), which
 //     for every output bit (0..111) are two bits no port shows. A rotation
 //     alone made each output the previous cycle's value of the output below
