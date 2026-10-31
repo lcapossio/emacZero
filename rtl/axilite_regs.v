@@ -98,7 +98,10 @@ module axilite_regs #(
     // Reported in CAPS only; the logic they select lives in eth_mac_sys.
     parameter TX_CSUM_OFFLOAD   = 0,
     parameter RX_CSUM_OFFLOAD   = 0,
-    parameter MAX_FRAME         = 9018
+    parameter MAX_FRAME         = 9018,
+    // 1 = CTRL leaves reset with tx_en and rx_en set; 0 = both clear.
+    // eth_mac_sys resets its TX/RX enable gates from the same parameter.
+    parameter TXRX_EN_AT_RESET  = 1
 )(
     input  wire                    s_axi_aclk,
     input  wire                    s_axi_aresetn,
@@ -267,6 +270,10 @@ module axilite_regs #(
     // =========================================================================
     // [0] tx_en, [1] rx_en, [2] promisc, [4:3] speed, [5] full_duplex,
     // [6] jumbo_en, [7] tx_csum_off, [8] passthrough
+    // CTRL reset value: full_duplex=1, speed=00 (1G), everything else off,
+    // plus tx_en and rx_en when TXRX_EN_AT_RESET is set.
+    localparam [9:0] CTRL_RESET = (TXRX_EN_AT_RESET != 0) ? 10'b00_0010_0011
+                                                          : 10'b00_0010_0000;
     reg  [9:0]  reg_ctrl;
     reg  [31:0] reg_mac_lo;
     reg  [15:0] reg_mac_hi;
@@ -362,9 +369,7 @@ module axilite_regs #(
             w_data         <= 32'd0;
             w_strb         <= 4'd0;
 
-            // tx_en=1, rx_en=1, promisc=0, speed=00 (1G), full_duplex=1,
-            // jumbo_en=0, tx_csum_off=0, passthrough=0
-            reg_ctrl       <= 10'b00_0010_0011;
+            reg_ctrl       <= CTRL_RESET;
             reg_mac_lo     <= 32'h00_00_00_01;
             reg_mac_hi     <= 16'h02_00;  // locally administered
             reg_ip_addr    <= 32'hC0_A8_89_C8;  // 192.168.137.200

@@ -103,7 +103,10 @@ entity axilite_regs is
         -- Reported in CAPS only; the logic they select lives in eth_mac_sys.
         TX_CSUM_OFFLOAD   : integer := 0;
         RX_CSUM_OFFLOAD   : integer := 0;
-        MAX_FRAME         : integer := 9018
+        MAX_FRAME         : integer := 9018;
+        -- 1 = CTRL leaves reset with tx_en and rx_en set; 0 = both clear.
+        -- eth_mac_sys resets its TX/RX enable gates from the same generic.
+        TXRX_EN_AT_RESET  : integer := 1
     );
     port (
         s_axi_aclk    : in  std_logic;
@@ -282,6 +285,17 @@ architecture rtl of axilite_regs is
     -- =========================================================================
     -- [0] tx_en, [1] rx_en, [2] promisc, [4:3] speed, [5] full_duplex,
     -- [6] jumbo_en, [7] tx_csum_off, [8] passthrough
+    -- CTRL reset value: full_duplex=1, speed=00 (1G), everything else off,
+    -- plus tx_en and rx_en when TXRX_EN_AT_RESET is set.
+    function ctrl_reset_val(en : integer) return std_logic_vector is
+    begin
+        if en /= 0 then
+            return "0000100011";
+        else
+            return "0000100000";
+        end if;
+    end function;
+    constant CTRL_RESET     : std_logic_vector(9 downto 0) := ctrl_reset_val(TXRX_EN_AT_RESET);
     signal reg_ctrl         : std_logic_vector(9 downto 0);
     signal reg_mac_lo       : std_logic_vector(31 downto 0);
     signal reg_mac_hi       : std_logic_vector(15 downto 0);
@@ -404,9 +418,7 @@ begin
             w_data         <= (others => '0');
             w_strb         <= (others => '0');
 
-            -- tx_en=1, rx_en=1, promisc=0, speed=00 (1G), full_duplex=1,
-            -- jumbo_en=0, tx_csum_off=0, passthrough=0
-            reg_ctrl       <= "0000100011";
+            reg_ctrl       <= CTRL_RESET;
             reg_mac_lo     <= x"00000001";
             reg_mac_hi     <= x"0200";      -- locally administered
             reg_ip_addr    <= x"C0A889C8";  -- 192.168.137.200

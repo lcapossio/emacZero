@@ -83,7 +83,9 @@ extern "C" {
 #define EMZ_SPEED_100M        0x1u
 #define EMZ_SPEED_10M         0x2u
 
-/* Reset default per axilite_regs.v: tx_en | rx_en | full_duplex */
+/* Reset default per axilite_regs.v with TXRX_EN_AT_RESET=1 (the default):
+ * tx_en | rx_en | full_duplex. With TXRX_EN_AT_RESET=0 CTRL resets to
+ * full_duplex alone (0x20). */
 #define EMZ_CTRL_DEFAULT (EMZ_CTRL_TX_EN | EMZ_CTRL_RX_EN | EMZ_CTRL_FULL_DUPLEX)
 
 /* ---------------------------------------------------------------------------

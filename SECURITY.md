@@ -86,9 +86,10 @@ Integrators should:
 - Set `MAX_FRAME` and `jumbo_en` to the smallest values needed by the product.
 - Set `MAX_FRAME` explicitly: `eth_mac_sys` defaults to 9018 (jumbo-capable
   buffers); use 1518 unless jumbo frames are required.
-- Program a unique MAC address before relying on the receive filter. The MAC
-  leaves reset with TX and RX enabled on the placeholder address
-  `02:00:00:00:00:01` (and, for the L3 helpers, IP `192.168.137.200`).
+- Program a unique MAC address before relying on the receive filter. By
+  default (`TXRX_EN_AT_RESET=1`) the MAC leaves reset with TX and RX enabled
+  on the placeholder address `02:00:00:00:00:01` (and, for the L3 helpers, IP
+  `192.168.137.200`).
 - Treat `m_axis_terror` frames as invalid and drop them at the system boundary.
 - Respect AXI4-Stream backpressure and preserve `tlast` frame boundaries.
 - Use the documented clock/reset topology for MII or RGMII mode.

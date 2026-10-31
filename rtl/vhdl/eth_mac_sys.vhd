@@ -64,7 +64,10 @@ entity eth_mac_sys is
         -- RGMII speeds to synthesize: "ALL", "1G_ONLY" or "10_100". "10_100"
         -- removes 1G, and with it the 125 MHz clk requirement.
         RGMII_SPEEDS       : string  := "ALL";
-        MII_DEBUG          : integer := 0
+        MII_DEBUG          : integer := 0;
+        -- 1 = CTRL leaves reset with tx_en and rx_en set, so TX and RX run
+        -- without software; 0 = both clear until software sets them.
+        TXRX_EN_AT_RESET   : integer := 1
     );
     port (
         clk             : in  std_logic;   -- system clock, CLK_FREQ_HZ
@@ -158,6 +161,16 @@ architecture rtl of eth_mac_sys is
     -- RX_AXIS_ADDR_WIDTH resolved (its Verilog default depends on MAX_FRAME,
     -- which a VHDL-93 generic default cannot; see emz_util_pkg.auto_or).
     constant RX_AXIS_AW : integer := auto_or(RX_AXIS_ADDR_WIDTH, max_int(clog2(MAX_FRAME), 11));
+
+    -- CTRL[1:0] reset value (axilite_regs resets CTRL from the same generic).
+    function txrx_en_rst_val(en : integer) return std_logic is
+    begin
+        if en /= 0 then
+            return '1';
+        end if;
+        return '0';
+    end function;
+    constant TXRX_EN_RST : std_logic := txrx_en_rst_val(TXRX_EN_AT_RESET);
 
     -- =========================================================================
     -- CSR outputs
@@ -363,7 +376,7 @@ begin
     begin
         if rst_n = '0' then
             tx_mid    <= '0';
-            tx_en_eff <= '1';       -- CTRL[0] reset value
+            tx_en_eff <= TXRX_EN_RST;   -- CTRL[0] reset value
         elsif rising_edge(clk) then
             tx_mid <= tx_mid_next;
             if tx_mid_next = '0' and tx_hold = '0' then
@@ -429,7 +442,7 @@ begin
     begin
         if rst_n = '0' then
             rx_mid    <= '0';
-            rx_en_eff <= '1';       -- CTRL[1] reset value
+            rx_en_eff <= TXRX_EN_RST;   -- CTRL[1] reset value
         elsif rising_edge(clk) then
             rx_mid <= rx_mid_next;
             if rx_mid_next = '0' and rx_hold = '0' then
@@ -1152,7 +1165,8 @@ begin
             MCAST_HASH_FILTER => MCAST_HASH_FILTER,
             TX_CSUM_OFFLOAD   => TX_CSUM_OFFLOAD,
             RX_CSUM_OFFLOAD   => RX_CSUM_OFFLOAD,
-            MAX_FRAME         => MAX_FRAME
+            MAX_FRAME         => MAX_FRAME,
+            TXRX_EN_AT_RESET  => TXRX_EN_AT_RESET
         )
         port map (
             s_axi_aclk                 => clk,

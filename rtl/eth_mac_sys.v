@@ -53,7 +53,10 @@ module eth_mac_sys #(
     // RGMII speeds to synthesize: "ALL", "1G_ONLY" or "10_100". "10_100"
     // removes 1G, and with it the 125 MHz clk requirement.
     parameter RGMII_SPEEDS      = "ALL",
-    parameter MII_DEBUG         = 0
+    parameter MII_DEBUG         = 0,
+    // 1 = CTRL leaves reset with tx_en and rx_en set, so TX and RX run
+    // without software; 0 = both clear until software sets them.
+    parameter TXRX_EN_AT_RESET  = 1
 )(
     input  wire        clk,           // system clock, CLK_FREQ_HZ
     input  wire        rst_n,
@@ -269,7 +272,7 @@ module eth_mac_sys #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             tx_mid    <= 1'b0;
-            tx_en_eff <= 1'b1;      // CTRL[0] reset value
+            tx_en_eff <= (TXRX_EN_AT_RESET != 0);  // CTRL[0] reset value
         end else begin
             tx_mid <= tx_mid_next;
             if (!tx_mid_next && !tx_hold)
@@ -341,7 +344,7 @@ module eth_mac_sys #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rx_mid    <= 1'b0;
-            rx_en_eff <= 1'b1;      // CTRL[1] reset value
+            rx_en_eff <= (TXRX_EN_AT_RESET != 0);  // CTRL[1] reset value
         end else begin
             rx_mid <= rx_mid_next;
             if (!rx_mid_next && !rx_hold)
@@ -1023,7 +1026,8 @@ module eth_mac_sys #(
         .MCAST_HASH_FILTER (MCAST_HASH_FILTER),
         .TX_CSUM_OFFLOAD   (TX_CSUM_OFFLOAD),
         .RX_CSUM_OFFLOAD   (RX_CSUM_OFFLOAD),
-        .MAX_FRAME         (MAX_FRAME)
+        .MAX_FRAME         (MAX_FRAME),
+        .TXRX_EN_AT_RESET  (TXRX_EN_AT_RESET)
     ) u_csr (
         .s_axi_aclk     (clk),
         .s_axi_aresetn   (rst_n),

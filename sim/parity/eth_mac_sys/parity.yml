@@ -22,9 +22,10 @@
 # and the DDR cells depend on the target, and both are covered above.
 # version.vh here forwards to rtl/version.vh (iverilog include path, L1).
 #
-# Configs: MAX_FRAME 1518. CLK_FREQ_HZ is 125 MHz for GMII/RGMII (required for
-# a 1G-capable build, as on the ZCU106 GMII build) and 100 MHz for MII (as on
-# the Arty A7 build). RX_AXIS_ADDR_WIDTH is cut from 11 to 3
+# Configs: MAX_FRAME 1518; TXRX_EN_AT_RESET at its default (1), plus once at 0
+# (MII). CLK_FREQ_HZ is 125 MHz for GMII/RGMII (required for a 1G-capable
+# build, as on the ZCU106 GMII build) and 100 MHz for MII (as on the Arty A7
+# build). RX_AXIS_ADDR_WIDTH is cut from 11 to 3
 # (eth_mac_rx's RX FIFO is a plain sync_fifo array; 3 is the smallest depth
 # with a non-zero high-water mark, as in sim/parity/eth_mac_rx).
 version: 1
@@ -97,6 +98,8 @@ formal:
         - {PHY_INTERFACE: "MII",   MAX_FRAME: 1518, RX_AXIS_ADDR_WIDTH: 3, CLK_FREQ_HZ: 100000000}
         - {PHY_INTERFACE: "GMII",  MAX_FRAME: 1518, RX_AXIS_ADDR_WIDTH: 3, CLK_FREQ_HZ: 125000000}
         - {PHY_INTERFACE: "RGMII", MAX_FRAME: 1518, RX_AXIS_ADDR_WIDTH: 3, CLK_FREQ_HZ: 125000000}
+        # TX/RX disabled at reset (software enables them).
+        - {PHY_INTERFACE: "MII",   MAX_FRAME: 1518, RX_AXIS_ADDR_WIDTH: 3, CLK_FREQ_HZ: 100000000, TXRX_EN_AT_RESET: 0}
 
 synth:
   enabled: true

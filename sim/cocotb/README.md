@@ -32,7 +32,11 @@ There are three kinds of suite:
   `gmii_cdc_hold` and `gmii_cdc_hold_big` (`MAX_FRAME` 12000) fill the TX
   FIFO to its start limit while held, send the largest frame and check that
   it fits, and check that a control frame or `tx_hold` displaces a data frame
-  waiting in its start gap.
+  waiting in its start gap;
+  `eth_mac_sys_reset_txrx_off` and `eth_mac_sys_reset_txrx_on`
+  (`TXRX_EN_AT_RESET` 0 and 1) check that CTRL's `tx_en` / `rx_en` and the
+  frame-boundary gates leave reset together, with a frame offered across the
+  reset release.
 
 ## Layout
 

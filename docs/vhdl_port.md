@@ -31,7 +31,7 @@ wherever it is enabled. Parameters not listed are the Verilog defaults.
 | `mii_if` | MII_DEBUG=0 with TX_ENABLE 1 and 0; XILINX_7SERIES (XPM models) and the other targets (RX frame RAM cut to 8 words) | 10% |
 | `mii_tx_saf` | MAX_FRAME 7/31 at FIFO AW=5, MAX_FRAME 100 at AW=7 | 10% |
 | `mdio_master` | default, CLK_FREQ_HZ 125 MHz and 1 MHz | 25% |
-| `axilite_regs` | MCAST_HASH_FILTER 0 and 1 | 40% |
+| `axilite_regs` | MCAST_HASH_FILTER 0 and 1, CAPS bits set, TXRX_EN_AT_RESET=0 | 40% |
 | `eth_stats` | default, STAT_CNT_W=3 | 10% |
 | `eth_pause` | default, two TICK_DIV sets (incl. 0 and 17-bit dividers) | 35% |
 | `eth_pause_rx` | RX_NIBBLE 0 and 1 | 30% |
@@ -40,7 +40,7 @@ wherever it is enabled. Parameters not listed are the Verilog defaults.
 | `tx_csum_off` | MAX_FRAME 6/20/60, buffer AW 3 to 6 | 10% |
 | `gmii_cdc` | default, MAX_FRAME=1518 | 10% |
 | `eth_mac` | MAX_FRAME=1518, MII_DEBUG=0, flattened | 15% |
-| `eth_mac_sys` | PHY_INTERFACE MII (100 MHz), GMII and RGMII (125 MHz), MAX_FRAME=1518, flattened | 15% |
+| `eth_mac_sys` | PHY_INTERFACE MII (100 MHz), GMII and RGMII (125 MHz), MAX_FRAME=1518, flattened; MII also with TXRX_EN_AT_RESET=0 | 15% |
 
 Not proven:
 - `MII_DEBUG=1`. Its debug capture arrays are split per word by Yosys and kept
@@ -175,8 +175,8 @@ one of `tvalid`. (On `rgmii_lb_selftest` that mutant still ended BOUNDED, a
 failure under `--strict`, at induction depths 4 and 20: the solver did not
 close it, but the stand-in did not rule it out.) The `eth_mac_sys`, MMCM/BUFG
 and IDELAYE2/IDELAYCTRL stand-ins therefore also XOR into each bit the AND of
-two other bits that no output shows (for `eth_mac_sys`, bit i takes
-`bb_q[i+150] & bb_q[i+220]`). That removes the one-cycle correlation
+two other bits, which for every output bit are bits no output shows (for
+`eth_mac_sys`, bit i takes `bb_q[i+150] & bb_q[i+220]`). That removes the one-cycle correlation
 between outputs, not every constraint on their history: equivalence still
 holds only against these deterministic stand-ins. A mutant that rebuilt a stand-in
 output from the stand-in's own recurrence would still pass; none of the

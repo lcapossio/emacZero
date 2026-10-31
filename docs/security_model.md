@@ -44,7 +44,7 @@ Trusted or integration-controlled inputs:
 
 - Clocks, resets, and PHY mode selection.
 - Static parameters such as `PHY_INTERFACE`, `MAX_FRAME`, `MCAST_HASH_FILTER`,
-  `TX_CSUM_OFFLOAD`, and `MII_DEBUG`.
+  `TX_CSUM_OFFLOAD`, `MII_DEBUG`, and `TXRX_EN_AT_RESET`.
 - Board timing constraints and vendor primitive selection.
 
 ## Security Assumptions
@@ -104,6 +104,7 @@ Key controls for product integrators:
 | `TX_CSUM_OFFLOAD` | Lets hardware overwrite IPv4 header and TCP / UDP / ICMP / ICMPv6 checksums (CTRL[7]). Validate software expectations. |
 | `RX_CSUM_OFFLOAD` | With CTRL[9], flags frames whose IP / L4 checksum is wrong with `m_axis_terror`; the consumer must discard them, as the core delivers them. It does not check the L4 checksum of fragments, source-routed IPv4, UDP with an out-of-range Length or datagrams longer than their frame, nor IPv6 extension headers or tunnels, so software that trusts it must still verify those. A UDP checksum of 0 (IPv4 or IPv6) is passed unjudged: software must not treat it as verified and applies its own policy (over IPv6 it is accepted only on sockets that allow it, RFC 6935/6936). |
 | `MII_DEBUG` | Keeps extra debug capture logic. Keep disabled in production builds. |
+| `TXRX_EN_AT_RESET` | 1 (default): the MAC sends and receives from reset, on the placeholder MAC address. 0: CTRL `tx_en` / `rx_en` reset clear, so no `s_axis` frame is sent and no frame is delivered on `m_axis` until software sets them. The hardware does not check that the MAC address was programmed first, and PAUSE frames (`PAUSE_CTRL`) are not gated by `tx_en`. Prefer 0 when a CPU configures the core. |
 
 ## Evidence Already Present
 
@@ -137,9 +138,10 @@ accept these gaps:
 - Releases (from `v0.2.0`) are published on GitHub but not signed, and no GHSA
   has been published yet.
 - No end-of-support date has been set; only the latest release receives fixes.
-- The MAC leaves reset with TX and RX enabled on a placeholder MAC address
-  (`02:00:00:00:00:01`), and `eth_mac_sys` defaults to `MAX_FRAME=9018`. Set
-  both explicitly in a product.
+- By default (`TXRX_EN_AT_RESET=1`) the MAC leaves reset with TX and RX
+  enabled on a placeholder MAC address (`02:00:00:00:00:01`), and
+  `eth_mac_sys` defaults to `MAX_FRAME=9018`. Set both explicitly in a
+  product.
 - No fuzzing or formal verification harness is currently checked in.
 - Standalone resource/timing matrices are not yet maintained for every target
   FPGA, PHY mode, and parameter set.
