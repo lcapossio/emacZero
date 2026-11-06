@@ -306,8 +306,11 @@ architecture rtl of mii_if is
     -- before the SFD can be odd. rx_nib_low is the previous nibble of this
     -- RX_DV envelope (0 at its start). Before the SFD, a D after a 5 is the
     -- SFD and completes the byte 0xD5 in either nibble slot; after it,
-    -- nibbles pair in twos. rx_er_low is the rx_er of the held nibble while
-    -- rx_nib_sel is set.
+    -- nibbles pair in twos. rx_er_low is the rx_er of the previous nibble,
+    -- so an SFD byte completed in the low slot also carries the 5's rx_er.
+    -- An rx_er on a trailing odd nibble (RX_DV falls with rx_nib_sel set),
+    -- and a final byte the FIFO refused, go in the EOF word's error bit,
+    -- which the replay puts on the frame's last byte.
     signal rx_nib_sel  : std_logic;
     signal rx_nib_low  : std_logic_vector(3 downto 0);
     signal rx_er_low   : std_logic;
@@ -659,14 +662,14 @@ begin
 
             if mii_rx_dv_iob = '1' then
                 rx_nib_low <= mii_rxd_iob;
+                rx_er_low  <= mii_rx_er_iob;
                 if rx_sfd_now = '1' then
                     rx_sfd_seen <= '1';
                 end if;
                 if rx_byte_now = '0' then
-                    rx_er_low  <= mii_rx_er_iob;
                     rx_nib_sel <= '1';
                 else
-                    rx_wr_data <= '0' & ((rx_nib_sel and rx_er_low) or mii_rx_er_iob or
+                    rx_wr_data <= '0' & (rx_er_low or mii_rx_er_iob or
                                          rx_fifo_full_seen or rx_full_write) &
                                   mii_rxd_iob & rx_nib_low;
                     rx_wr_en   <= '1';
@@ -684,13 +687,11 @@ begin
             else
                 rx_nib_sel  <= '0';
                 rx_nib_low  <= (others => '0');
+                rx_er_low   <= '0';
                 rx_sfd_seen <= '0';
                 if rx_dv_d1 = '1' then
-                    -- An rx_er on a trailing odd nibble has no byte to ride
-                    -- on; it goes in the EOF word's error bit, which the
-                    -- replay puts on the frame's last byte.
-                    rx_wr_data <= '1' & (rx_fifo_full_seen or (rx_nib_sel and rx_er_low)) &
-                                  x"00";
+                    rx_wr_data <= '1' & (rx_fifo_full_seen or rx_full_write or
+                                         (rx_nib_sel and rx_er_low)) & x"00";
                     rx_wr_en   <= '1';
                     if MII_DEBUG /= 0 then
                         rx_mii_last_len_rxclk   <= rx_mii_byte_count_rxclk;

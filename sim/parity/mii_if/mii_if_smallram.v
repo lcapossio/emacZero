@@ -145,8 +145,11 @@ module mii_if #(
     // before the SFD can be odd. rx_nib_low is the previous nibble of this
     // RX_DV envelope (0 at its start). Before the SFD, a D after a 5 is the
     // SFD and completes the byte 0xD5 in either nibble slot; after it,
-    // nibbles pair in twos. rx_er_low is the rx_er of the held nibble while
-    // rx_nib_sel is set.
+    // nibbles pair in twos. rx_er_low is the rx_er of the previous nibble,
+    // so an SFD byte completed in the low slot also carries the 5's rx_er.
+    // An rx_er on a trailing odd nibble (RX_DV falls with rx_nib_sel set),
+    // and a final byte the FIFO refused, go in the EOF word's error bit,
+    // which the replay puts on the frame's last byte.
     reg        rx_nib_sel;
     reg [3:0]  rx_nib_low;
     reg        rx_er_low;
@@ -248,13 +251,13 @@ module mii_if #(
 
             if (mii_rx_dv_iob) begin
                 rx_nib_low <= mii_rxd_iob;
+                rx_er_low  <= mii_rx_er_iob;
                 if (rx_sfd_now)
                     rx_sfd_seen <= 1'b1;
                 if (!rx_byte_now) begin
-                    rx_er_low  <= mii_rx_er_iob;
                     rx_nib_sel <= 1'b1;
                 end else begin
-                    rx_wr_data <= {1'b0, (rx_nib_sel & rx_er_low) | mii_rx_er_iob |
+                    rx_wr_data <= {1'b0, rx_er_low | mii_rx_er_iob |
                                    rx_fifo_full_seen | rx_full_write,
                                    mii_rxd_iob, rx_nib_low};
                     rx_wr_en   <= 1'b1;
@@ -271,13 +274,11 @@ module mii_if #(
             end else begin
                 rx_nib_sel  <= 1'b0;
                 rx_nib_low  <= 4'd0;
+                rx_er_low   <= 1'b0;
                 rx_sfd_seen <= 1'b0;
                 if (rx_dv_d1) begin
-                    // An rx_er on a trailing odd nibble has no byte to ride
-                    // on; it goes in the EOF word's error bit, which the
-                    // replay puts on the frame's last byte.
-                    rx_wr_data <= {1'b1, rx_fifo_full_seen | (rx_nib_sel & rx_er_low),
-                                   8'h00};
+                    rx_wr_data <= {1'b1, rx_fifo_full_seen | rx_full_write |
+                                         (rx_nib_sel & rx_er_low), 8'h00};
                     rx_wr_en   <= 1'b1;
                     if (MII_DEBUG != 0) begin
                         rx_mii_last_len_rxclk <= rx_mii_byte_count_rxclk;

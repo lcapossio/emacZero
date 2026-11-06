@@ -16,7 +16,8 @@ rx_nibble checks, per suite:
   3 a clean frame right after an rx_er frame comes out without terror
   MII only (mii_if pairs nibbles from the SFD):
   4 the SFD after 14, 2 and 15 preamble 5s (an odd and an even number of
-    nibbles before the SFD): the frame comes out intact, without terror
+    nibbles before the SFD): the frame comes out intact, without terror;
+    with rx_er on the 5 right before the D only, with terror
   5 one extra nibble after the FCS: without rx_er the frame comes out
     intact, without terror; with rx_er on it, with terror
 """
@@ -233,6 +234,8 @@ async def rx_nibble(dut):
         for fives in (14, 2, 15):
             g = frame(61 + fives)
             await expect(f"{fives} preamble 5s", g, wire_nibs(g, fives))
+            await expect(f"{fives} preamble 5s, rx_er on the last 5", g,
+                         wire_nibs(g, fives), er_at=(fives - 1,), terror=True)
 
         # 5. A trailing odd nibble, without and with rx_er.
         t = w + [0]
