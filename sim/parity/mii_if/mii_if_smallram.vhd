@@ -697,7 +697,7 @@ begin
                         rx_mii_last_len_rxclk   <= rx_mii_byte_count_rxclk;
                         rx_mii_frame_toggle     <= not rx_mii_frame_toggle;
                         rx_mii_byte_count_rxclk <= (others => '0');
-                        if rx_fifo_full_seen = '1' then
+                        if (rx_fifo_full_seen or rx_full_write) = '1' then
                             rx_fifo_full_frame_toggle <= not rx_fifo_full_frame_toggle;
                         end if;
                     end if;

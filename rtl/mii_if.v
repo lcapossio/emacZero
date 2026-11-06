@@ -277,7 +277,7 @@ module mii_if #(
                         rx_mii_last_len_rxclk <= rx_mii_byte_count_rxclk;
                         rx_mii_frame_toggle <= ~rx_mii_frame_toggle;
                         rx_mii_byte_count_rxclk <= 16'd0;
-                        if (rx_fifo_full_seen)
+                        if (rx_fifo_full_seen || rx_full_write)
                             rx_fifo_full_frame_toggle <= ~rx_fifo_full_frame_toggle;
                     end
                     rx_fifo_full_seen <= 1'b0;
