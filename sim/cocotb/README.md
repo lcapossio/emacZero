@@ -29,6 +29,12 @@ There are three kinds of suite:
   own PAUSE frame still goes out, and both TX framers are counted (on MII
   also after an odd number of preamble nibbles, and not with `rx_er` on a
   trailing nibble);
+  `eth_mac_sys_rx_nibble_mii`, `_rgmii100` and `_rgmii10` drive the 10/100
+  receive pins nibble by nibble and check `m_axis`: `rx_er` on either nibble
+  of a byte sets `terror`, and does not carry over to the next frame; on MII
+  a frame comes out intact after an odd or an even number of preamble
+  nibbles and with a trailing odd nibble, and with `terror` when that nibble
+  has `rx_er`;
   `gmii_cdc_hold` and `gmii_cdc_hold_big` (`MAX_FRAME` 12000) fill the TX
   FIFO to its start limit while held, send the largest frame and check that
   it fits, and check that a control frame or `tx_hold` displaces a data frame

@@ -144,6 +144,7 @@ architecture rtl of rgmii_if is
 
     signal nibble_lo     : std_logic_vector(3 downto 0);
     signal have_lo       : std_logic;
+    signal er_lo         : std_logic;
     signal rxd_lo_pair   : std_logic_vector(7 downto 0);
     signal rx_dv_lo_pair : std_logic;
     signal rx_er_lo_pair : std_logic;
@@ -439,11 +440,14 @@ begin
     -- rx_dv_lo_pair strobes once per assembled byte; rx_frame_lo is RX_DV
     -- delayed one cycle, so it rises before the first strobe and falls after
     -- the last one, giving the consumer an unbroken frame envelope.
+    -- rx_er_lo_pair is the byte's RX_ER, the OR of both nibbles' RX_CTL
+    -- rising xor falling; it is 0 in cycles without the strobe.
     process (rgmii_rxc, rx_rst_n_s2)
     begin
         if rx_rst_n_s2 = '0' then
             nibble_lo     <= (others => '0');
             have_lo       <= '0';
+            er_lo         <= '0';
             rxd_lo_pair   <= (others => '0');
             rx_dv_lo_pair <= '0';
             rx_er_lo_pair <= '0';
@@ -451,15 +455,17 @@ begin
         elsif rising_edge(rgmii_rxc) then
             if rx_is_1g = '0' then
                 rx_dv_lo_pair <= '0';
+                rx_er_lo_pair <= '0';
                 rx_frame_lo   <= rx_ctl_rising;
                 if rx_ctl_rising = '1' then
                     if have_lo = '0' then
                         nibble_lo <= rxd_rising;
+                        er_lo     <= rx_ctl_rising xor rx_ctl_falling;
                         have_lo   <= '1';
                     else
                         rxd_lo_pair   <= rxd_rising & nibble_lo;
                         rx_dv_lo_pair <= '1';
-                        rx_er_lo_pair <= rx_ctl_rising xor rx_ctl_falling;
+                        rx_er_lo_pair <= er_lo or (rx_ctl_rising xor rx_ctl_falling);
                         have_lo       <= '0';
                     end if;
                 else

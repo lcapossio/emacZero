@@ -133,9 +133,20 @@ module mii_if #(
     // =========================================================================
     // RX path: MII -> store-and-forward FIFO -> GMII
     // =========================================================================
+    // Nibbles pair from the SFD, not from RX_DV: 802.3 does not guarantee
+    // that a PHY passes on the whole preamble, so the number of nibbles
+    // before the SFD can be odd. rx_nib_low is the previous nibble of this
+    // RX_DV envelope (0 at its start). Before the SFD, a D after a 5 is the
+    // SFD and completes the byte 0xD5 in either nibble slot; after it,
+    // nibbles pair in twos. rx_er_low is the rx_er of the previous nibble,
+    // so an SFD byte completed in the low slot also carries the 5's rx_er.
+    // An rx_er on a trailing odd nibble (RX_DV falls with rx_nib_sel set),
+    // and a final byte the FIFO refused, go in the EOF word's error bit,
+    // which the replay puts on the frame's last byte.
     reg        rx_nib_sel;
     reg [3:0]  rx_nib_low;
     reg        rx_er_low;
+    reg        rx_sfd_seen;
     reg        rx_dv_d1;
 
     // Dedicated RX input capture stage so Vivado has a clean IOB-friendly
@@ -178,6 +189,9 @@ module mii_if #(
         end
     endgenerate
 
+    wire rx_sfd_now  = !rx_sfd_seen && (mii_rxd_iob == 4'hD) && (rx_nib_low == 4'h5);
+    wire rx_byte_now = rx_nib_sel || rx_sfd_now;
+
     assign rx_full_write = rx_wr_en && rx_wr_full;
     assign rx_wr_accept = rx_wr_en && !rx_wr_full && !rx_wr_rst_busy;
 
@@ -198,6 +212,7 @@ module mii_if #(
             rx_nib_sel <= 1'b0;
             rx_nib_low <= 4'd0;
             rx_er_low  <= 1'b0;
+            rx_sfd_seen <= 1'b0;
             rx_dv_d1   <= 1'b0;
             rx_wr_data <= 10'd0;
             rx_wr_en   <= 1'b0;
@@ -228,9 +243,11 @@ module mii_if #(
                 rx_fifo_overflow_toggle <= ~rx_fifo_overflow_toggle;
 
             if (mii_rx_dv_iob) begin
-                if (!rx_nib_sel) begin
-                    rx_nib_low <= mii_rxd_iob;
-                    rx_er_low  <= mii_rx_er_iob;
+                rx_nib_low <= mii_rxd_iob;
+                rx_er_low  <= mii_rx_er_iob;
+                if (rx_sfd_now)
+                    rx_sfd_seen <= 1'b1;
+                if (!rx_byte_now) begin
                     rx_nib_sel <= 1'b1;
                 end else begin
                     rx_wr_data <= {1'b0, rx_er_low | mii_rx_er_iob |
@@ -248,15 +265,19 @@ module mii_if #(
                     end
                 end
             end else begin
-                rx_nib_sel <= 1'b0;
+                rx_nib_sel  <= 1'b0;
+                rx_nib_low  <= 4'd0;
+                rx_er_low   <= 1'b0;
+                rx_sfd_seen <= 1'b0;
                 if (rx_dv_d1) begin
-                    rx_wr_data <= {1'b1, rx_fifo_full_seen, 8'h00};
+                    rx_wr_data <= {1'b1, rx_fifo_full_seen | rx_full_write |
+                                         (rx_nib_sel & rx_er_low), 8'h00};
                     rx_wr_en   <= 1'b1;
                     if (MII_DEBUG != 0) begin
                         rx_mii_last_len_rxclk <= rx_mii_byte_count_rxclk;
                         rx_mii_frame_toggle <= ~rx_mii_frame_toggle;
                         rx_mii_byte_count_rxclk <= 16'd0;
-                        if (rx_fifo_full_seen)
+                        if (rx_fifo_full_seen || rx_full_write)
                             rx_fifo_full_frame_toggle <= ~rx_fifo_full_frame_toggle;
                     end
                     rx_fifo_full_seen <= 1'b0;
@@ -412,6 +433,7 @@ module mii_if #(
     reg [15:0] rx_load_count;
     reg [15:0] rx_replay_len;
     reg [15:0] rx_replay_index;
+    reg        rx_replay_eof_er;   // EOF word error bit, for the last byte
     reg [15:0] rx_mem_rd_addr;
     reg [8:0]  rx_mem_rd_data;
     reg        rx_mem_wr_en;
@@ -617,6 +639,7 @@ module mii_if #(
             rx_load_count       <= 16'd0;
             rx_replay_len       <= 16'd0;
             rx_replay_index     <= 16'd0;
+            rx_replay_eof_er    <= 1'b0;
             rx_mem_rd_addr      <= 16'd0;
             rx_mem_rd_data      <= 9'd0;
             rx_frame_done_pulse <= 1'b0;
@@ -662,6 +685,7 @@ module mii_if #(
                         if (rx_rd_data[9]) begin
                             rx_frame_done_pulse <= 1'b1;
                             rx_replay_len <= rx_load_count;
+                            rx_replay_eof_er <= rx_rd_data[8];
                             if (MII_DEBUG != 0) begin
                                 rx_replay_last_len_sys <= {16'd0, rx_load_count};
                                 rx_replay_eof_count_sys <= rx_replay_eof_count_sys + 1'b1;
@@ -707,7 +731,9 @@ module mii_if #(
 
                 RX_REPLAY_SEND: begin
                     gmii_rxd   <= rx_mem_rd_data[7:0];
-                    gmii_rx_er <= rx_mem_rd_data[8];
+                    gmii_rx_er <= rx_mem_rd_data[8] |
+                                  (rx_replay_eof_er &&
+                                   ((rx_replay_index + 1'b1) >= rx_replay_len));
                     gmii_rx_dv <= 1'b1;
                     if (MII_DEBUG != 0) begin
                         case (rx_replay_byte_count[3:0])

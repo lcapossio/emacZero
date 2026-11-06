@@ -144,6 +144,12 @@ This project does not yet maintain long-lived release branches.
 
 ### Known issues
 
+- `rgmii_if` at 10 and 100 Mb/s still pairs receive nibbles from the first
+  cycle of RX_DV, as `mii_if` did before #24: a frame with an odd number of
+  nibbles before the SFD is lost.
+- `eth_mac_rx` and `eth_pause_rx` need at least one 0x55 byte before the SFD
+  byte. 802.3 lets a PHY drop the whole preamble, so a frame received with
+  only the SFD (MII nibbles `5, D`) is lost.
 - `rgmii_if`: its TXC-domain speed and TX-reset synchronizers (`spd_s1`,
   `spd_s2`, `spd_s3`, `spd_run`, `tx_rst_n_s1`, `tx_rst_n_s2`) take `rst_n`
   as an asynchronous reset with no release synchronizer. In a 1G build with
@@ -274,6 +280,23 @@ This project does not yet maintain long-lived release branches.
 - `emaczero.core`: `rtl_core` did not list `rtl/mii_tx_saf.v`, so FuseSoC
   builds of the `default` and `with_l3` targets could not elaborate
   `eth_mac_sys` on its default MII path.
+- `mii_if` (MII builds) paired receive nibbles from the first cycle of RX_DV,
+  not from the SFD. 802.3 does not guarantee that a PHY passes on the whole
+  preamble, so when an odd number of nibbles came before the SFD, every byte
+  after it was built from two different bytes and the frame was lost. It
+  now pairs nibbles from the SFD (a D after a 5), as `eth_pause_rx` does;
+  an `rx_er` on that 5 also marks the SFD byte.
+  An `rx_er` on a trailing odd nibble (RX_DV falling mid-byte) was also
+  dropped, so the frame was delivered without `m_axis_terror`; it now marks
+  the frame's last byte. The replay now reads the error bit of the
+  end-of-frame word, so a frame whose last write found the RX FIFO full also
+  gets `rx_er` on its last kept byte. (#24)
+- `rgmii_if` at 10 and 100 Mb/s took a received byte's `rx_er` from its
+  second (high) nibble only, so an RX_ER signalled on the low nibble alone
+  was dropped and the frame was delivered without `m_axis_terror`. The byte's
+  `rx_er` is now the OR of both nibbles, and the 10/100 `gmii_rx_er` output is
+  0 in cycles without `gmii_rx_ce` instead of holding the last byte's value.
+  An `rx_er` on a trailing odd nibble is still dropped there. (#25)
 
 ## v0.2.0 - 2026-10-16
 
