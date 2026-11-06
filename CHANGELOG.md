@@ -301,7 +301,10 @@ This project does not yet maintain long-lived release branches.
   cycles without `rx_ce`.
 - `eth_mac_rx` and `eth_pause_rx` needed at least one 0x55 byte before the
   SFD. 802.3 lets a PHY drop the whole preamble, so a frame received with
-  only the SFD was lost. Both now also take the SFD as a frame's first byte.
+  only the SFD was lost. Both now also take the SFD as a frame's first byte,
+  in `eth_mac_rx` also in the cycle that closes the frame before (the RX
+  replays send queued frames with a single `gmii_rx_dv` low cycle between
+  them, so that cycle can carry the next frame's first byte).
   `eth_mac_rx` now drops a frame whose first byte is neither 0x55 nor 0xD5
   instead of scanning it for a preamble, so a 0x55 0xD5 inside such a frame
   cannot start a false one, and an `rx_er` on a frame's first byte now marks
