@@ -213,14 +213,23 @@ async def short_preamble(dut):
     await drv.send_frame(f0, lead=bytes([0]))
     await drv.idle(16)
     await drv.send_frame(f1)
+    await drv.idle(16)
+    # Back to back, one gmii_rx_dv low cycle between frames, as the replay in
+    # gmii_cdc and mii_if sends them: the first byte of the next frame comes
+    # in the cycle that closes the one before.
+    await drv.send_frame(f0, preamble_len=0)
+    await drv.send_frame(f1, preamble_len=0)
+    await drv.send_frame(f0, preamble_len=1)
+    await drv.send_frame(f1, preamble_len=0, er_wire_idx=0)
     await drv.idle(64)
     for _ in range(200):
         await RisingEdge(dut.clk)
 
     got = [(fr["payload"], fr["terror"]) for fr in sink.frames]
-    assert got == [(f0, False), (f1, False), (f0, True), (f1, True), (f1, False)], \
-        f"got {[(len(p), e) for p, e in got]}"
-    assert [r["align"] for r in stats.records] == [False, False, True, True, False], \
+    want = [(f0, False), (f1, False), (f0, True), (f1, True), (f1, False),
+            (f0, False), (f1, False), (f0, False), (f1, True)]
+    assert got == want, f"got {[(len(p), e) for p, e in got]}"
+    assert [r["align"] for r in stats.records] == [e for _, e in want], \
         "rx_er on the first byte must set stat_err_align"
     dut._log.info("OK: 0/1-byte preambles received; stray-start frame dropped")
 

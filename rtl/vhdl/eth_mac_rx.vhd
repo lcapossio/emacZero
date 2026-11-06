@@ -434,7 +434,35 @@ begin
             end if;
 
             case state is
-                when S_IDLE =>
+                -- S_CRC_CHECK is the cycle after gmii_rx_dv fell. When the
+                -- replay sends frames back to back it is also the next
+                -- frame's first byte, so it starts the next frame exactly as
+                -- S_IDLE does (a frame without preamble starts on its SFD).
+                -- The registers it resets are read this cycle at their old
+                -- values, by the stat outputs and the closing push.
+                when S_IDLE | S_CRC_CHECK =>
+                    if state = S_CRC_CHECK then
+                        -- End-of-frame classification pulse for stats.
+                        -- Only emit when MAC filter passed (i.e. frame was actually
+                        -- delivered to the AXIS sink), so counts match deliveries.
+                        if mac_ok = '1' and frame_started = '1' then
+                            stat_done         <= '1';
+                            stat_len          <= std_logic_vector(byte_cnt);
+                            stat_err_fcs      <= err_fcs_now;
+                            stat_err_align    <= err_align_now;
+                            stat_err_overflow <= err_overflow_now;
+                            stat_err_oversize <= err_oversize_now;
+                            stat_err_csum     <= err_csum_now;
+                            stat_is_bcast     <= is_bcast_r;
+                            stat_is_mcast     <= is_mcast_r;
+                        elsif mac_ok = '1' then
+                            -- Passed the filter but its SOF found no FIFO room:
+                            -- dropped whole. Counted whatever its FCS or length,
+                            -- since the frame was never delivered to be judged.
+                            stat_drop <= '1';
+                        end if;
+                    end if;
+                    state            <= S_IDLE;
                     byte_cnt         <= (others => '0');
                     first_byte       <= '0';
                     delay_pipe0      <= (others => '0');
@@ -547,28 +575,6 @@ begin
                         if first_byte = '1' then
                             first_byte <= '0';
                         end if;
-                    end if;
-
-                when S_CRC_CHECK =>
-                    state <= S_IDLE;
-                    -- End-of-frame classification pulse for stats.
-                    -- Only emit when MAC filter passed (i.e. frame was actually
-                    -- delivered to the AXIS sink), so counts match deliveries.
-                    if mac_ok = '1' and frame_started = '1' then
-                        stat_done         <= '1';
-                        stat_len          <= std_logic_vector(byte_cnt);
-                        stat_err_fcs      <= err_fcs_now;
-                        stat_err_align    <= err_align_now;
-                        stat_err_overflow <= err_overflow_now;
-                        stat_err_oversize <= err_oversize_now;
-                        stat_err_csum     <= err_csum_now;
-                        stat_is_bcast     <= is_bcast_r;
-                        stat_is_mcast     <= is_mcast_r;
-                    elsif mac_ok = '1' then
-                        -- Passed the filter but its SOF found no FIFO room:
-                        -- dropped whole. Counted whatever its FCS or length,
-                        -- since the frame was never delivered to be judged.
-                        stat_drop <= '1';
                     end if;
 
                 when S_DROP =>
