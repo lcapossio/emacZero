@@ -446,13 +446,26 @@ begin
                     dst_mac_captured <= (others => '0');
                     mac_ok           <= '0';
                     frame_started    <= '0';
-                    rx_er_seen       <= '0';
+                    rx_er_seen       <= gmii_rx_dv and gmii_rx_er;
                     rx_overflow_seen <= '0';
                     is_bcast_r       <= '0';
                     is_mcast_r       <= '0';
                     vlan_tag         <= '0';
-                    if gmii_rx_dv = '1' and gmii_rxd = x"55" then
-                        state <= S_PREAMBLE;
+                    -- A frame's first byte is a preamble 0x55 or, when the
+                    -- PHY dropped the whole preamble, the SFD itself. Any
+                    -- other first byte drops the frame (S_DROP waits for
+                    -- gmii_rx_dv low), so a 0xD5 inside it cannot start one.
+                    if gmii_rx_dv = '1' then
+                        if gmii_rxd = x"55" then
+                            state <= S_PREAMBLE;
+                        elsif gmii_rxd = x"D5" then
+                            state      <= S_DATA;
+                            first_byte <= '1';
+                            crc_init   <= '1';
+                            csum_en_r  <= rx_csum_en;
+                        else
+                            state <= S_DROP;
+                        end if;
                     end if;
 
                 when S_PREAMBLE =>

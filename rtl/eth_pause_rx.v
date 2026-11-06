@@ -26,12 +26,15 @@
 // Byte input:
 //   RX_NIBBLE = 0  rx_d is a byte on every rx_clk cycle with rx_dv and rx_ce
 //                  (GMII: rx_ce tied 1; RGMII 10/100: one byte every two
-//                  cycles). rx_er counts on the cycles with rx_ce, where it
-//                  goes with the byte (rgmii_if holds it in between).
+//                  cycles). rx_er counts on any cycle with rx_dv: with
+//                  rx_ce it goes with the byte, and rgmii_if raises it once
+//                  without rx_ce for an RX_ER on a trailing odd nibble.
 //   RX_NIBBLE = 1  rx_d[3:0] is an MII nibble on every cycle with rx_dv, low
 //                  nibble first; rx_ce is ignored. Nibbles are paired from
 //                  the SFD, so the preamble may have an odd number of them.
 // A frame is the rx_dv envelope; it ends on the first cycle with rx_dv low.
+// Its first byte is a preamble 0x55 or, if the PHY dropped the whole
+// preamble, the SFD 0xD5.
 // rx_er on any of its bytes or, with RX_NIBBLE = 1, any of its nibbles (a
 // trailing odd nibble included) makes the frame invalid.
 //
@@ -94,7 +97,7 @@ module eth_pause_rx #(
             dv_d1    <= rx_dv;
             b_end    <= dv_d1 && !rx_dv;
             b_end_er <= dv_er;
-            dv_er    <= rx_dv && (dv_er || (rx_er && (RX_NIBBLE != 0 || rx_ce)));
+            dv_er    <= rx_dv && (dv_er || rx_er);
             b_stb    <= 1'b0;
             // Nibble pairing (used only when RX_NIBBLE != 0). Until the SFD,
             // each nibble is paired with the one before it, so the preamble
@@ -149,7 +152,8 @@ module eth_pause_rx #(
 
     // CRC over the bytes after the SFD. A frame whose FCS is good leaves the
     // register at the CRC-32 residue, as in eth_mac_rx.
-    wire        rx_sfd    = b_stb && (rx_state == RX_PRE) && (b_d == 8'hD5);
+    wire        rx_sfd    = b_stb && ((rx_state == RX_IDLE) || (rx_state == RX_PRE)) &&
+                            (b_d == 8'hD5);
     wire        rx_body   = b_stb && (rx_state != RX_IDLE) && (rx_state != RX_PRE) &&
                             (rx_state != RX_DRAIN);
     wire [31:0] rx_crc;
@@ -196,15 +200,14 @@ module eth_pause_rx #(
 
             if (b_stb) begin
                 case (rx_state)
-                    RX_IDLE:
-                        rx_state <= (b_d == 8'h55) ? RX_PRE : RX_DRAIN;
-
-                    RX_PRE: begin
+                    RX_IDLE, RX_PRE: begin
                         rx_idx <= 3'd0;
                         rx_len <= 7'd0;
                         if (b_d == 8'hD5)
                             rx_state <= RX_DST;
-                        else if (b_d != 8'h55)
+                        else if (b_d == 8'h55)
+                            rx_state <= RX_PRE;
+                        else
                             rx_state <= RX_DRAIN;
                     end
 

@@ -93,7 +93,9 @@ module gmii_cdc #(
     // RX path: media_clk GMII -> async FIFO -> sys_clk GMII
     // =========================================================================
     // FIFO data: [9] = EOF marker, [8] = error, [7:0] = data.
-    // On an EOF word, [8] set means the frame was truncated by RX FIFO overflow.
+    // On an EOF word, [8] set means the frame was truncated by RX FIFO overflow
+    // or carried rx_er on a cycle without a byte (gmii_rx_ce_in low; rgmii_if
+    // at 10/100 flags a trailing odd nibble's RX_ER that way).
     localparam [RX_FIFO_ADDR_WIDTH:0] RX_FIFO_DEPTH = 1 << RX_FIFO_ADDR_WIDTH;
     reg [9:0]  rx_wr_data;
     reg        rx_wr_en;
@@ -101,6 +103,7 @@ module gmii_cdc #(
     wire [RX_FIFO_ADDR_WIDTH:0] rx_wr_count;
     reg        rx_dv_d1;
     reg        rx_drop;         // media_rx: current frame lost bytes to overflow
+    reg        rx_er_noce;      // media_rx: rx_er seen on a no-byte cycle of the frame
 
     // Overflow policy. Data words are only written while slots are held back
     // for the frame's EOF word, so it always fits: a dropped EOF would leave
@@ -125,7 +128,7 @@ module gmii_cdc #(
     wire rx_wr_accept   = rx_wr_en &&
                           (rx_wr_is_eof ? !rx_wr_full : (rx_data_room && !rx_drop));
     wire rx_data_refuse = rx_wr_en && !rx_wr_is_eof && !rx_wr_accept;
-    wire [9:0] rx_fifo_din = rx_wr_is_eof ? {1'b1, rx_drop | rx_data_refuse, 8'h00}
+    wire [9:0] rx_fifo_din = rx_wr_is_eof ? {1'b1, rx_drop | rx_data_refuse | rx_wr_data[8], 8'h00}
                                           : rx_wr_data;
 
     always @(posedge media_rx_clk or negedge media_rx_rst_n_s2) begin
@@ -134,6 +137,7 @@ module gmii_cdc #(
             rx_wr_en   <= 1'b0;
             rx_dv_d1   <= 1'b0;
             rx_drop    <= 1'b0;
+            rx_er_noce <= 1'b0;
         end else begin
             rx_wr_en <= 1'b0;
             rx_dv_d1 <= gmii_rx_dv_in;
@@ -150,11 +154,14 @@ module gmii_cdc #(
                 if (gmii_rx_ce_in) begin
                     rx_wr_data <= {1'b0, gmii_rx_er_in, gmii_rxd_in};
                     rx_wr_en   <= 1'b1;
+                end else if (gmii_rx_er_in) begin
+                    rx_er_noce <= 1'b1;
                 end
             end else if (rx_dv_d1) begin
                 // Write EOF marker
-                rx_wr_data <= {1'b1, 1'b0, 8'h00};
+                rx_wr_data <= {1'b1, rx_er_noce, 8'h00};
                 rx_wr_en   <= 1'b1;
+                rx_er_noce <= 1'b0;
             end
         end
     end

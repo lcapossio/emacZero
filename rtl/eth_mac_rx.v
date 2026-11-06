@@ -396,13 +396,27 @@ module eth_mac_rx #(
                     dst_mac_captured <= 48'd0;
                     mac_ok           <= 1'b0;
                     frame_started    <= 1'b0;
-                    rx_er_seen       <= 1'b0;
+                    rx_er_seen       <= gmii_rx_dv && gmii_rx_er;
                     rx_overflow_seen <= 1'b0;
                     is_bcast_r       <= 1'b0;
                     is_mcast_r       <= 1'b0;
                     vlan_tag         <= 1'b0;
-                    if (gmii_rx_dv && gmii_rxd == 8'h55)
-                        state <= S_PREAMBLE;
+                    // A frame's first byte is a preamble 0x55 or, when the
+                    // PHY dropped the whole preamble, the SFD itself. Any
+                    // other first byte drops the frame (S_DROP waits for
+                    // gmii_rx_dv low), so a 0xD5 inside it cannot start one.
+                    if (gmii_rx_dv) begin
+                        if (gmii_rxd == 8'h55) begin
+                            state <= S_PREAMBLE;
+                        end else if (gmii_rxd == 8'hD5) begin
+                            state      <= S_DATA;
+                            first_byte <= 1'b1;
+                            crc_init   <= 1'b1;
+                            csum_en_r  <= rx_csum_en;
+                        end else begin
+                            state <= S_DROP;
+                        end
+                    end
                 end
 
                 S_PREAMBLE: begin

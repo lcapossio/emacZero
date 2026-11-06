@@ -27,6 +27,10 @@ pause_rx checks, per suite:
     restarts on every PAUSE frame)
   4 not valid, so not counted and no pause: bad FCS; rx_er on one byte (on
     MII on the low nibble of a byte; not on RGMII); 56-byte frame
+  5 short preambles count and pause: no preamble byte (the SFD first) on
+    GMII; 14, 2 and 1 preamble nibbles (the SFD after an even or an odd
+    number of nibbles) on MII and RGMII 10/100, where rx_er on a trailing
+    odd nibble makes a frame not valid
 
 pause_tx checks, per suite, with minimum-size data frames queued all along
 (up to 4 not yet at the TX pins) and the TX pins monitored (frame start =
@@ -214,10 +218,16 @@ class RxPins:
         return await self._end()
 
     async def send_nibs(self, nibs, er_at=()):
-        """MII only: drive nibbles as given, rx_er on the indices in er_at."""
+        """MII and RGMII 10/100: drive nibbles as given, rx_er on the indices
+        in er_at."""
         for i, n in enumerate(nibs):
+            er = 1 if i in er_at else 0
             await self._slot()
-            self._drive(n, 1, 1 if i in er_at else 0)
+            self._drive(n, 1, er)
+            if er and MODE != "mii":
+                await RisingEdge(self.clk)
+                await Timer(RXC_NS // 4, "ns")
+                self.dut.rgmii_rx_ctl.value = 0
         return await self._end()
 
     async def _end(self):
@@ -350,32 +360,40 @@ async def pause_rx(dut):
     await latency("PAUSE quanta 0", [wire(pause_frame(0))], level=0)
     await axil.write(0x8C, 0)
 
-    # 5. MII: the SFD is found after an odd number of nibbles (an even number
-    #    of 5s before the D), and rx_er on a trailing odd nibble makes a frame
-    #    invalid.
-    if MODE == "mii":
-        def nibs(byts):
-            return [n for b in byts for n in (b & 0xF, b >> 4)]
+    # 5. Short preambles: the PHY may drop part or all of the preamble. On
+    #    MII and RGMII 10/100 the SFD can come after an odd number of nibbles
+    #    (an even number of 5s before the D), and rx_er on a trailing odd
+    #    nibble makes a frame invalid.
+    def nibs(byts):
+        return [n for b in byts for n in (b & 0xF, b >> 4)]
 
-        def odd(fives, q):
-            return [5] * fives + [0xD] + nibs(wire(pause_frame(q))[8:])
+    def short(fives, q):
+        return [5] * fives + [0xD] + nibs(wire(pause_frame(q))[8:])
 
-        for fives in (14, 2):
-            w = cocotb.start_soon(paused_edge(1))
-            t_end = await pins.send_nibs(odd(fives, 0xFFFF))
-            lat = (await with_timeout(w, 4 * BUDGET_NS, "ns")) - t_end
-            c.check(f"{fives} preamble nibbles: tx_paused=1 {lat:.0f} ns after "
-                    f"RX_DV fell (budget {BUDGET_NS:.0f} ns)", lat <= BUDGET_NS)
-            w = cocotb.start_soon(paused_edge(0))
-            await pins.send_nibs(odd(fives, 0))
-            await with_timeout(w, 4 * BUDGET_NS, "ns")
-        c.eq("odd preambles: PAUSE_RX_CNT", await axil.read(0x8C), 4)
+    if MODE == "gmii":
+        cases = [("no preamble", lambda q: pins.send(wire(pause_frame(q))[7:]))]
+    else:
+        cases = [(f"{f} preamble nibbles", lambda q, f=f: pins.send_nibs(short(f, q)))
+                 for f in (14, 2, 1)]
+    for label, go in cases:
+        w = cocotb.start_soon(paused_edge(1))
+        t_end = await go(0xFFFF)
+        lat = (await with_timeout(w, 4 * BUDGET_NS, "ns")) - t_end
+        c.check(f"{label}: tx_paused=1 {lat:.0f} ns after RX_DV fell "
+                f"(budget {BUDGET_NS:.0f} ns)", lat <= BUDGET_NS)
+        w = cocotb.start_soon(paused_edge(0))
+        await go(0)
+        await with_timeout(w, 4 * BUDGET_NS, "ns")
+    n_short = 2 * len(cases)
+    c.eq("short preambles: PAUSE_RX_CNT", await axil.read(0x8C), n_short)
 
+    if MODE != "gmii":
         tail = nibs(wire(pause_frame(0xFFFF))) + [0]
         await pins.send_nibs(tail, er_at=(len(tail) - 1,))
         await Timer(BUDGET_NS, "ns")
         c.eq("rx_er on a trailing nibble: tx_paused", bit(dut.tx_paused), 0)
-        c.eq("rx_er on a trailing nibble: PAUSE_RX_CNT", await axil.read(0x8C), 4)
+        c.eq("rx_er on a trailing nibble: PAUSE_RX_CNT", await axil.read(0x8C),
+             n_short)
 
     c.finish()
 

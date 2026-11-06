@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
-"""Receive nibble pairing and RX_ER at 10/100 (#24, #25).
+"""Receive nibble pairing and RX_ER at 10/100 (#24, #25 and their follow-ups).
 
 The tests drive the PHY receive pins nibble by nibble and check what comes
 out of m_axis: the frame bytes (FCS removed) and terror.
@@ -14,10 +14,10 @@ rx_nibble checks, per suite:
   2 rx_er on the low nibble only, and on the high nibble only, of a byte in
     the middle of the frame: the frame comes out with terror
   3 a clean frame right after an rx_er frame comes out without terror
-  MII only (mii_if pairs nibbles from the SFD):
-  4 the SFD after 14, 2 and 15 preamble 5s (an odd and an even number of
-    nibbles before the SFD): the frame comes out intact, without terror;
-    with rx_er on the 5 right before the D only, with terror
+  4 the SFD after 14, 2, 15 and 1 preamble 5s (an odd and an even number of
+    nibbles before the SFD; 1 is no preamble byte at all, the SFD first):
+    the frame comes out intact, without terror; with rx_er on the 5 right
+    before the D only, with terror
   5 one extra nibble after the FCS: without rx_er the frame comes out
     intact, without terror; with rx_er on it, with terror
 """
@@ -229,23 +229,22 @@ async def rx_nibble(dut):
     await expect("rx_er on a high nibble", f, w, er_at=(mid + 1,), terror=True)
     await expect("clean frame after rx_er", f, w)
 
-    if MODE == "mii":
-        # 4. Odd and even nibble counts before the SFD.
-        for fives in (14, 2, 15):
-            g = frame(61 + fives)
-            await expect(f"{fives} preamble 5s", g, wire_nibs(g, fives))
-            await expect(f"{fives} preamble 5s, rx_er on the last 5", g,
-                         wire_nibs(g, fives), er_at=(fives - 1,), terror=True)
+    # 4. Odd and even nibble counts before the SFD, down to none.
+    for fives in (14, 2, 15, 1):
+        g = frame(61 + fives)
+        await expect(f"{fives} preamble 5s", g, wire_nibs(g, fives))
+        await expect(f"{fives} preamble 5s, rx_er on the last 5", g,
+                     wire_nibs(g, fives), er_at=(fives - 1,), terror=True)
 
-        # 5. A trailing odd nibble, without and with rx_er.
-        t = w + [0]
-        await expect("trailing nibble", f, t)
-        await expect("rx_er on a trailing nibble", f, t, er_at=(len(t) - 1,),
-                     terror=True)
-        await expect("clean frame after rx_er", f, w)
-        g = frame(70)
-        t = wire_nibs(g, 14) + [0]
-        await expect("14 preamble 5s, rx_er on a trailing nibble", g, t,
-                     er_at=(len(t) - 1,), terror=True)
+    # 5. A trailing odd nibble, without and with rx_er.
+    t = w + [0]
+    await expect("trailing nibble", f, t)
+    await expect("rx_er on a trailing nibble", f, t, er_at=(len(t) - 1,),
+                 terror=True)
+    await expect("clean frame after rx_er", f, w)
+    g = frame(70)
+    t = wire_nibs(g, 14) + [0]
+    await expect("14 preamble 5s, rx_er on a trailing nibble", g, t,
+                 er_at=(len(t) - 1,), terror=True)
 
     c.finish()
