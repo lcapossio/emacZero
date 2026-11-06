@@ -301,10 +301,20 @@ architecture rtl of mii_if is
     -- =========================================================================
     -- RX path: MII -> store-and-forward FIFO -> GMII
     -- =========================================================================
-    signal rx_nib_sel : std_logic;
-    signal rx_nib_low : std_logic_vector(3 downto 0);
-    signal rx_er_low  : std_logic;
-    signal rx_dv_d1   : std_logic;
+    -- Nibbles pair from the SFD, not from RX_DV: 802.3 does not guarantee
+    -- that a PHY passes on the whole preamble, so the number of nibbles
+    -- before the SFD can be odd. rx_nib_low is the previous nibble of this
+    -- RX_DV envelope (0 at its start). Before the SFD, a D after a 5 is the
+    -- SFD and completes the byte 0xD5 in either nibble slot; after it,
+    -- nibbles pair in twos. rx_er_low is the rx_er of the held nibble while
+    -- rx_nib_sel is set.
+    signal rx_nib_sel  : std_logic;
+    signal rx_nib_low  : std_logic_vector(3 downto 0);
+    signal rx_er_low   : std_logic;
+    signal rx_sfd_seen : std_logic;
+    signal rx_sfd_now  : std_logic;
+    signal rx_byte_now : std_logic;
+    signal rx_dv_d1    : std_logic;
 
     -- Dedicated RX input capture stage so Vivado has a clean IOB-friendly
     -- first register bank on the PHY-facing MII inputs.
@@ -374,6 +384,7 @@ architecture rtl of mii_if is
     signal rx_load_count       : unsigned(15 downto 0);
     signal rx_replay_len       : unsigned(15 downto 0);
     signal rx_replay_index     : unsigned(15 downto 0);
+    signal rx_replay_eof_er    : std_logic;  -- EOF word error bit, for the last byte
     signal rx_mem_rd_addr      : unsigned(15 downto 0);
     signal rx_mem_rd_data      : std_logic_vector(8 downto 0);
     signal rx_mem_wr_en        : std_logic;
@@ -582,6 +593,10 @@ begin
                                   rx_mii_cap_rxclk(rwi*4+2) & rx_mii_cap_rxclk(rwi*4+3);
     end generate g_rx_pack;
 
+    rx_sfd_now  <= '1' when (rx_sfd_seen = '0') and (mii_rxd_iob = x"D") and
+                            (rx_nib_low = x"5") else '0';
+    rx_byte_now <= rx_nib_sel or rx_sfd_now;
+
     rx_full_write <= rx_wr_en and rx_wr_full;
     rx_wr_accept  <= rx_wr_en and (not rx_wr_full) and (not rx_wr_rst_busy);
 
@@ -608,6 +623,7 @@ begin
             rx_nib_sel <= '0';
             rx_nib_low <= (others => '0');
             rx_er_low  <= '0';
+            rx_sfd_seen <= '0';
             rx_dv_d1   <= '0';
             rx_wr_data <= (others => '0');
             rx_wr_en   <= '0';
@@ -642,12 +658,15 @@ begin
             end if;
 
             if mii_rx_dv_iob = '1' then
-                if rx_nib_sel = '0' then
-                    rx_nib_low <= mii_rxd_iob;
+                rx_nib_low <= mii_rxd_iob;
+                if rx_sfd_now = '1' then
+                    rx_sfd_seen <= '1';
+                end if;
+                if rx_byte_now = '0' then
                     rx_er_low  <= mii_rx_er_iob;
                     rx_nib_sel <= '1';
                 else
-                    rx_wr_data <= '0' & (rx_er_low or mii_rx_er_iob or
+                    rx_wr_data <= '0' & ((rx_nib_sel and rx_er_low) or mii_rx_er_iob or
                                          rx_fifo_full_seen or rx_full_write) &
                                   mii_rxd_iob & rx_nib_low;
                     rx_wr_en   <= '1';
@@ -663,9 +682,15 @@ begin
                     end if;
                 end if;
             else
-                rx_nib_sel <= '0';
+                rx_nib_sel  <= '0';
+                rx_nib_low  <= (others => '0');
+                rx_sfd_seen <= '0';
                 if rx_dv_d1 = '1' then
-                    rx_wr_data <= '1' & rx_fifo_full_seen & x"00";
+                    -- An rx_er on a trailing odd nibble has no byte to ride
+                    -- on; it goes in the EOF word's error bit, which the
+                    -- replay puts on the frame's last byte.
+                    rx_wr_data <= '1' & (rx_fifo_full_seen or (rx_nib_sel and rx_er_low)) &
+                                  x"00";
                     rx_wr_en   <= '1';
                     if MII_DEBUG /= 0 then
                         rx_mii_last_len_rxclk   <= rx_mii_byte_count_rxclk;
@@ -998,6 +1023,7 @@ begin
             rx_load_count       <= (others => '0');
             rx_replay_len       <= (others => '0');
             rx_replay_index     <= (others => '0');
+            rx_replay_eof_er    <= '0';
             rx_mem_rd_addr      <= (others => '0');
             rx_mem_rd_data      <= (others => '0');
             rx_frame_done_pulse <= '0';
@@ -1042,6 +1068,7 @@ begin
                         if rx_rd_data(9) = '1' then
                             rx_frame_done_pulse <= '1';
                             rx_replay_len       <= rx_load_count;
+                            rx_replay_eof_er    <= rx_rd_data(8);
                             if MII_DEBUG /= 0 then
                                 rx_replay_last_len_sys  <= resize(rx_load_count, 32);
                                 rx_replay_eof_count_sys <= rx_replay_eof_count_sys + 1;
@@ -1088,7 +1115,11 @@ begin
 
                 when RX_REPLAY_SEND =>
                     gmii_rxd   <= rx_mem_rd_data(7 downto 0);
-                    gmii_rx_er <= rx_mem_rd_data(8);
+                    if (rx_replay_eof_er = '1') and ((rx_replay_index + 1) >= rx_replay_len) then
+                        gmii_rx_er <= '1';
+                    else
+                        gmii_rx_er <= rx_mem_rd_data(8);
+                    end if;
                     gmii_rx_dv <= '1';
                     if MII_DEBUG /= 0 then
                         case to_integer(rx_replay_byte_count(3 downto 0)) is

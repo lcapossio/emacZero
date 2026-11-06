@@ -319,8 +319,11 @@ module rgmii_if #(
     // rx_dv_lo_pair strobes once per assembled byte; rx_frame_lo is RX_DV
     // delayed one cycle, so it rises before the first strobe and falls after
     // the last one, giving the consumer an unbroken frame envelope.
+    // rx_er_lo_pair is the byte's RX_ER, the OR of both nibbles' RX_CTL
+    // rising xor falling; it is 0 in cycles without the strobe.
     reg [3:0] nibble_lo;
     reg       have_lo;
+    reg       er_lo;
     reg [7:0] rxd_lo_pair;
     reg       rx_dv_lo_pair;
     reg       rx_er_lo_pair;
@@ -330,21 +333,24 @@ module rgmii_if #(
         if (!rx_rst_n_s2) begin
             nibble_lo     <= 4'd0;
             have_lo       <= 1'b0;
+            er_lo         <= 1'b0;
             rxd_lo_pair   <= 8'd0;
             rx_dv_lo_pair <= 1'b0;
             rx_er_lo_pair <= 1'b0;
             rx_frame_lo   <= 1'b0;
         end else if (!rx_is_1g) begin
             rx_dv_lo_pair <= 1'b0;
+            rx_er_lo_pair <= 1'b0;
             rx_frame_lo   <= rx_ctl_rising;
             if (rx_ctl_rising) begin
                 if (!have_lo) begin
                     nibble_lo <= rxd_rising;
+                    er_lo     <= rx_ctl_rising ^ rx_ctl_falling;
                     have_lo   <= 1'b1;
                 end else begin
                     rxd_lo_pair   <= {rxd_rising, nibble_lo};
                     rx_dv_lo_pair <= 1'b1;
-                    rx_er_lo_pair <= rx_ctl_rising ^ rx_ctl_falling;
+                    rx_er_lo_pair <= er_lo | (rx_ctl_rising ^ rx_ctl_falling);
                     have_lo       <= 1'b0;
                 end
             end else begin
