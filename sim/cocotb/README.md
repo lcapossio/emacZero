@@ -28,7 +28,13 @@ There are three kinds of suite:
   behind a long frame, queued data frames are held at the TX pins, the MAC's
   own PAUSE frame still goes out, and both TX framers are counted (also
   with no preamble byte, on MII and RGMII 10/100 after an odd number of
-  preamble nibbles, and not with `rx_er` on a trailing nibble);
+  preamble nibbles, and not with `rx_er` on a trailing nibble); the same
+  suites check automatic PAUSE against a link partner that obeys our PAUSE
+  frames: with `m_axis` stalled the RX FIFO reaches XOFF, repeated XOFF
+  frames keep the partner paused with no frame dropped or overflowed, and
+  releasing `m_axis` sends one XON and delivers every frame; clearing
+  `auto_en` sends XON, invalid settings raise `auto_cfg_err`, and a
+  `tx_send` during a busy generator is held and sent;
   `eth_mac_sys_rx_nibble_mii`, `_rgmii100` and `_rgmii10` drive the 10/100
   receive pins nibble by nibble and check `m_axis`: `rx_er` on either nibble
   of a byte sets `terror`, and does not carry over to the next frame; a

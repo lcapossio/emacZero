@@ -51,7 +51,10 @@ dropped.
 | `0x8C` | PAUSE_RX_CNT | RO/WC | `0x00000000` | Received PAUSE frames |
 | `0x90` | PAUSE_TX_CNT | RO/WC | `0x00000000` | Transmitted PAUSE frames |
 | `0x94` | SAF_DBG | RO | `0x00000000` | `mii_tx_saf` framer/FIFO debug snapshot (MII path; `0` on RGMII) |
-| `0x98` | CAPS | RO | build | Build parameters software needs: optional features, `MAX_FRAME` |
+| `0x98` | CAPS | RO | build | Build parameters software needs: optional features, RX FIFO size, `MAX_FRAME` |
+| `0x9C` | PAUSE_XOFF | RW | RX FIFO / 2 | Automatic PAUSE: XOFF threshold, RX FIFO bytes |
+| `0xA0` | PAUSE_XON | RW | RX FIFO / 4 | Automatic PAUSE: XON threshold, RX FIFO bytes |
+| `0xA4` | PAUSE_REFRESH | RW | `0x00000000` | Automatic PAUSE: XOFF repeat interval, quanta |
 
 `*` Present only when `MCAST_HASH_FILTER == 1`. When disabled, both multicast
 hash registers read 0 and writes are ignored.
@@ -220,9 +223,16 @@ When `MCAST_HASH_FILTER == 1`, an incoming multicast frame is hashed into a
 
 | Bits | Name | Description |
 |-----:|------|-------------|
-| `[0]` | `tx_send` | W1S: emit one PAUSE frame using `PAUSE_QUANTA`. Reads 0. The PAUSE frame has its own framer and FIFO. Once it is complete in that FIFO and the media-side scheduler sees it, it goes ahead of every user frame the scheduler has not yet committed to, also while the TX gate holds them. A user frame already going out finishes first, and so does one the scheduler has just committed to: on MII the two media clocks before its TX_EN, on GMII / RGMII the last two media clocks of its start gap. |
+| `[0]` | `tx_send` | W1S: emit one PAUSE frame using `PAUSE_QUANTA`, latched with the write. Reads 0. A `tx_send` that arrives while a PAUSE frame is being generated waits for it (one is held; a later one replaces it), and `[5]` reads 1 until it starts. With automatic PAUSE on, it is sent after at most one automatic frame. The PAUSE frame has its own framer and FIFO. Once it is complete in that FIFO and the media-side scheduler sees it, it goes ahead of every user frame the scheduler has not yet committed to, also while the TX gate holds them. A user frame already going out finishes first, and so does one the scheduler has just committed to: on MII the two media clocks before its TX_EN, on GMII / RGMII the last two media clocks of its start gap. |
 | `[1]` | `rx_en` | When `1`, received PAUSE frames load the local TX gate counter. |
-| `[31:2]` | reserved | Reads as 0. |
+| `[2]` | `auto_en` | When `1`, the RX FIFO level sends PAUSE frames on its own (see Automatic PAUSE below). `PAUSE_QUANTA`, `PAUSE_XOFF`, `PAUSE_XON` and `PAUSE_REFRESH` are latched when it goes from 0 to 1. |
+| `[3]` | `auto_active` | RO. The RX FIFO level has reached `PAUSE_XOFF` and not yet fallen below `PAUSE_XON`. 0 while `auto_en` is 0. |
+| `[4]` | `auto_cfg_err` | RO. `auto_en` was set with an invalid configuration, so automatic PAUSE is off. Clear `auto_en`, fix the registers, set it again. 0 while `auto_en` is 0. |
+| `[5]` | `tx_pending` | RO. A `tx_send` is waiting for the PAUSE generator. |
+| `[31:6]` | reserved | Reads as 0. |
+
+A write to PAUSE_CTRL sets `rx_en` and `auto_en` as well as issuing
+`tx_send`: read the register and keep those bits when sending a PAUSE frame.
 
 Once the TX gate counter is non-zero and the gate has crossed into the TX
 clock domain, no new user frame starts at the PHY pins. A frame already going
@@ -275,7 +285,7 @@ PAUSE_RX_CNT counts valid PAUSE frames received: destination
 `PAUSE_CTRL[1]` is set; only with `rx_en` does a frame's quanta hold off
 transmission. A frame that fails any check is ignored.
 
-PAUSE_TX_CNT counts PAUSE frames the MAC sends (`PAUSE_CTRL[0]`), one clock
+PAUSE_TX_CNT counts PAUSE frames the MAC sends (`PAUSE_CTRL[0]` and automatic ones), one clock
 after the frame's last byte is handed on: to the PAUSE framer on GMII and
 RGMII, to the control-frame FIFO on MII. TX_FRAME counts the same frame later,
 so until then PAUSE_TX_CNT is ahead of it.
@@ -309,7 +319,9 @@ so a driver need not be told them separately. Writes are ignored.
 | `[0]` | mcast_hash | `MCAST_HASH_FILTER=1`: MCAST_LO / MCAST_HI exist |
 | `[1]` | tx_csum | `TX_CSUM_OFFLOAD=1`: `CTRL[7]` turns the TX checksum inserter on |
 | `[2]` | rx_csum | `RX_CSUM_OFFLOAD=1`: `CTRL[9]` turns the RX checksum checker on |
-| `[15:3]` | reserved | `0` |
+| `[3]` | auto_pause | Automatic PAUSE (`PAUSE_CTRL[2]`, PAUSE_XOFF / XON / REFRESH) exists |
+| `[8:4]` | rx_fifo_aw | `RX_AXIS_ADDR_WIDTH`: the RX FIFO holds `2**rx_fifo_aw` bytes |
+| `[15:9]` | reserved | `0` |
 | `[31:16]` | max_frame | `MAX_FRAME`, in bytes (low 16 bits) |
 
 `CTRL[7]` and `CTRL[9]` read back as written whether or not the logic behind
@@ -318,6 +330,70 @@ never 0, so a nonzero CAPS means the core has the register. Cores built
 before it read 0 here (unmapped offsets read 0): software should then assume
 no checksum offload and find out about the multicast hash filter by writing
 MCAST_LO and reading it back.
+
+## 0x9C / 0xA0 / 0xA4 - PAUSE_XOFF / PAUSE_XON / PAUSE_REFRESH
+
+Automatic PAUSE, turned on by `PAUSE_CTRL[2]`. The level is the RX FIFO's
+occupancy in bytes, the FIFO between the MAC and `m_axis` that fills when the
+`m_axis` sink stalls (`2**RX_AXIS_ADDR_WIDTH` bytes, `CAPS[8:4]`). Frames that
+will end in `terror` count until they are read out.
+
+| Register | Bits | Meaning |
+|----------|-----:|---------|
+| PAUSE_XOFF | `[19:0]` | Send XOFF (a PAUSE frame with the latched `PAUSE_QUANTA`) when the level reaches this. |
+| PAUSE_XON | `[19:0]` | Once XOFF was sent, send XON (a PAUSE frame with quanta 0) when the level falls below this. |
+| PAUSE_REFRESH | `[15:0]` | While the level stays at or above PAUSE_XON, send XOFF again this many quanta after the last one left the PAUSE generator. 0: half of `PAUSE_QUANTA` (at least 1). |
+
+The four values are latched when `auto_en` goes from 0 to 1; writes after
+that take effect at the next enable. They must satisfy `PAUSE_QUANTA != 0`,
+`0 < PAUSE_XON <= PAUSE_XOFF <= 2**RX_AXIS_ADDR_WIDTH - 4` (the FIFO's
+admission watermark) and, if PAUSE_REFRESH is not 0, `PAUSE_REFRESH <
+PAUSE_QUANTA`. Otherwise `auto_cfg_err` is set and nothing is sent. The reset
+values (half and a quarter of the FIFO) are valid but not loss-free (below).
+
+Clearing `auto_en` after an XOFF sends one XON. A request that is no longer
+wanted before its frame starts is dropped: an XOFF whose level has fallen
+below PAUSE_XON, or an XON whose level has reached PAUSE_XOFF again. The
+automatic frames share the PAUSE generator with `tx_send`, are counted in
+PAUSE_TX_CNT and, like every PAUSE frame, are not held by a received PAUSE
+or by `CTRL[0]`. A `tx_send` frame's quanta replaces the partner's timer like
+any other, so software that sends its own PAUSE frames should turn automatic
+PAUSE off first.
+
+The refresh interval counts from the PAUSE generator, not the PHY pins: the
+repeat can still wait at the pins behind one of our frames that has already
+started. For the partner to stay paused, `PAUSE_QUANTA` must cover the
+refresh interval plus that wait: in bytes at the line rate (one quantum is 64
+bytes), `64 * QUANTA > 64 * REFRESH + F_tx + 104`, with `F_tx` our largest
+frame (DA to FCS; `MAX_FRAME + 4` on TX). With the default refresh, a quanta
+of 64 or more covers standard frames and 300 or more covers 9018-byte ones.
+
+### Headroom
+
+After the level reaches XOFF, these can still arrive and must fit in the FIFO
+for no frame to be lost (bytes, at the line rate):
+
+```text
+H = F_rx            frame(s) already received but not yet in the FIFO (the
+                    RX store-and-forward / CDC stage)
+  + F_tx + 20       our frame already going out; the PAUSE waits for it
+  + 84              the PAUSE frame, its preamble and IFG
+  + R               the partner's reaction: 64 at 10/100, 128 at 1G
+                    (512 / 1024 bit times), plus cable and PHY delay
+  + F_rx + 20       the partner's frame already started when it reacts
+
+loss-free when  PAUSE_XOFF + H <= 2**RX_AXIS_ADDR_WIDTH - 4
+```
+
+`F_rx` is the largest received frame, DA to FCS: 1522 for standard frames
+(RX accepts a VLAN tag on 1518), `MAX_FRAME` with `jumbo_en`. With standard
+frames H is about 4.8 KB, so the default 2 KB FIFO (`MAX_FRAME=1518`) cannot
+be loss-free: set `RX_AXIS_ADDR_WIDTH=13` (8 KB) and PAUSE_XOFF at most about
+3300. For 9018-byte frames H is about 27.3 KB: `RX_AXIS_ADDR_WIDTH=15` (32 KB),
+PAUSE_XOFF at most about 5400. This assumes the partner obeys PAUSE and sends
+nothing else the filter accepts while paused (in promiscuous mode its own
+MAC Control frames are delivered too). `RX_DROP` and `RX_ERR_OVERFLOW` show
+when the headroom was not enough.
 
 ## Arty UDP Demo Sideband Ports
 

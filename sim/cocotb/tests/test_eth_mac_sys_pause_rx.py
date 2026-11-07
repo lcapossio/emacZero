@@ -44,6 +44,26 @@ first TX_EN sample):
   4 GMII / RGMII 100M: a data frame and a PAUSE frame leave their framers
     together, at 41 offsets; TX_FRAME and TX_BYTE count both, and the sweep
     saw the byte events and the frame-done events in the same clock
+
+pause_auto checks, per suite, automatic PAUSE (PAUSE_CTRL[2]; quanta 8,
+XOFF 600, XON 200, refresh 0 = 4 quanta) against a link partner that sends
+200-byte frames and obeys the MAC Control frames at our TX pins:
+  1 PAUSE_XOFF / PAUSE_XON reset to half / a quarter of the 2 KB RX FIFO;
+    CAPS[8:3] reports it and the feature
+  2 m_axis stalled: XOFF once the FIFO fills, auto_active set, XOFF repeated
+    4 quanta apart (no later than that plus two PAUSE frames), the partner
+    held to the frame it had started, RX_DROP and RX_ERR_OVERFLOW 0; a
+    tx_send (quanta 0x33) in the middle goes out once and the XOFF frames
+    keep the quanta latched at enable
+  3 m_axis released: XOFF repeats until the level is below XON, then one
+    XON and nothing more; every partner frame delivered, none with terror;
+    PAUSE_TX_CNT = the MAC Control frames at the pins
+  4 auto_en cleared while XOFF is in force: one XON
+  5 quanta 0, XON 0, XON > XOFF, XOFF > the FIFO watermark (2044) and
+    refresh >= quanta raise auto_cfg_err, clear with auto_en and send
+    nothing; XOFF = 2044 is valid
+  6 two tx_send writes during one generated frame: tx_pending reads 1, and
+    both frames go out in order with their own quanta
 """
 import os
 import zlib
