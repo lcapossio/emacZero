@@ -165,6 +165,8 @@ architecture rtl of eth_pause is
     signal rtick       : std_logic;
     signal refresh_cnt : unsigned(15 downto 0);
     signal refresh_due : std_logic;
+    signal rtick_last  : unsigned(15 downto 0);
+    signal auto_latch  : std_logic;
     signal auto_done   : std_logic;
     signal xoff_need   : std_logic;
     signal xon_need    : std_logic;
@@ -352,8 +354,12 @@ begin
 
     -- Refresh timer: quanta since the last automatic XOFF left the generator,
     -- on a prescaler of its own (the receive-side one restarts on every
-    -- received PAUSE, which would stretch the interval).
+    -- received PAUSE, which would stretch the interval). Its period is one
+    -- clock shorter than tick_div, which rounds the quantum up, so the
+    -- interval never exceeds REFRESH true quanta however large it is.
     refresh_due <= '1' when refresh_cnt >= a_refresh else '0';
+    rtick_last  <= tick_div - 2 when tick_div > 1 else (others => '0');
+    auto_latch  <= cfg_auto_en and (not auto_en_d) and auto_cfg_ok;
     auto_done   <= '1' when tx_state = TX_DONE and tx_auto = '1' else '0';
 
     process (clk, rst_n)
@@ -364,12 +370,22 @@ begin
             refresh_cnt    <= (others => '0');
             partner_paused <= '0';
         elsif rising_edge(clk) then
-            if auto_done = '1' and unsigned(tx_quanta_lat) /= 0 then
-                rtick_cnt   <= (others => '0');
-                rtick       <= '0';
-                refresh_cnt <= (others => '0');
+            if auto_latch = '1' then
+                -- A new configuration: an XOFF already sent carries the old
+                -- quanta, which the new interval may not cover. Refresh at
+                -- once (it only goes out while auto_active).
+                refresh_cnt <= x"FFFF";
+            elsif auto_done = '1' and unsigned(tx_quanta_lat) /= 0 then
+                rtick_cnt <= (others => '0');
+                rtick     <= '0';
+                -- Likewise an XOFF generated before the latest enable.
+                if tx_quanta_lat = a_quanta then
+                    refresh_cnt <= (others => '0');
+                else
+                    refresh_cnt <= x"FFFF";
+                end if;
             else
-                if rtick_cnt >= tick_div - 1 then
+                if rtick_cnt >= rtick_last then
                     rtick_cnt <= (others => '0');
                     rtick     <= '1';
                 else

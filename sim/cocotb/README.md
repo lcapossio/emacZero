@@ -35,6 +35,11 @@ There are three kinds of suite:
   releasing `m_axis` sends one XON and delivers every frame; clearing
   `auto_en` sends XON, invalid settings raise `auto_cfg_err`, and a
   `tx_send` during a busy generator is held and sent;
+  `eth_mac_sys_pause_headroom_gmii` and `_mii` check the PAUSE_XOFF limit
+  that `docs/registers.md` recommends for an 8 KB RX FIFO, with
+  maximum-size frames from the partner and queued on `s_axis` (no overflow
+  or drop, every frame delivered; `HEADROOM_XOFF` and `HEADROOM_TX_DELAY`
+  vary the threshold and the phase of our frames);
   `eth_mac_sys_rx_nibble_mii`, `_rgmii100` and `_rgmii10` drive the 10/100
   receive pins nibble by nibble and check `m_axis`: `rx_er` on either nibble
   of a byte sets `terror`, and does not carry over to the next frame; a

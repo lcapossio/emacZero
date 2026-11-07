@@ -253,11 +253,15 @@ module eth_pause #(
 
     // Refresh timer: quanta since the last automatic XOFF left the generator,
     // on a prescaler of its own (the receive-side one restarts on every
-    // received PAUSE, which would stretch the interval).
+    // received PAUSE, which would stretch the interval). Its period is one
+    // clock shorter than tick_div, which rounds the quantum up, so the
+    // interval never exceeds REFRESH true quanta however large it is.
     reg  [15:0] rtick_cnt;
     reg         rtick;
     reg  [15:0] refresh_cnt;
     wire        refresh_due = (refresh_cnt >= a_refresh);
+    wire [15:0] rtick_last  = (tick_div > 16'd1) ? tick_div - 16'd2 : 16'd0;
+    wire        auto_latch  = cfg_auto_en && !auto_en_d && auto_cfg_ok;
 
     // Generator state the requests below depend on (driven further down).
     localparam [1:0]
@@ -277,12 +281,18 @@ module eth_pause #(
             refresh_cnt    <= 16'd0;
             partner_paused <= 1'b0;
         end else begin
-            if (auto_done && tx_quanta_lat != 16'd0) begin
+            if (auto_latch) begin
+                // A new configuration: an XOFF already sent carries the old
+                // quanta, which the new interval may not cover. Refresh at
+                // once (it only goes out while auto_active).
+                refresh_cnt <= 16'hFFFF;
+            end else if (auto_done && tx_quanta_lat != 16'd0) begin
                 rtick_cnt   <= 16'd0;
                 rtick       <= 1'b0;
-                refresh_cnt <= 16'd0;
+                // Likewise an XOFF generated before the latest enable.
+                refresh_cnt <= (tx_quanta_lat == a_quanta) ? 16'd0 : 16'hFFFF;
             end else begin
-                if (rtick_cnt >= tick_div - 16'd1) begin
+                if (rtick_cnt >= rtick_last) begin
                     rtick_cnt <= 16'd0;
                     rtick     <= 1'b1;
                 end else begin
