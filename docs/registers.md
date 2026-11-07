@@ -345,9 +345,9 @@ will end in `terror` count until they are read out.
 | PAUSE_REFRESH | `[15:0]` | While the level stays at or above PAUSE_XON, send XOFF again this many quanta after the last one left the PAUSE generator. 0: half of `PAUSE_QUANTA` (at least 1). |
 
 The four values are latched when `auto_en` goes from 0 to 1; writes after
-that take effect at the next enable. If the level is still at or above
-PAUSE_XON then, an XOFF with the new quanta goes out at once, since one
-already sent carries the old quanta. They must satisfy `PAUSE_QUANTA != 0`,
+that take effect at the next enable. Once the level reaches PAUSE_XOFF after
+an enable, an XOFF with the new quanta goes out at once, even if one sent
+before carried the old quanta and its refresh is not yet due. They must satisfy `PAUSE_QUANTA != 0`,
 `0 < PAUSE_XON <= PAUSE_XOFF <= 2**RX_AXIS_ADDR_WIDTH - 4` (the FIFO's
 admission watermark) and, if PAUSE_REFRESH is not 0, `PAUSE_REFRESH <
 PAUSE_QUANTA`. Otherwise `auto_cfg_err` is set and nothing is sent. The reset
@@ -371,7 +371,7 @@ frame (DA to FCS; `MAX_FRAME + 4` on TX). With the default refresh, a quanta
 of 64 or more covers standard frames and 300 or more covers 9018-byte ones.
 The refresh counter's quantum is one clock shorter than the receive-side
 one, which `CLK_FREQ_HZ` rounds up, so it never runs long at any clock
-frequency: the interval is at most PAUSE_REFRESH true quanta.
+frequency: the interval is at most PAUSE_REFRESH true quanta plus one clock.
 
 ### Headroom
 
@@ -382,8 +382,8 @@ for no frame to be lost (an upper bound, in bytes at the line rate):
 H = 2 * (F_rx + 20) the receive CDC stage: it is store-and-forward, so the
                     rest of the frame being written and the next one, already
                     arriving, are ahead of the FIFO
-  + L               PAUSE generation and TX CDC latency: about 2 us, so 256
-                    at 1G, 32 at 100M
+  + L               PAUSE generation and TX CDC latency: about 250 system
+                    clocks (256 at 1G with 125 MHz, 32 at 100M with 100 MHz)
   + F_tx + 20       our frame already going out; the PAUSE waits for it
   + 84              the PAUSE frame, its preamble and IFG
   + R               the partner's reaction: 64 at 10/100, 128 at 1G
@@ -401,8 +401,11 @@ be loss-free: set `RX_AXIS_ADDR_WIDTH=13` (8 KB) and PAUSE_XOFF at most about
 For 9018-byte frames H is about 36.6 KB: `RX_AXIS_ADDR_WIDTH=16` (64 KB),
 PAUSE_XOFF at most about 28000. This assumes the partner obeys PAUSE and
 sends nothing else the filter accepts while paused (in promiscuous mode its
-own MAC Control frames are delivered too). `RX_DROP` and `RX_ERR_OVERFLOW`
-show when the headroom was not enough.
+own MAC Control frames are delivered too), and a system clock fast enough
+for the receive path to keep up with back-to-back frames: 125 MHz at 1G,
+50 MHz or more at 100M (the MII path takes three clocks a byte before the
+FIFO; at 25 MHz it refuses bytes upstream however low PAUSE_XOFF is).
+`RX_DROP` and `RX_ERR_OVERFLOW` show when the headroom was not enough.
 
 ## Arty UDP Demo Sideband Ports
 

@@ -240,7 +240,8 @@ module eth_mac #(
         .stat_err_csum     (),
         .stat_is_bcast     (),
         .stat_is_mcast     (),
-        .stat_drop         ()
+        .stat_drop         (),
+        .rx_fifo_level     ()
     );
 
     // =========================================================================
