@@ -144,12 +144,6 @@ This project does not yet maintain long-lived release branches.
 
 ### Known issues
 
-- `rgmii_if` at 10 and 100 Mb/s still pairs receive nibbles from the first
-  cycle of RX_DV, as `mii_if` did before #24: a frame with an odd number of
-  nibbles before the SFD is lost.
-- `eth_mac_rx` and `eth_pause_rx` need at least one 0x55 byte before the SFD
-  byte. 802.3 lets a PHY drop the whole preamble, so a frame received with
-  only the SFD (MII nibbles `5, D`) is lost.
 - `rgmii_if`: its TXC-domain speed and TX-reset synchronizers (`spd_s1`,
   `spd_s2`, `spd_s3`, `spd_run`, `tx_rst_n_s1`, `tx_rst_n_s2`) take `rst_n`
   as an asynchronous reset with no release synchronizer. In a 1G build with
@@ -296,7 +290,25 @@ This project does not yet maintain long-lived release branches.
   was dropped and the frame was delivered without `m_axis_terror`. The byte's
   `rx_er` is now the OR of both nibbles, and the 10/100 `gmii_rx_er` output is
   0 in cycles without `gmii_rx_ce` instead of holding the last byte's value.
-  An `rx_er` on a trailing odd nibble is still dropped there. (#25)
+  (#25)
+- `rgmii_if` at 10 and 100 Mb/s paired receive nibbles from the first cycle
+  of RX_DV, as `mii_if` did before #24, so a frame with an odd number of
+  nibbles before the SFD was lost. It now pairs from the SFD like `mii_if`.
+  An `rx_er` on a trailing odd nibble was dropped (no byte carries it); it
+  now keeps the frame envelope one more cycle with `gmii_rx_er` and no
+  `gmii_rx_ce`, and `gmii_cdc` puts it in the frame's end-of-frame word, so
+  the frame's last byte gets `rx_er`. `eth_pause_rx` also counts `rx_er` on
+  cycles without `rx_ce`.
+- `eth_mac_rx` and `eth_pause_rx` needed at least one 0x55 byte before the
+  SFD. 802.3 lets a PHY drop the whole preamble, so a frame received with
+  only the SFD was lost. Both now also take the SFD as a frame's first byte,
+  in `eth_mac_rx` also in the cycle that closes the frame before (the RX
+  replays send queued frames with a single `gmii_rx_dv` low cycle between
+  them, so that cycle can carry the next frame's first byte).
+  `eth_mac_rx` now drops a frame whose first byte is neither 0x55 nor 0xD5
+  instead of scanning it for a preamble, so a 0x55 0xD5 inside such a frame
+  cannot start a false one, and an `rx_er` on a frame's first byte now marks
+  the frame (it was latched from the second preamble byte on).
 
 ## v0.2.0 - 2026-10-16
 

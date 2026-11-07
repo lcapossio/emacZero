@@ -27,12 +27,15 @@
 -- Byte input:
 --   RX_NIBBLE = 0  rx_d is a byte on every rx_clk cycle with rx_dv and rx_ce
 --                  (GMII: rx_ce tied 1; RGMII 10/100: one byte every two
---                  cycles). rx_er counts on the cycles with rx_ce, where it
---                  goes with the byte (rgmii_if holds it in between).
+--                  cycles). rx_er counts on any cycle with rx_dv: with
+--                  rx_ce it goes with the byte, and rgmii_if raises it once
+--                  without rx_ce for an RX_ER on a trailing odd nibble.
 --   RX_NIBBLE = 1  rx_d(3 downto 0) is an MII nibble on every cycle with rx_dv,
 --                  low nibble first; rx_ce is ignored. Nibbles are paired from
 --                  the SFD, so the preamble may have an odd number of them.
 -- A frame is the rx_dv envelope; it ends on the first cycle with rx_dv low.
+-- Its first byte is a preamble 0x55 or, if the PHY dropped the whole
+-- preamble, the SFD 0xD5.
 -- rx_er on any of its bytes or, with RX_NIBBLE = 1, any of its nibbles (a
 -- trailing odd nibble included) makes the frame invalid.
 --
@@ -167,11 +170,7 @@ begin
             dv_d1    <= rx_dv;
             b_end    <= dv_d1 and not rx_dv;
             b_end_er <= dv_er;
-            if RX_NIBBLE /= 0 then
-                dv_er <= rx_dv and (dv_er or rx_er);
-            else
-                dv_er <= rx_dv and (dv_er or (rx_er and rx_ce));
-            end if;
+            dv_er    <= rx_dv and (dv_er or rx_er);
             b_stb    <= '0';
             -- Nibble pairing (used only when RX_NIBBLE /= 0). Until the SFD,
             -- each nibble is paired with the one before it, so the preamble
@@ -207,7 +206,8 @@ begin
     -- so a PAUSE frame is acted on only once its FCS has checked out, as 802.3
     -- requires of a MAC Control frame.
     -- =========================================================================
-    rx_sfd  <= '1' when b_stb = '1' and rx_state = RX_PRE and b_d = x"D5" else '0';
+    rx_sfd  <= '1' when b_stb = '1' and (rx_state = RX_IDLE or rx_state = RX_PRE) and
+                        b_d = x"D5" else '0';
     rx_body <= '1' when b_stb = '1' and rx_state /= RX_IDLE and rx_state /= RX_PRE and
                         rx_state /= RX_DRAIN else '0';
     rx_fcs_ok <= '1' when rx_crc = x"DEBB20E3" else '0';
@@ -238,15 +238,14 @@ begin
 
             if b_stb = '1' then
                 case rx_state is
-                    when RX_IDLE =>
-                        if b_d = x"55" then rx_state <= RX_PRE; else rx_state <= RX_DRAIN; end if;
-
-                    when RX_PRE =>
+                    when RX_IDLE | RX_PRE =>
                         rx_idx <= (others => '0');
                         rx_len <= (others => '0');
                         if b_d = x"D5" then
                             rx_state <= RX_DST;
-                        elsif b_d /= x"55" then
+                        elsif b_d = x"55" then
+                            rx_state <= RX_PRE;
+                        else
                             rx_state <= RX_DRAIN;
                         end if;
 

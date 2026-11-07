@@ -28,19 +28,22 @@ class GmiiRxDriver:
             await self._beat(0, 0, 0)
 
     async def send_frame(self, payload: bytes, corrupt_fcs=False, align_err=False,
-                         er_wire_idx=None):
+                         er_wire_idx=None, preamble_len=PREAMBLE_LEN, lead=b""):
         """payload = dst+src+type+data (no preamble/FCS). Returns nothing; the
         model predicts the expected result from the same descriptor.
 
         er_wire_idx: assert rx_er on an absolute wire-byte index (0..6 = preamble,
         7 = SFD, 8+ = payload), overriding align_err. Used to test rx_er on
-        preamble/SFD bytes, not just mid-payload."""
+        preamble/SFD bytes, not just mid-payload. preamble_len (0..7) and
+        lead (bytes sent before the preamble) model a PHY that drops part of
+        the preamble or a frame that starts on a stray byte; er_wire_idx then
+        counts from the first byte actually sent."""
         f = bytearray(fcs_bytes(payload))
         if corrupt_fcs:
             f[0] ^= 0xFF                      # guarantees a CRC residue mismatch
-        wire = (bytes([PREAMBLE_BYTE]) * PREAMBLE_LEN + bytes([SFD])
+        wire = (bytes(lead) + bytes([PREAMBLE_BYTE]) * preamble_len + bytes([SFD])
                 + payload + bytes(f))
-        data_start = PREAMBLE_LEN + 1
+        data_start = len(lead) + preamble_len + 1
         if er_wire_idx is not None:
             er_idx = er_wire_idx
         elif align_err:

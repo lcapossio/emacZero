@@ -384,7 +384,35 @@ module eth_mac_rx #(
                 frame_started <= 1'b1;
 
             case (state)
-                S_IDLE: begin
+                // S_CRC_CHECK is the cycle after gmii_rx_dv fell. When the
+                // replay sends frames back to back it is also the next
+                // frame's first byte, so it starts the next frame exactly as
+                // S_IDLE does (a frame without preamble starts on its SFD).
+                // The registers it resets are read this cycle at their old
+                // values, by the stat outputs and the closing push.
+                S_IDLE, S_CRC_CHECK: begin
+                    if (state == S_CRC_CHECK) begin
+                        // End-of-frame classification pulse for stats.
+                        // Only emit when MAC filter passed (i.e. frame was actually
+                        // delivered to the AXIS sink), so counts match deliveries.
+                        if (mac_ok && frame_started) begin
+                            stat_done         <= 1'b1;
+                            stat_len          <= byte_cnt;
+                            stat_err_fcs      <= err_fcs_now;
+                            stat_err_align    <= err_align_now;
+                            stat_err_overflow <= err_overflow_now;
+                            stat_err_oversize <= err_oversize_now;
+                            stat_err_csum     <= err_csum_now;
+                            stat_is_bcast     <= is_bcast_r;
+                            stat_is_mcast     <= is_mcast_r;
+                        end else if (mac_ok) begin
+                            // Passed the filter but its SOF found no FIFO room:
+                            // dropped whole. Counted whatever its FCS or length,
+                            // since the frame was never delivered to be judged.
+                            stat_drop <= 1'b1;
+                        end
+                    end
+                    state            <= S_IDLE;
                     byte_cnt         <= 14'd0;
                     first_byte       <= 1'b0;
                     delay_pipe0      <= 8'd0;
@@ -396,13 +424,27 @@ module eth_mac_rx #(
                     dst_mac_captured <= 48'd0;
                     mac_ok           <= 1'b0;
                     frame_started    <= 1'b0;
-                    rx_er_seen       <= 1'b0;
+                    rx_er_seen       <= gmii_rx_dv && gmii_rx_er;
                     rx_overflow_seen <= 1'b0;
                     is_bcast_r       <= 1'b0;
                     is_mcast_r       <= 1'b0;
                     vlan_tag         <= 1'b0;
-                    if (gmii_rx_dv && gmii_rxd == 8'h55)
-                        state <= S_PREAMBLE;
+                    // A frame's first byte is a preamble 0x55 or, when the
+                    // PHY dropped the whole preamble, the SFD itself. Any
+                    // other first byte drops the frame (S_DROP waits for
+                    // gmii_rx_dv low), so a 0xD5 inside it cannot start one.
+                    if (gmii_rx_dv) begin
+                        if (gmii_rxd == 8'h55) begin
+                            state <= S_PREAMBLE;
+                        end else if (gmii_rxd == 8'hD5) begin
+                            state      <= S_DATA;
+                            first_byte <= 1'b1;
+                            crc_init   <= 1'b1;
+                            csum_en_r  <= rx_csum_en;
+                        end else begin
+                            state <= S_DROP;
+                        end
+                    end
                 end
 
                 S_PREAMBLE: begin
@@ -468,29 +510,6 @@ module eth_mac_rx #(
                             byte_cnt <= byte_cnt + 14'd1;
                         if (first_byte)
                             first_byte <= 1'b0;
-                    end
-                end
-
-                S_CRC_CHECK: begin
-                    state <= S_IDLE;
-                    // End-of-frame classification pulse for stats.
-                    // Only emit when MAC filter passed (i.e. frame was actually
-                    // delivered to the AXIS sink), so counts match deliveries.
-                    if (mac_ok && frame_started) begin
-                        stat_done         <= 1'b1;
-                        stat_len          <= byte_cnt;
-                        stat_err_fcs      <= err_fcs_now;
-                        stat_err_align    <= err_align_now;
-                        stat_err_overflow <= err_overflow_now;
-                        stat_err_oversize <= err_oversize_now;
-                        stat_err_csum     <= err_csum_now;
-                        stat_is_bcast     <= is_bcast_r;
-                        stat_is_mcast     <= is_mcast_r;
-                    end else if (mac_ok) begin
-                        // Passed the filter but its SOF found no FIFO room:
-                        // dropped whole. Counted whatever its FCS or length,
-                        // since the frame was never delivered to be judged.
-                        stat_drop <= 1'b1;
                     end
                 end
 

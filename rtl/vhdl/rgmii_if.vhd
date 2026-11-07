@@ -145,6 +145,10 @@ architecture rtl of rgmii_if is
     signal nibble_lo     : std_logic_vector(3 downto 0);
     signal have_lo       : std_logic;
     signal er_lo         : std_logic;
+    signal sfd_seen      : std_logic;
+    signal er_now        : std_logic;
+    signal sfd_now       : std_logic;
+    signal byte_now      : std_logic;
     signal rxd_lo_pair   : std_logic_vector(7 downto 0);
     signal rx_dv_lo_pair : std_logic;
     signal rx_er_lo_pair : std_logic;
@@ -441,13 +445,28 @@ begin
     -- delayed one cycle, so it rises before the first strobe and falls after
     -- the last one, giving the consumer an unbroken frame envelope.
     -- rx_er_lo_pair is the byte's RX_ER, the OR of both nibbles' RX_CTL
-    -- rising xor falling; it is 0 in cycles without the strobe.
+    -- rising xor falling; it is 0 in cycles without the strobe, except below.
+    --
+    -- Nibbles pair from the SFD, not from RX_DV: a PHY may drop part of the
+    -- preamble, so the SFD can come after an odd number of nibbles. Until the
+    -- SFD, a byte is formed every second nibble (the preamble reads as 0x55);
+    -- a D right after a 5 always completes the SFD byte 0xD5, reusing that 5
+    -- when it already went out as the high nibble of a 0x55. nibble_lo and
+    -- er_lo hold the previous nibble of the envelope and its RX_ER (0 at the
+    -- start). A nibble left over when RX_DV falls carries no byte; if it had
+    -- RX_ER, rx_frame_lo stays high one more cycle with rx_er_lo_pair set and
+    -- no strobe, and gmii_cdc marks the frame with it.
+    er_now   <= rx_ctl_rising xor rx_ctl_falling;
+    sfd_now  <= '1' when sfd_seen = '0' and rxd_rising = x"D" and nibble_lo = x"5" else '0';
+    byte_now <= have_lo or sfd_now;
+
     process (rgmii_rxc, rx_rst_n_s2)
     begin
         if rx_rst_n_s2 = '0' then
             nibble_lo     <= (others => '0');
             have_lo       <= '0';
             er_lo         <= '0';
+            sfd_seen      <= '0';
             rxd_lo_pair   <= (others => '0');
             rx_dv_lo_pair <= '0';
             rx_er_lo_pair <= '0';
@@ -458,18 +477,28 @@ begin
                 rx_er_lo_pair <= '0';
                 rx_frame_lo   <= rx_ctl_rising;
                 if rx_ctl_rising = '1' then
-                    if have_lo = '0' then
-                        nibble_lo <= rxd_rising;
-                        er_lo     <= rx_ctl_rising xor rx_ctl_falling;
-                        have_lo   <= '1';
+                    nibble_lo <= rxd_rising;
+                    er_lo     <= er_now;
+                    if sfd_now = '1' then
+                        sfd_seen <= '1';
+                    end if;
+                    if byte_now = '0' then
+                        have_lo <= '1';
                     else
                         rxd_lo_pair   <= rxd_rising & nibble_lo;
                         rx_dv_lo_pair <= '1';
-                        rx_er_lo_pair <= er_lo or (rx_ctl_rising xor rx_ctl_falling);
+                        rx_er_lo_pair <= er_lo or er_now;
                         have_lo       <= '0';
                     end if;
                 else
-                    have_lo <= '0';
+                    if (have_lo and er_lo) = '1' then
+                        rx_frame_lo   <= '1';
+                        rx_er_lo_pair <= '1';
+                    end if;
+                    nibble_lo <= (others => '0');
+                    er_lo     <= '0';
+                    have_lo   <= '0';
+                    sfd_seen  <= '0';
                 end if;
             end if;
         end if;

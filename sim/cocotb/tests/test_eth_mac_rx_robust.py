@@ -6,6 +6,10 @@
   * runt: an undersized frame (< 64 wire bytes) is delivered with terror, not as
     a clean frame with a garbage FCS.
   * preamble/SFD rx_er: an error on a non-data byte is still reported.
+  * short preamble: a frame with 0 or 1 preamble bytes (the SFD first or
+    second) is received; rx_er on the first byte is reported; a frame whose
+    first byte is neither 0x55 nor 0xD5 is dropped whole, even with a
+    0x55 0xD5 inside it.
   * byte_cnt saturation: a frame longer than the 14-bit counter must not wrap and
     inject a phantom SOF that corrupts the following frame.
 """
@@ -180,6 +184,54 @@ async def preamble_rx_er(dut):
     assert stats.records and stats.records[0]["align"], \
         "SFD-byte rx_er must set stat_err_align"
     dut._log.info("OK: preamble/SFD rx_er reported")
+
+
+@cocotb.test(timeout_time=20, timeout_unit="ms")
+async def short_preamble(dut):
+    """The PHY may drop the whole preamble: the SFD can be the first byte."""
+    await _setup(dut)
+    sink = GatedSink(dut)
+    sink.ready = True
+    stats = StatsMonitor(dut)
+    cocotb.start_soon(sink.run())
+    cocotb.start_soon(stats.run())
+    drv = GmiiRxDriver(dut)
+    await drv.idle(4)
+
+    f0 = _payload(OUR_MAC, 64, tag=0x11)
+    f1 = _payload(OUR_MAC, 64, tag=0x22)
+    await drv.send_frame(f0, preamble_len=0)
+    await drv.idle(16)
+    await drv.send_frame(f1, preamble_len=1)
+    await drv.idle(16)
+    # rx_er on the first byte, a lone preamble byte and a lone SFD.
+    await drv.send_frame(f0, preamble_len=1, er_wire_idx=0)
+    await drv.idle(16)
+    await drv.send_frame(f1, preamble_len=0, er_wire_idx=0)
+    await drv.idle(16)
+    # Stray first byte, then a whole valid frame inside the envelope: dropped.
+    await drv.send_frame(f0, lead=bytes([0]))
+    await drv.idle(16)
+    await drv.send_frame(f1)
+    await drv.idle(16)
+    # Back to back, one gmii_rx_dv low cycle between frames, as the replay in
+    # gmii_cdc and mii_if sends them: the first byte of the next frame comes
+    # in the cycle that closes the one before.
+    await drv.send_frame(f0, preamble_len=0)
+    await drv.send_frame(f1, preamble_len=0)
+    await drv.send_frame(f0, preamble_len=1)
+    await drv.send_frame(f1, preamble_len=0, er_wire_idx=0)
+    await drv.idle(64)
+    for _ in range(200):
+        await RisingEdge(dut.clk)
+
+    got = [(fr["payload"], fr["terror"]) for fr in sink.frames]
+    want = [(f0, False), (f1, False), (f0, True), (f1, True), (f1, False),
+            (f0, False), (f1, False), (f0, False), (f1, True)]
+    assert got == want, f"got {[(len(p), e) for p, e in got]}"
+    assert [r["align"] for r in stats.records] == [e for _, e in want], \
+        "rx_er on the first byte must set stat_err_align"
+    dut._log.info("OK: 0/1-byte preambles received; stray-start frame dropped")
 
 
 @cocotb.test(timeout_time=60, timeout_unit="ms")

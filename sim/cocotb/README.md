@@ -26,15 +26,15 @@ There are three kinds of suite:
   check 802.3 Annex 31B timing on each receive path, from the PHY pins: a
   received PAUSE frame gates TX within a quarter of the bound, also right
   behind a long frame, queued data frames are held at the TX pins, the MAC's
-  own PAUSE frame still goes out, and both TX framers are counted (on MII
-  also after an odd number of preamble nibbles, and not with `rx_er` on a
-  trailing nibble);
+  own PAUSE frame still goes out, and both TX framers are counted (also
+  with no preamble byte, on MII and RGMII 10/100 after an odd number of
+  preamble nibbles, and not with `rx_er` on a trailing nibble);
   `eth_mac_sys_rx_nibble_mii`, `_rgmii100` and `_rgmii10` drive the 10/100
   receive pins nibble by nibble and check `m_axis`: `rx_er` on either nibble
-  of a byte sets `terror`, and does not carry over to the next frame; on MII
-  a frame comes out intact after an odd or an even number of preamble
-  nibbles and with a trailing odd nibble, and with `terror` when that nibble
-  has `rx_er`;
+  of a byte sets `terror`, and does not carry over to the next frame; a
+  frame comes out intact after an odd or an even number of preamble
+  nibbles, with no preamble byte, and with a trailing odd nibble, and with
+  `terror` when that nibble has `rx_er`;
   `gmii_cdc_hold` and `gmii_cdc_hold_big` (`MAX_FRAME` 12000) fill the TX
   FIFO to its start limit while held, send the largest frame and check that
   it fits, and check that a control frame or `tx_hold` displaces a data frame
@@ -205,7 +205,9 @@ the MAC filter fails exactly the tests that send frames which should be dropped.
 A separate `eth_mac_rx_robust` suite covers overflow/edge behavior the main suite
 avoids: a jumbo frame received under held backpressure overruns the RX FIFO yet
 is still terminated with `terror` and does not corrupt the next frame; a runt is
-delivered with `terror`; `rx_er` on the SFD byte is reported; and a frame past
+delivered with `terror`; `rx_er` on the SFD byte is reported; a frame with 0 or
+1 preamble bytes is received, with `terror` for `rx_er` on its first byte, and
+one whose first byte is neither 0x55 nor 0xD5 is dropped whole; and a frame past
 the 14-bit `byte_cnt` wrap point does not inject a phantom SOF. Every fix is
 mutation-checked (disabling the reserved headroom drops the closing TLAST so the
 overflow frame merges; removing the undersize/`rx_er`/saturation logic fails the

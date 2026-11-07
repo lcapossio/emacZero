@@ -104,7 +104,9 @@ architecture rtl of gmii_cdc is
     -- RX path: media_clk GMII -> async FIFO -> sys_clk GMII
     -- =========================================================================
     -- FIFO data: [9] = EOF marker, [8] = error, [7:0] = data.
-    -- On an EOF word, [8] set means the frame was truncated by RX FIFO overflow.
+    -- On an EOF word, [8] set means the frame was truncated by RX FIFO overflow
+    -- or carried rx_er on a cycle without a byte (gmii_rx_ce_in low; rgmii_if
+    -- at 10/100 flags a trailing odd nibble's RX_ER that way).
     constant RX_FIFO_DEPTH : unsigned(RX_FIFO_AW downto 0) :=
         shift_left(to_unsigned(1, RX_FIFO_AW + 1), RX_FIFO_AW);
     signal rx_wr_data  : std_logic_vector(9 downto 0);
@@ -113,6 +115,7 @@ architecture rtl of gmii_cdc is
     signal rx_wr_count : std_logic_vector(RX_FIFO_AW downto 0);
     signal rx_dv_d1    : std_logic;
     signal rx_drop     : std_logic;   -- media_rx: current frame lost bytes to overflow
+    signal rx_er_noce  : std_logic;   -- media_rx: rx_er seen on a no-byte cycle of the frame
 
     -- Overflow policy. Data words are only written while slots are held back
     -- for the frame's EOF word, so it always fits: a dropped EOF would leave
@@ -366,7 +369,7 @@ begin
     rx_wr_accept   <= rx_wr_en and (not rx_wr_full)                     when rx_wr_is_eof = '1' else
                       rx_wr_en and rx_data_room and (not rx_drop);
     rx_data_refuse <= rx_wr_en and (not rx_wr_is_eof) and (not rx_wr_accept);
-    rx_fifo_din    <= '1' & (rx_drop or rx_data_refuse) & x"00" when rx_wr_is_eof = '1' else
+    rx_fifo_din    <= '1' & (rx_drop or rx_data_refuse or rx_wr_data(8)) & x"00" when rx_wr_is_eof = '1' else
                       rx_wr_data;
 
     process (media_rx_clk, media_rx_rst_n_s2)
@@ -376,6 +379,7 @@ begin
             rx_wr_en   <= '0';
             rx_dv_d1   <= '0';
             rx_drop    <= '0';
+            rx_er_noce <= '0';
         elsif rising_edge(media_rx_clk) then
             rx_wr_en <= '0';
             rx_dv_d1 <= gmii_rx_dv_in;
@@ -393,11 +397,14 @@ begin
                 if gmii_rx_ce_in = '1' then
                     rx_wr_data <= '0' & gmii_rx_er_in & gmii_rxd_in;
                     rx_wr_en   <= '1';
+                elsif gmii_rx_er_in = '1' then
+                    rx_er_noce <= '1';
                 end if;
             elsif rx_dv_d1 = '1' then
                 -- Write EOF marker
-                rx_wr_data <= '1' & '0' & x"00";
+                rx_wr_data <= '1' & rx_er_noce & x"00";
                 rx_wr_en   <= '1';
+                rx_er_noce <= '0';
             end if;
         end if;
     end process;
