@@ -79,7 +79,11 @@ entity eth_mac_rx is
         -- Pulses 1 cycle at end-of-frame for a frame that passed the MAC filter
         -- but was dropped whole because the FIFO had no room for its SOF. Such a
         -- frame produces no AXIS words and no stat_done, so this is its only trace.
-        stat_drop         : out std_logic
+        stat_drop         : out std_logic;
+
+        -- RX FIFO occupancy in bytes (the FIFO's RAM, not its output register),
+        -- the count the admission watermark below uses. Drives automatic PAUSE.
+        rx_fifo_level     : out std_logic_vector(AXIS_FIFO_ADDR_WIDTH downto 0)
     );
 end entity eth_mac_rx;
 
@@ -198,6 +202,7 @@ begin
                     else '0';
 
     fifo_room <= '1' when unsigned(fifo_count) < FIFO_HWM else '0';
+    rx_fifo_level <= fifo_count;
 
     fifo_wr_data <= push_sof_r & push_err_r & push_last_r & push_data_r;
 

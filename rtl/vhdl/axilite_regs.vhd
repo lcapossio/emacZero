@@ -2,7 +2,7 @@
 -- Copyright (c) 2026 Leonardo Capossio - bard0 design
 -- =============================================================================
 -- axilite_regs.vhd - AXI4-Lite slave register block for Ethernet MAC
--- 32-bit registers at byte addresses 0x00-0x98.
+-- 32-bit registers at byte addresses 0x00-0xA4.
 -- VHDL port of rtl/axilite_regs.v (formally proven equivalent; see sim/parity/).
 -- =============================================================================
 --
@@ -61,9 +61,16 @@
 --   0x84 PAUSE_CTRL  RW    [0] tx_send (W1S, hardware self-clears once frame
 --                              has been emitted)
 --                          [1] rx_en   (honor incoming PAUSE frames)
+--                          [2] auto_en (automatic PAUSE from RX FIFO level)
+--                          [3] auto_active (RO)  [4] auto_cfg_err (RO)
+--                          [5] tx_pending (RO, a tx_send is waiting)
 --   0x88 PAUSE_QUANTA RW   [15:0] quanta to load into the next emitted frame
 --   0x8C PAUSE_RX_CNT RO/WC count of received PAUSE frames
 --   0x90 PAUSE_TX_CNT RO/WC count of transmitted PAUSE frames
+--   0x9C PAUSE_XOFF   RW   [19:0] automatic XOFF threshold, RX FIFO bytes
+--   0xA0 PAUSE_XON    RW   [19:0] automatic XON threshold, RX FIFO bytes
+--   0xA4 PAUSE_REFRESH RW  [15:0] automatic XOFF repeat, quanta (0 = half
+--                              of PAUSE_QUANTA)
 --   --- RX statistics breakdown (always present) ---
 --   0x4C RX_ERR_ALIGN    RO/WC  rx_er asserted during frame
 --   0x50 RX_ERR_OVERFLOW RO/WC  RX FIFO overflow during frame
@@ -85,7 +92,9 @@
 --                                 (CTRL[9]); otherwise sound frames only
 --   --- Build capabilities (always present; unmapped, so 0, on older cores) ---
 --   0x98 CAPS       RO    [0] MCAST_HASH_FILTER  [1] TX_CSUM_OFFLOAD
---                         [2] RX_CSUM_OFFLOAD  [15:3] reserved (0)
+--                         [2] RX_CSUM_OFFLOAD  [3] automatic PAUSE
+--                         [8:4] RX FIFO address width (depth = 2**n bytes)
+--                         [15:9] reserved (0)
 --                         [31:16] MAX_FRAME (bytes; never 0, so a nonzero
 --                         read means the core has CAPS)
 -- =============================================================================
@@ -104,6 +113,9 @@ entity axilite_regs is
         TX_CSUM_OFFLOAD   : integer := 0;
         RX_CSUM_OFFLOAD   : integer := 0;
         MAX_FRAME         : integer := 9018;
+        -- RX FIFO address width (eth_mac_rx AXIS_FIFO_ADDR_WIDTH): reported in
+        -- CAPS and sets the PAUSE_XOFF / PAUSE_XON reset values.
+        RX_AXIS_ADDR_WIDTH : integer := 11;
         -- 1 = CTRL leaves reset with tx_en and rx_en set; 0 = both clear.
         -- eth_mac_sys resets its TX/RX enable gates from the same generic.
         TXRX_EN_AT_RESET  : integer := 1
@@ -158,6 +170,13 @@ entity axilite_regs is
         cfg_pause_rx_en     : out std_logic;
         cfg_pause_tx_send   : out std_logic;                     -- single-cycle pulse
         cfg_pause_tx_quanta : out std_logic_vector(15 downto 0);
+        cfg_pause_auto_en   : out std_logic;
+        cfg_pause_xoff      : out std_logic_vector(19 downto 0);
+        cfg_pause_xon       : out std_logic_vector(19 downto 0);
+        cfg_pause_refresh   : out std_logic_vector(15 downto 0);
+        sts_pause_auto_active : in std_logic;
+        sts_pause_auto_err    : in std_logic;
+        sts_pause_tx_pending  : in std_logic;
         stat_pause_rx_cnt   : in  std_logic_vector(31 downto 0);
         stat_pause_tx_cnt   : in  std_logic_vector(31 downto 0);
         stat_clr_pause      : out std_logic;
@@ -229,7 +248,8 @@ architecture rtl of axilite_regs is
     -- MAX_FRAME's low 16 bits, as the Verilog [15:0] localparam truncates it
     constant CAPS : std_logic_vector(31 downto 0) :=
         std_logic_vector(to_unsigned(MAX_FRAME mod 65536, 16)) &
-        "0000000000000" & cap_bit(RX_CSUM_OFFLOAD) &
+        "0000000" & std_logic_vector(to_unsigned(RX_AXIS_ADDR_WIDTH mod 32, 5)) &
+        '1' & cap_bit(RX_CSUM_OFFLOAD) &
         cap_bit(TX_CSUM_OFFLOAD) & cap_bit(MCAST_HASH_FILTER);
 
     -- Register address offsets (word-aligned, using bits [ADDR_WIDTH-1:2]).
@@ -279,6 +299,9 @@ architecture rtl of axilite_regs is
     constant A_PAUSE_TX_CNT : integer := 16#24#;  -- 0x90
     constant A_SAF_DBG      : integer := 16#25#;  -- 0x94 (RO, mii_tx_saf debug)
     constant A_CAPS         : integer := 16#26#;  -- 0x98 (RO, build capabilities)
+    constant A_PAUSE_XOFF    : integer := 16#27#;  -- 0x9C
+    constant A_PAUSE_XON     : integer := 16#28#;  -- 0xA0
+    constant A_PAUSE_REFRESH : integer := 16#29#;  -- 0xA4
 
     -- =========================================================================
     -- Registers
@@ -314,6 +337,15 @@ architecture rtl of axilite_regs is
     -- PAUSE
     signal reg_pause_rx_en  : std_logic;
     signal reg_pause_quanta : std_logic_vector(15 downto 0);
+    signal reg_pause_auto_en : std_logic;
+    signal reg_pause_xoff    : std_logic_vector(19 downto 0);
+    signal reg_pause_xon     : std_logic_vector(19 downto 0);
+    signal reg_pause_refresh : std_logic_vector(15 downto 0);
+    -- Reset thresholds: half and a quarter of the RX FIFO (valid for any
+    -- depth, though not loss-free; see docs/registers.md).
+    constant RX_DEPTH   : unsigned(20 downto 0) := shift_left(to_unsigned(1, 21), RX_AXIS_ADDR_WIDTH);
+    constant XOFF_RESET : std_logic_vector(19 downto 0) := std_logic_vector(RX_DEPTH(20 downto 1));
+    constant XON_RESET  : std_logic_vector(19 downto 0) := std_logic_vector('0' & RX_DEPTH(20 downto 2));
 
     -- =========================================================================
     -- Write channel state
@@ -379,6 +411,10 @@ begin
                             else (others => '0');
     cfg_pause_rx_en     <= reg_pause_rx_en;
     cfg_pause_tx_quanta <= reg_pause_quanta;
+    cfg_pause_auto_en   <= reg_pause_auto_en;
+    cfg_pause_xoff      <= reg_pause_xoff;
+    cfg_pause_xon       <= reg_pause_xon;
+    cfg_pause_refresh   <= reg_pause_refresh;
 
     -- =========================================================================
     -- MDIO outputs
@@ -436,6 +472,10 @@ begin
             cfg_pause_tx_send <= '0';
             reg_pause_rx_en  <= '0';
             reg_pause_quanta <= (others => '0');
+            reg_pause_auto_en <= '0';
+            reg_pause_xoff    <= XOFF_RESET;
+            reg_pause_xon     <= XON_RESET;
+            reg_pause_refresh <= (others => '0');
         elsif rising_edge(s_axi_aclk) then
             -- Self-clearing pulses default to 0
             mdio_go        <= '0';
@@ -535,14 +575,27 @@ begin
                         if w_strb(0) = '1' then
                             -- [0] tx_send (W1S, self-clearing pulse to eth_pause)
                             -- [1] rx_en   (level-sensitive)
+                            -- [2] auto_en (level-sensitive)
                             if w_data(0) = '1' then
                                 cfg_pause_tx_send <= '1';
                             end if;
-                            reg_pause_rx_en <= w_data(1);
+                            reg_pause_rx_en   <= w_data(1);
+                            reg_pause_auto_en <= w_data(2);
                         end if;
                     when A_PAUSE_QUANTA =>
                         if w_strb(0) = '1' then reg_pause_quanta(7 downto 0)  <= w_data(7 downto 0);  end if;
                         if w_strb(1) = '1' then reg_pause_quanta(15 downto 8) <= w_data(15 downto 8); end if;
+                    when A_PAUSE_XOFF =>
+                        if w_strb(0) = '1' then reg_pause_xoff(7 downto 0)   <= w_data(7 downto 0);   end if;
+                        if w_strb(1) = '1' then reg_pause_xoff(15 downto 8)  <= w_data(15 downto 8);  end if;
+                        if w_strb(2) = '1' then reg_pause_xoff(19 downto 16) <= w_data(19 downto 16); end if;
+                    when A_PAUSE_XON =>
+                        if w_strb(0) = '1' then reg_pause_xon(7 downto 0)   <= w_data(7 downto 0);   end if;
+                        if w_strb(1) = '1' then reg_pause_xon(15 downto 8)  <= w_data(15 downto 8);  end if;
+                        if w_strb(2) = '1' then reg_pause_xon(19 downto 16) <= w_data(19 downto 16); end if;
+                    when A_PAUSE_REFRESH =>
+                        if w_strb(0) = '1' then reg_pause_refresh(7 downto 0)  <= w_data(7 downto 0);  end if;
+                        if w_strb(1) = '1' then reg_pause_refresh(15 downto 8) <= w_data(15 downto 8); end if;
                     when A_PAUSE_RX_CNT
                        | A_PAUSE_TX_CNT =>
                         stat_clr_pause <= '1';
@@ -653,7 +706,12 @@ begin
                     when A_RX_SIZE_JUMBO =>     s_axi_rdata <= stat_rx_size_jumbo_cnt;
                     when A_RX_DROP =>           s_axi_rdata <= stat_rx_drop_cnt;
                     when A_RX_ERR_CSUM =>       s_axi_rdata <= stat_rx_err_csum_cnt;
-                    when A_PAUSE_CTRL =>        s_axi_rdata <= x"0000000" & "00" & reg_pause_rx_en & '0';
+                    when A_PAUSE_CTRL =>        s_axi_rdata <= "00" & x"000000" & sts_pause_tx_pending &
+                                                               sts_pause_auto_err & sts_pause_auto_active &
+                                                               reg_pause_auto_en & reg_pause_rx_en & '0';
+                    when A_PAUSE_XOFF =>        s_axi_rdata <= x"000" & reg_pause_xoff;
+                    when A_PAUSE_XON =>         s_axi_rdata <= x"000" & reg_pause_xon;
+                    when A_PAUSE_REFRESH =>     s_axi_rdata <= x"0000" & reg_pause_refresh;
                     when A_PAUSE_QUANTA =>      s_axi_rdata <= x"0000" & reg_pause_quanta;
                     when A_PAUSE_RX_CNT =>      s_axi_rdata <= stat_pause_rx_cnt;
                     when A_PAUSE_TX_CNT =>      s_axi_rdata <= stat_pause_tx_cnt;

@@ -73,7 +73,11 @@ module eth_mac_rx #(
     // Pulses 1 cycle at end-of-frame for a frame that passed the MAC filter
     // but was dropped whole because the FIFO had no room for its SOF. Such a
     // frame produces no AXIS words and no stat_done, so this is its only trace.
-    output reg         stat_drop
+    output reg         stat_drop,
+
+    // RX FIFO occupancy in bytes (the FIFO's RAM, not its output register),
+    // the count the admission watermark below uses. Drives automatic PAUSE.
+    output wire [AXIS_FIFO_ADDR_WIDTH:0] rx_fifo_level
 );
 
     localparam [2:0]
@@ -160,6 +164,7 @@ module eth_mac_rx #(
     // TLAST would merge this frame into the next.
     localparam [AXIS_FIFO_ADDR_WIDTH:0] FIFO_HWM = AXIS_FIFO_DEPTH - 4;
     wire fifo_room = (fifo_count < FIFO_HWM);
+    assign rx_fifo_level = fifo_count;
 
     sync_fifo #(
         .DATA_WIDTH (11),

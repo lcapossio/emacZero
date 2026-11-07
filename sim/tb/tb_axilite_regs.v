@@ -119,6 +119,13 @@ module tb_axilite_regs;
         .cfg_pause_rx_en      (),
         .cfg_pause_tx_send    (),
         .cfg_pause_tx_quanta  (),
+        .cfg_pause_auto_en    (),
+        .cfg_pause_xoff       (),
+        .cfg_pause_xon        (),
+        .cfg_pause_refresh    (),
+        .sts_pause_auto_active(1'b0),
+        .sts_pause_auto_err   (1'b0),
+        .sts_pause_tx_pending (1'b0),
         .stat_pause_rx_cnt    (32'd0),
         .stat_pause_tx_cnt    (32'd0),
         .stat_clr_pause       (),
@@ -339,13 +346,14 @@ module tb_axilite_regs;
 
         // =================================================================
         // Test 1b: CAPS register (read-only; default parameters: MAX_FRAME
-        // 9018, no multicast hash, no checksum offload)
+        // 9018, RX FIFO address width 11, automatic PAUSE, no multicast
+        // hash, no checksum offload)
         // =================================================================
         axi_read(A_CAPS, rd_result);
-        check32("CAPS", rd_result, 32'h233A_0000);
+        check32("CAPS", rd_result, 32'h233A_00B8);
         axi_write(A_CAPS, 32'hFFFF_FFFF);
         axi_read(A_CAPS, rd_result);
-        check32("CAPS after write", rd_result, 32'h233A_0000);
+        check32("CAPS after write", rd_result, 32'h233A_00B8);
 
         // =================================================================
         // Test 2: SCRATCH register (write/read)
