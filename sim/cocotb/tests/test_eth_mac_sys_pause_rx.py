@@ -44,6 +44,26 @@ first TX_EN sample):
   4 GMII / RGMII 100M: a data frame and a PAUSE frame leave their framers
     together, at 41 offsets; TX_FRAME and TX_BYTE count both, and the sweep
     saw the byte events and the frame-done events in the same clock
+
+pause_auto checks, per suite, automatic PAUSE (PAUSE_CTRL[2]; quanta 8,
+XOFF 600, XON 200, refresh 0 = 4 quanta) against a link partner that sends
+200-byte frames and obeys the MAC Control frames at our TX pins:
+  1 PAUSE_XOFF / PAUSE_XON reset to half / a quarter of the 2 KB RX FIFO;
+    CAPS[8:3] reports it and the feature
+  2 m_axis stalled: XOFF once the FIFO fills, auto_active set, XOFF repeated
+    4 quanta apart (no later than that plus two PAUSE frames), the partner
+    held to the frame it had started, RX_DROP and RX_ERR_OVERFLOW 0; a
+    tx_send (quanta 0x33) in the middle goes out once and the XOFF frames
+    keep the quanta latched at enable
+  3 m_axis released: XOFF repeats until the level is below XON, then one
+    XON and nothing more; every partner frame delivered, none with terror;
+    PAUSE_TX_CNT = the MAC Control frames at the pins
+  4 auto_en cleared while XOFF is in force: one XON
+  5 quanta 0, XON 0, XON > XOFF, XOFF > the FIFO watermark (2044) and
+    refresh >= quanta raise auto_cfg_err, clear with auto_en and send
+    nothing; XOFF = 2044 is valid
+  6 two tx_send writes during one generated frame: tx_pending reads 1, and
+    both frames go out in order with their own quanta
 """
 import os
 import zlib
@@ -624,5 +644,212 @@ async def pause_tx(dut):
                 both["byte"] > 0)
         c.check(f"frame-done events of both framers in the same clock: {both['done']}",
                 both["done"] > 0)
+
+    c.finish()
+
+
+def ctl_quanta(byts):
+    """The quanta of a MAC Control frame's PAUSE, from its wire bytes."""
+    f, _ = split(byts)
+    return (f[16] << 8) | f[17]
+
+
+class Partner:
+    """A link partner that obeys our PAUSE frames: before each frame it
+    checks the last MAC Control frame at our TX pins and waits while that
+    frame's quanta, counted from its end, has not run out. A frame already
+    started is finished, as 802.3 allows."""
+
+    def __init__(self, pins, tx, size):
+        self.pins, self.tx, self.size = pins, tx, size
+        self.go = True
+        self.sent = 0
+
+    def paused(self):
+        for t0, byts in reversed(self.tx.frames):
+            if is_ctl(byts):
+                end = t0 + len(byts) * BYTE_NS
+                return now_ns() < end + ctl_quanta(byts) * 512 * BIT_NS
+        return False
+
+    async def run(self):
+        while self.go:
+            if self.paused():
+                await Timer(8 * BYTE_NS, "ns")
+                continue
+            await self.pins.send(wire(data_frame(self.size)))
+            self.sent += 1
+
+
+class Sink:
+    """Counts the frames handshaken on m_axis, and those ending in terror."""
+
+    def __init__(self, dut):
+        self.dut = dut
+        self.frames = 0
+        self.errors = 0
+
+    async def run(self):
+        d = self.dut
+        while True:
+            await RisingEdge(d.clk)
+            await ReadOnly()
+            if bit(d.m_axis_tvalid) and bit(d.m_axis_tready) and bit(d.m_axis_tlast):
+                self.frames += 1
+                self.errors += bit(d.m_axis_terror)
+
+
+@cocotb.test(timeout_time=300, timeout_unit="ms")
+async def pause_auto(dut):
+    """Automatic PAUSE from the RX FIFO level (PAUSE_CTRL[2])."""
+    c = Checks(dut._log)
+    pins, axil = await bring_up(dut)
+    tx = TxPins(dut)
+    cocotb.start_soon(tx.run())
+    sink = Sink(dut)
+    cocotb.start_soon(sink.run())
+    q_ns = 512 * BIT_NS                           # one pause quantum
+    ctl_ns = 84 * BYTE_NS                         # a PAUSE frame and its IFG
+    QUANTA, XOFF, XON = 8, 600, 200               # refresh 0: quanta / 2
+    size = 200
+
+    def ctls(t_from=0):
+        return [(t0, ctl_quanta(b)) for t0, b in tx.frames
+                if is_ctl(b) and t0 > t_from]
+
+    async def wait_for(cond, limit_ns):
+        t = now_ns()
+        while not cond() and now_ns() - t < limit_ns:
+            await Timer(8 * BYTE_NS, "ns")
+        return cond()
+
+    # 1. Reset values and configuration.
+    c.eq("PAUSE_XOFF reset (RX FIFO / 2)", await axil.read(0x9C), 1024)
+    c.eq("PAUSE_XON reset (RX FIFO / 4)", await axil.read(0xA0), 512)
+    c.eq("CAPS[8:3]: RX FIFO 2**11, automatic PAUSE",
+         (await axil.read(0x98)) & 0x1F8, (11 << 4) | 0x8)
+    await axil.write(0x88, QUANTA)
+    await axil.write(0x9C, XOFF)
+    await axil.write(0xA0, XON)
+    await axil.write(0xA4, 0)
+    dut.m_axis_tready.value = 0
+    await axil.write(0x84, 0x06)                  # rx_en + auto_en
+    c.eq("PAUSE_CTRL after enable", await axil.read(0x84), 0x06)
+
+    # 2. Stall the sink while the partner sends: XOFF, refreshed, keeps the
+    #    partner paused with no frame lost; a tx_send in the middle goes out
+    #    with its own quanta and does not change the automatic one.
+    partner = Partner(pins, tx, size)
+    p_task = cocotb.start_soon(partner.run())
+    ok = await wait_for(lambda: ctls(), 20 * size * BYTE_NS)
+    c.check("XOFF sent once the RX FIFO filled", ok)
+    t_xoff = ctls()[0][0] if ok else now_ns()
+    c.eq("PAUSE_CTRL: auto_active", (await axil.read(0x84)) & 0x08, 0x08)
+    sent_at_xoff = partner.sent
+    await Timer(int(10 * q_ns), "ns")
+    await axil.write(0x88, 0x33)
+    await axil.write(0x84, 0x07)                  # + tx_send, quanta 0x33
+    await Timer(int(30 * q_ns), "ns")
+    stalled = ctls(t_xoff - 1)
+    auto = [t for t, q in stalled if q == QUANTA]
+    c.eq("XOFF frames carry the latched quanta (not 0x33)",
+         sorted({q for _, q in stalled} - {0x33}), [QUANTA])
+    c.eq("the tx_send frame went out once", [q for _, q in stalled].count(0x33), 1)
+    # The tx_send frame sits between two XOFF frames; leave that gap out.
+    t_man = [t for t, q in stalled if q == 0x33]
+    gaps = [b - a for a, b in zip(auto, auto[1:])
+            if not any(a < t < b for t in t_man)]
+    # The refresh interval runs from the generator, not the pins: a frame
+    # held back at the pins (the XOFF right after the tx_send one) makes the
+    # next gap shorter by up to one control frame. Early is harmless; late
+    # would let the partner resume.
+    lo = (QUANTA // 2) * q_ns - ctl_ns
+    hi = (QUANTA // 2) * q_ns + 2 * ctl_ns + 2000
+    c.check(f"{len(auto)} XOFF frames during the stall (>= 6)", len(auto) >= 6)
+    c.check(f"XOFF repeat intervals {min(gaps, default=0):.0f}..{max(gaps, default=0):.0f} ns "
+            f"within {lo:.0f}..{hi:.0f}", bool(gaps) and all(lo <= g <= hi for g in gaps))
+    c.check(f"partner held: {partner.sent - sent_at_xoff} frames after the first XOFF (<= 1)",
+            partner.sent - sent_at_xoff <= 1)
+    c.eq("RX_DROP", await axil.read(0x7C), 0)
+    c.eq("RX_ERR_OVERFLOW", await axil.read(0x50), 0)
+
+    # 3. Release the sink: the FIFO drains below XON, one XON frame, the
+    #    partner resumes, every frame it sent arrives intact.
+    t_rel = now_ns()
+    dut.m_axis_tready.value = 1
+    ok = await wait_for(lambda: any(q == 0 for _, q in ctls(t_rel)), 40 * size * BYTE_NS)
+    c.check("XON sent once the RX FIFO drained", ok)
+    await Timer(int(4 * size * BYTE_NS), "ns")
+    c.check(f"partner resumed: {partner.sent - sent_at_xoff} frames since the first XOFF",
+            partner.sent - sent_at_xoff >= 3)
+    partner.go = False
+    await p_task
+    await Timer(int(4 * size * BYTE_NS), "ns")
+    # XOFF repeats until the level is below XON, then one XON and no more.
+    after = [q for _, q in ctls(t_rel)]
+    c.check(f"after the release: XOFF repeats, then one XON, nothing more ({after})",
+            after.count(0) == 1 and after[-1] == 0 and set(after) <= {0, QUANTA})
+    c.eq("PAUSE_CTRL after the release", await axil.read(0x84), 0x06)
+    c.eq("every partner frame delivered", sink.frames, partner.sent)
+    c.eq("none with terror", sink.errors, 0)
+    c.eq("PAUSE_TX_CNT = MAC Control frames at the pins", await axil.read(0x90),
+         len(ctls()))
+
+    # 4. Clearing auto_en while XOFF is in force sends one XON.
+    dut.m_axis_tready.value = 0
+    n0 = len(ctls())
+    partner = Partner(pins, tx, size)
+    p_task = cocotb.start_soon(partner.run())
+    ok = await wait_for(lambda: len(ctls()) > n0, 20 * size * BYTE_NS)
+    c.check("XOFF again", ok)
+    partner.go = False
+    await p_task
+    t_off = now_ns()
+    await axil.write(0x84, 0x02)                  # auto_en off
+    ok = await wait_for(lambda: any(q == 0 for _, q in ctls(t_off)), 4 * ctl_ns + 4000)
+    c.check("XON when auto_en is cleared", ok)
+    await Timer(int(8 * q_ns), "ns")
+    c.eq("after disable: one XON, nothing more", [q for _, q in ctls(t_off)], [0])
+    c.eq("PAUSE_CTRL after disable", await axil.read(0x84), 0x02)
+    dut.m_axis_tready.value = 1
+    await Timer(int(8 * size * BYTE_NS), "ns")
+
+    # 5. Invalid configurations raise auto_cfg_err and send nothing.
+    n0 = len(ctls())
+    for label, quanta, xoff, xon, refresh in (
+            ("quanta 0", 0, XOFF, XON, 0),
+            ("XON 0", QUANTA, XOFF, 0, 0),
+            ("XON > XOFF", QUANTA, 100, 101, 0),
+            ("XOFF > RX FIFO watermark", QUANTA, 2045, XON, 0),
+            ("refresh >= quanta", QUANTA, XOFF, XON, QUANTA)):
+        await axil.write(0x88, quanta)
+        await axil.write(0x9C, xoff)
+        await axil.write(0xA0, xon)
+        await axil.write(0xA4, refresh)
+        await axil.write(0x84, 0x06)
+        c.eq(f"{label}: PAUSE_CTRL auto_cfg_err", await axil.read(0x84), 0x16)
+        await axil.write(0x84, 0x02)
+        c.eq(f"{label}: cleared with auto_en", await axil.read(0x84), 0x02)
+    await axil.write(0x88, QUANTA)
+    await axil.write(0x9C, 2044)                  # the largest valid XOFF
+    await axil.write(0xA0, XON)
+    await axil.write(0xA4, 0)
+    await axil.write(0x84, 0x06)
+    c.eq("XOFF = RX FIFO watermark: valid", await axil.read(0x84), 0x06)
+    await axil.write(0x84, 0x02)
+    await Timer(int(4 * ctl_ns), "ns")
+    c.eq("invalid configurations sent nothing", len(ctls()), n0)
+
+    # 6. A tx_send while the generator is busy waits for it, and is sent.
+    t0 = now_ns()
+    await axil.write(0x88, 0x11)
+    await axil.write(0x84, 0x03)
+    await axil.write(0x88, 0x22)
+    await axil.write(0x84, 0x03)
+    c.eq("PAUSE_CTRL: tx_pending while the first frame is generated",
+         await axil.read(0x84), 0x22)
+    await Timer(int(4 * ctl_ns + 2000), "ns")
+    c.eq("both tx_send frames, in order", [q for _, q in ctls(t0)], [0x11, 0x22])
+    c.eq("PAUSE_CTRL: nothing pending", await axil.read(0x84), 0x02)
 
     c.finish()

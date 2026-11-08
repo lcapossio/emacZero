@@ -191,6 +191,14 @@ architecture rtl of eth_mac_sys is
     signal cfg_pause_rx_en     : std_logic;
     signal cfg_pause_tx_send   : std_logic;
     signal cfg_pause_tx_quanta : std_logic_vector(15 downto 0);
+    signal cfg_pause_auto_en   : std_logic;
+    signal cfg_pause_xoff      : std_logic_vector(19 downto 0);
+    signal cfg_pause_xon       : std_logic_vector(19 downto 0);
+    signal cfg_pause_refresh   : std_logic_vector(15 downto 0);
+    signal sts_pause_auto_active : std_logic;
+    signal sts_pause_auto_err    : std_logic;
+    signal sts_pause_tx_pending  : std_logic;
+    signal rx_fifo_level       : std_logic_vector(RX_AXIS_AW downto 0);
     signal stat_pause_rx_cnt   : std_logic_vector(31 downto 0);
     signal stat_pause_tx_cnt   : std_logic_vector(31 downto 0);
     signal stat_clr_pause      : std_logic;
@@ -509,7 +517,8 @@ begin
             stat_err_csum     => rx_stat_err_csum,
             stat_is_bcast     => rx_stat_is_bcast,
             stat_is_mcast     => rx_stat_is_mcast,
-            stat_drop         => rx_stat_drop
+            stat_drop         => rx_stat_drop,
+            rx_fifo_level     => rx_fifo_level
         );
 
     -- =========================================================================
@@ -528,11 +537,19 @@ begin
         report "EMACZERO_CONFIG_ERROR_1G_needs_CLK_FREQ_HZ_at_least_125MHz_or_RGMII_SPEEDS_10_100"
         severity failure;
 
+    -- Automatic PAUSE compares the RX FIFO level with 20-bit thresholds; the
+    -- highest usable XOFF is the FIFO's admission watermark (depth - 4).
+    assert RX_AXIS_AW <= 19
+        report "EMACZERO_CONFIG_ERROR_RX_AXIS_ADDR_WIDTH_above_19"
+        severity failure;
+
     u_pause : entity work.eth_pause
         generic map (
             TICK_DIV_1G   => PAUSE_DIV_1G,
             TICK_DIV_100M => PAUSE_DIV_100M,
-            TICK_DIV_10M  => PAUSE_DIV_10M
+            TICK_DIV_10M  => PAUSE_DIV_10M,
+            LEVEL_W       => RX_AXIS_AW + 1,
+            LEVEL_MAX     => 2**RX_AXIS_AW - 4
         )
         port map (
             clk                 => clk,
@@ -542,6 +559,14 @@ begin
             cfg_pause_rx_en     => cfg_pause_rx_en,
             cfg_pause_tx_send   => cfg_pause_tx_send,
             cfg_pause_tx_quanta => cfg_pause_tx_quanta,
+            rx_level            => rx_fifo_level,
+            cfg_auto_en         => cfg_pause_auto_en,
+            cfg_auto_xoff       => cfg_pause_xoff,
+            cfg_auto_xon        => cfg_pause_xon,
+            cfg_auto_refresh    => cfg_pause_refresh,
+            auto_active         => sts_pause_auto_active,
+            auto_cfg_err        => sts_pause_auto_err,
+            tx_pending          => sts_pause_tx_pending,
             rx_pause_tgl        => rx_pause_tgl,
             rx_pause_quanta     => rx_pause_quanta,
             tx_paused           => tx_paused,
@@ -1166,6 +1191,7 @@ begin
             TX_CSUM_OFFLOAD   => TX_CSUM_OFFLOAD,
             RX_CSUM_OFFLOAD   => RX_CSUM_OFFLOAD,
             MAX_FRAME         => MAX_FRAME,
+            RX_AXIS_ADDR_WIDTH => RX_AXIS_AW,
             TXRX_EN_AT_RESET  => TXRX_EN_AT_RESET
         )
         port map (
@@ -1233,6 +1259,13 @@ begin
             cfg_pause_rx_en            => cfg_pause_rx_en,
             cfg_pause_tx_send          => cfg_pause_tx_send,
             cfg_pause_tx_quanta        => cfg_pause_tx_quanta,
+            cfg_pause_auto_en          => cfg_pause_auto_en,
+            cfg_pause_xoff             => cfg_pause_xoff,
+            cfg_pause_xon              => cfg_pause_xon,
+            cfg_pause_refresh          => cfg_pause_refresh,
+            sts_pause_auto_active      => sts_pause_auto_active,
+            sts_pause_auto_err         => sts_pause_auto_err,
+            sts_pause_tx_pending       => sts_pause_tx_pending,
             stat_pause_rx_cnt          => stat_pause_rx_cnt,
             stat_pause_tx_cnt          => stat_pause_tx_cnt,
             stat_clr_pause             => stat_clr_pause,

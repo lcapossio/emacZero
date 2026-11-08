@@ -56,6 +56,9 @@ extern "C" {
 #define EMZ_REG_PAUSE_TX_CNT     0x90u
 #define EMZ_REG_SAF_DBG          0x94u  /* RO mii_tx_saf debug; 0 on RGMII */
 #define EMZ_REG_CAPS             0x98u  /* RO build capabilities; 0 on older cores */
+#define EMZ_REG_PAUSE_XOFF       0x9Cu  /* automatic PAUSE (CAPS[3]): XOFF level, bytes */
+#define EMZ_REG_PAUSE_XON        0xA0u  /* automatic PAUSE: XON level, bytes */
+#define EMZ_REG_PAUSE_REFRESH    0xA4u  /* automatic PAUSE: XOFF repeat, quanta (0 = half) */
 
 /* Mirror of rtl/version.vh. build_and_test.py asserts these match. */
 #define EMZ_VERSION_MAJOR        0u
@@ -121,10 +124,15 @@ extern "C" {
 #define EMZ_IRQ_MDIO_DONE (1u << 2)
 
 /* ---------------------------------------------------------------------------
- * PAUSE_CTRL register fields
+ * PAUSE_CTRL register fields. A write sets RX_EN and AUTO_EN as well as
+ * TX_SEND: keep them when sending a PAUSE frame.
  * --------------------------------------------------------------------------- */
-#define EMZ_PAUSE_CTRL_TX_SEND (1u << 0)
-#define EMZ_PAUSE_CTRL_RX_EN   (1u << 1)
+#define EMZ_PAUSE_CTRL_TX_SEND     (1u << 0)
+#define EMZ_PAUSE_CTRL_RX_EN       (1u << 1)
+#define EMZ_PAUSE_CTRL_AUTO_EN     (1u << 2)  /* latches QUANTA/XOFF/XON/REFRESH */
+#define EMZ_PAUSE_CTRL_AUTO_ACTIVE (1u << 3)  /* RO: level reached XOFF, not yet below XON */
+#define EMZ_PAUSE_CTRL_AUTO_ERR    (1u << 4)  /* RO: AUTO_EN set with an invalid config */
+#define EMZ_PAUSE_CTRL_TX_PENDING  (1u << 5)  /* RO: a TX_SEND waits for the generator */
 
 /* ---------------------------------------------------------------------------
  * CAPS register fields (read-only; the whole register reads 0 on cores that
@@ -133,6 +141,9 @@ extern "C" {
 #define EMZ_CAPS_MCAST_HASH      (1u << 0)
 #define EMZ_CAPS_TX_CSUM         (1u << 1)
 #define EMZ_CAPS_RX_CSUM         (1u << 2)
+#define EMZ_CAPS_AUTO_PAUSE      (1u << 3)
+#define EMZ_CAPS_RX_FIFO_AW_SHIFT 4          /* RX FIFO = 2**AW bytes */
+#define EMZ_CAPS_RX_FIFO_AW_MASK (0x1Fu << EMZ_CAPS_RX_FIFO_AW_SHIFT)
 #define EMZ_CAPS_MAX_FRAME_SHIFT 16
 #define EMZ_CAPS_MAX_FRAME_MASK  (0xFFFFu << EMZ_CAPS_MAX_FRAME_SHIFT)
 

@@ -22,7 +22,20 @@
 //                   MAC-Control PAUSE frame on its own AXIS-byte master. The
 //                   wrapper sends it on a control path that is not held by
 //                   tx_paused and goes out ahead of queued user frames that
-//                   have not started.
+//                   have not started. A tx_send that arrives while a frame
+//                   is being generated waits in a one-deep slot (a later one
+//                   replaces it).
+//
+//   * Automatic PAUSE: with cfg_auto_en, the RX FIFO occupancy (rx_level)
+//                   drives the generator. Crossing XOFF sends a PAUSE with
+//                   the quanta latched at enable, repeated every refresh
+//                   interval while the level stays at or above XON; falling
+//                   below XON (or clearing cfg_auto_en) sends one quanta-0
+//                   PAUSE. The thresholds, quanta and refresh are latched when
+//                   cfg_auto_en rises; an invalid set raises auto_cfg_err and
+//                   leaves the feature off until cfg_auto_en is cleared and set
+//                   again. Automatic frames come first, but a waiting tx_send
+//                   never waits behind more than one of them.
 //
 // Pause-quantum tick period, in clk cycles (defaults are for clk = 100 MHz;
 // eth_mac_sys derives them from its CLK_FREQ_HZ):
@@ -36,7 +49,12 @@
 module eth_pause #(
     parameter [15:0] TICK_DIV_1G   = 16'd52,
     parameter [15:0] TICK_DIV_100M = 16'd512,
-    parameter [15:0] TICK_DIV_10M  = 16'd5120
+    parameter [15:0] TICK_DIV_10M  = 16'd5120,
+    // Automatic PAUSE: width of rx_level (at most 20) and the largest XOFF
+    // threshold it can reach (eth_mac_sys passes the RX FIFO's admission
+    // watermark, depth - 4).
+    parameter        LEVEL_W       = 12,
+    parameter [19:0] LEVEL_MAX     = 20'd2044
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -47,6 +65,16 @@ module eth_pause #(
     input  wire        cfg_pause_rx_en,       // honor incoming PAUSE
     input  wire        cfg_pause_tx_send,     // 1-cycle pulse: emit a PAUSE frame
     input  wire [15:0] cfg_pause_tx_quanta,   // quanta value to send
+
+    // ---- Automatic PAUSE from RX FIFO occupancy ----
+    input  wire [LEVEL_W-1:0] rx_level,       // RX FIFO occupancy, bytes
+    input  wire        cfg_auto_en,           // level: enable (config latched on 0->1)
+    input  wire [19:0] cfg_auto_xoff,         // send XOFF at rx_level >= this
+    input  wire [19:0] cfg_auto_xon,          // send XON at rx_level < this
+    input  wire [15:0] cfg_auto_refresh,      // XOFF repeat interval, quanta (0 = quanta/2)
+    output reg         auto_active,           // between XOFF and XON thresholds
+    output reg         auto_cfg_err,          // auto_en set with an invalid config
+    output wire        tx_pending,            // a tx_send is waiting for the generator
 
     // ---- From eth_pause_rx, in the PHY receive clock domain (asynchronous) ----
     input  wire        rx_pause_tgl,          // flips once per valid PAUSE frame
@@ -160,6 +188,133 @@ module eth_pause #(
     /* verilator lint_on UNUSED */
 
     // ============================================================
+    // Automatic PAUSE from RX FIFO occupancy
+    // ============================================================
+    // The configuration is latched when cfg_auto_en rises, so software can
+    // change PAUSE_QUANTA or the thresholds without disturbing a running
+    // loop. Valid: quanta != 0, 0 < XON <= XOFF <= LEVEL_MAX, and an explicit
+    // refresh shorter than the quanta (or else the partner resumes between
+    // repeats).
+    reg        auto_en_d;
+    reg        auto_run;          // enabled with a valid latched config
+    reg [19:0] a_xoff;
+    reg [19:0] a_xon;
+    reg [15:0] a_quanta;
+    reg [15:0] a_refresh;
+    reg        partner_paused;    // the last automatic PAUSE sent was an XOFF
+
+    wire [19:0] level = rx_level;
+    wire auto_cfg_ok = (cfg_pause_tx_quanta != 16'd0) &&
+                       (cfg_auto_xon != 20'd0) &&
+                       (cfg_auto_xon <= cfg_auto_xoff) &&
+                       (cfg_auto_xoff <= LEVEL_MAX) &&
+                       ((cfg_auto_refresh == 16'd0) ||
+                        (cfg_auto_refresh < cfg_pause_tx_quanta));
+    wire [15:0] auto_refresh_dflt = (cfg_pause_tx_quanta[15:1] != 15'd0) ?
+                                    {1'b0, cfg_pause_tx_quanta[15:1]} : 16'd1;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            auto_en_d    <= 1'b0;
+            auto_run     <= 1'b0;
+            auto_cfg_err <= 1'b0;
+            a_xoff       <= 20'd0;
+            a_xon        <= 20'd0;
+            a_quanta     <= 16'd0;
+            a_refresh    <= 16'd0;
+            auto_active  <= 1'b0;
+        end else begin
+            auto_en_d <= cfg_auto_en;
+            if (!cfg_auto_en) begin
+                auto_run     <= 1'b0;
+                auto_cfg_err <= 1'b0;
+            end else if (!auto_en_d) begin
+                if (auto_cfg_ok) begin
+                    auto_run  <= 1'b1;
+                    a_xoff    <= cfg_auto_xoff;
+                    a_xon     <= cfg_auto_xon;
+                    a_quanta  <= cfg_pause_tx_quanta;
+                    a_refresh <= (cfg_auto_refresh != 16'd0) ? cfg_auto_refresh
+                                                             : auto_refresh_dflt;
+                end else begin
+                    auto_cfg_err <= 1'b1;
+                end
+            end
+
+            // Congestion state with hysteresis.
+            if (!auto_run)
+                auto_active <= 1'b0;
+            else if (level >= a_xoff)
+                auto_active <= 1'b1;
+            else if (level < a_xon)
+                auto_active <= 1'b0;
+        end
+    end
+
+    // Refresh timer: quanta since the last automatic XOFF left the generator,
+    // on a prescaler of its own (the receive-side one restarts on every
+    // received PAUSE, which would stretch the interval). Its period is one
+    // clock shorter than tick_div, which rounds the quantum up, so the
+    // interval never exceeds REFRESH true quanta however large it is.
+    reg  [15:0] rtick_cnt;
+    reg         rtick;
+    reg  [15:0] refresh_cnt;
+    wire        refresh_due = (refresh_cnt >= a_refresh);
+    wire [15:0] rtick_last  = (tick_div > 16'd1) ? tick_div - 16'd2 : 16'd0;
+    wire        auto_latch  = cfg_auto_en && !auto_en_d && auto_cfg_ok;
+
+    // Generator state the requests below depend on (driven further down).
+    localparam [1:0]
+        TX_IDLE = 2'd0,
+        TX_RUN  = 2'd1,
+        TX_DONE = 2'd2;
+
+    reg  [1:0]  tx_state;
+    reg  [15:0] tx_quanta_lat;
+    reg         tx_auto;          // the frame being generated is automatic
+    wire        auto_done = (tx_state == TX_DONE) && tx_auto;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rtick_cnt      <= 16'd0;
+            rtick          <= 1'b0;
+            refresh_cnt    <= 16'd0;
+            partner_paused <= 1'b0;
+        end else begin
+            if (auto_latch) begin
+                // A new configuration: an XOFF already sent carries the old
+                // quanta, which the new interval may not cover. Refresh at
+                // once (it only goes out while auto_active).
+                refresh_cnt <= 16'hFFFF;
+            end else if (auto_done && tx_quanta_lat != 16'd0) begin
+                rtick_cnt   <= 16'd0;
+                rtick       <= 1'b0;
+                // Likewise an XOFF generated before the latest enable.
+                refresh_cnt <= (tx_quanta_lat == a_quanta) ? 16'd0 : 16'hFFFF;
+            end else begin
+                if (rtick_cnt >= rtick_last) begin
+                    rtick_cnt <= 16'd0;
+                    rtick     <= 1'b1;
+                end else begin
+                    rtick_cnt <= rtick_cnt + 16'd1;
+                    rtick     <= 1'b0;
+                end
+                if (rtick && refresh_cnt != 16'hFFFF)
+                    refresh_cnt <= refresh_cnt + 16'd1;
+            end
+
+            if (auto_done)
+                partner_paused <= (tx_quanta_lat != 16'd0);
+        end
+    end
+
+    // What the automatic side wants sent next, from its state alone: a
+    // request that is no longer wanted before it starts simply goes away.
+    wire xoff_need = auto_active && (!partner_paused || refresh_due);
+    wire xon_need  = partner_paused && !auto_active;
+    wire auto_need = xoff_need || xon_need;
+
+    // ============================================================
     // TX generator: emits a 60-byte 802.3x PAUSE frame on AXIS.
     // Frame layout (no preamble/SFD/FCS — those are added by eth_mac_tx):
     //   [0..5]   dst MAC      = 01:80:C2:00:00:01
@@ -173,15 +328,20 @@ module eth_pause #(
     //   [18..59] pad bytes    = 0x00 (ensures min frame size before FCS)
     // ============================================================
     reg [5:0]  tx_idx;        // 0..59
-    reg [15:0] tx_quanta_lat;
     reg [47:0] tx_src_lat;
 
-    localparam [1:0]
-        TX_IDLE = 2'd0,
-        TX_RUN  = 2'd1,
-        TX_DONE = 2'd2;
+    // A tx_send is served at once when the generator is idle, else it waits
+    // in man_pend. Automatic frames go first, except that a waiting tx_send
+    // goes next after an automatic frame (last_auto).
+    reg        man_pend;
+    reg [15:0] man_q;
+    reg        last_auto;
+    wire        man_now   = cfg_pause_tx_send || man_pend;
+    wire [15:0] man_now_q = cfg_pause_tx_send ? cfg_pause_tx_quanta : man_q;
+    wire        serve_man = man_now && (!auto_need || last_auto);
+    wire        start_man = (tx_state == TX_IDLE) && serve_man;
 
-    reg [1:0] tx_state;
+    assign tx_pending = man_pend;
 
     always @* begin
         // Default: drive the byte for the current tx_idx
@@ -219,12 +379,25 @@ module eth_pause #(
             tx_idx        <= 6'd0;
             tx_quanta_lat <= 16'd0;
             tx_src_lat    <= 48'd0;
+            tx_auto       <= 1'b0;
+            last_auto     <= 1'b0;
+            man_pend      <= 1'b0;
+            man_q         <= 16'd0;
             pause_tx_cnt  <= 32'd0;
         end else begin
             case (tx_state)
                 TX_IDLE: begin
-                    if (cfg_pause_tx_send) begin
-                        tx_quanta_lat <= cfg_pause_tx_quanta;
+                    if (serve_man) begin
+                        tx_quanta_lat <= man_now_q;
+                        tx_auto       <= 1'b0;
+                        last_auto     <= 1'b0;
+                        tx_src_lat    <= our_mac;
+                        tx_idx        <= 6'd0;
+                        tx_state      <= TX_RUN;
+                    end else if (auto_need) begin
+                        tx_quanta_lat <= xoff_need ? a_quanta : 16'd0;
+                        tx_auto       <= 1'b1;
+                        last_auto     <= 1'b1;
                         tx_src_lat    <= our_mac;
                         tx_idx        <= 6'd0;
                         tx_state      <= TX_RUN;
@@ -248,6 +421,13 @@ module eth_pause #(
 
                 default: tx_state <= TX_IDLE;
             endcase
+
+            if (start_man)
+                man_pend <= 1'b0;
+            else if (cfg_pause_tx_send) begin
+                man_pend <= 1'b1;
+                man_q    <= cfg_pause_tx_quanta;
+            end
 
             if (stat_clr)
                 pause_tx_cnt <= 32'd0;

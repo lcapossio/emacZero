@@ -24,7 +24,8 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 - [x] 64-bit multicast hash filter (`MCAST_HASH_FILTER=1`)
 - [x] RX statistics: frame/byte counters, error breakdown, size buckets,
       broadcast, and multicast
-- [ ] Automatic PAUSE trigger from RX FIFO high-water mark
+- [x] Automatic PAUSE from the RX FIFO level (`PAUSE_CTRL[2]`, XOFF / XON
+      thresholds, refresh)
 - [ ] MAC Control sublayer beyond PAUSE, such as PFC / 802.1Qbb
 - [ ] VLAN tag insert/strip
 - [ ] Multiple unicast address table
@@ -179,4 +180,4 @@ present in this repo. Unchecked items are not implemented yet. Items marked
 1. ARP cache + outbound resolve - required for general TX beyond broadcast.
 2. Cocotb harness - broadens packet-level verification.
 3. VLAN tag insert/strip - common feature with modest RTL scope.
-4. Auto PAUSE trigger - drive `eth_pause` from RX FIFO occupancy.
+4. PFC / 802.1Qbb - per-priority PAUSE (needs several TX queues first).

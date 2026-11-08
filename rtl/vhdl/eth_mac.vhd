@@ -259,7 +259,8 @@ begin
             stat_err_csum     => open,
             stat_is_bcast     => open,
             stat_is_mcast     => open,
-            stat_drop         => open
+            stat_drop         => open,
+            rx_fifo_level     => open
         );
 
     -- =========================================================================

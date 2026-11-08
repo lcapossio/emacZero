@@ -36,6 +36,8 @@ formal:
         - {}
         - {TICK_DIV_1G: 64, TICK_DIV_100M: 640, TICK_DIV_10M: 6400}
         - {TICK_DIV_1G: 0, TICK_DIV_100M: 1, TICK_DIV_10M: 70000}
+        # the automatic-PAUSE level at eth_mac_sys's proof depth (RX FIFO 2**3)
+        - {LEVEL_W: 4, LEVEL_MAX: 4}
 
 # L4 tolerance is wider than the 10% default: GHDL lowers every `case` (the
 # TX FSM and the 19-way pause_tdata mux) to a one-hot decode plus a $pmux

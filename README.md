@@ -105,7 +105,7 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 | `eth_mac_sys.v` | **System wrapper**: CSR + stats + MAC + PHY IF + MDIO |
 | `axilite_regs.v` | AXI4-Lite CSR block for configuration, counters, MDIO, multicast, and PAUSE |
 | `eth_stats.v` | TX/RX frame, byte, and error counters |
-| `eth_pause.v` | 802.3x PAUSE TX gate timer and PAUSE frame generator |
+| `eth_pause.v` | 802.3x PAUSE TX gate timer, PAUSE frame generator and automatic PAUSE from the RX FIFO level |
 | `eth_pause_rx.v` | 802.3x PAUSE frame recognizer on the PHY receive stream, ahead of the RX FIFO |
 | `eth_mac_tx.v` | TX path: preamble, SFD, data, padding, CRC, IFG |
 | `eth_mac_rx.v` | RX path: preamble detect, data, CRC check, MAC filter |
@@ -277,12 +277,15 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0x78 | RX_SIZE_JUMBO | RO/WC | RX frames > 1518 bytes |
 | 0x7C | RX_DROP | RO/WC | RX frames for us dropped whole: no RX FIFO room at their start (sink stalled). In no other RX frame counter (RX_BYTE includes their bytes) |
 | 0x80 | RX_ERR_CSUM | RO/WC | RX frames failed for a wrong IPv4 header / TCP / UDP / ICMP / ICMPv6 checksum (CTRL[9], `RX_CSUM_OFFLOAD=1`); counts only frames with no other error |
-| 0x84 | PAUSE_CTRL | RW | [0] tx_send [1] rx_en |
+| 0x84 | PAUSE_CTRL | RW | [0] tx_send [1] rx_en [2] auto_en; RO [3] auto_active [4] auto_cfg_err [5] tx_pending |
 | 0x88 | PAUSE_QUANTA | RW | [15:0] quanta for next emitted PAUSE frame |
 | 0x8C | PAUSE_RX_CNT | RO/WC | Received PAUSE frames |
 | 0x90 | PAUSE_TX_CNT | RO/WC | Transmitted PAUSE frames |
 | 0x94 | SAF_DBG | RO | `mii_tx_saf` framer/FIFO debug snapshot (MII path; 0 on RGMII). See [docs/registers.md](docs/registers.md). |
-| 0x98 | CAPS | RO | Build options: [0] multicast hash filter, [1] TX checksum inserter, [2] RX checksum checker, [31:16] `MAX_FRAME`. 0 on older cores. See [docs/registers.md](docs/registers.md). |
+| 0x98 | CAPS | RO | Build options: [0] multicast hash filter, [1] TX checksum inserter, [2] RX checksum checker, [3] automatic PAUSE, [8:4] RX FIFO address width, [31:16] `MAX_FRAME`. 0 on older cores. See [docs/registers.md](docs/registers.md). |
+| 0x9C | PAUSE_XOFF | RW | Automatic PAUSE: send XOFF at this RX FIFO level (bytes; reset: FIFO / 2) |
+| 0xA0 | PAUSE_XON | RW | Automatic PAUSE: send XON below this level (reset: FIFO / 4) |
+| 0xA4 | PAUSE_REFRESH | RW | Automatic PAUSE: XOFF repeat interval, quanta (0 = half of PAUSE_QUANTA). Loss-free sizing in [docs/registers.md](docs/registers.md). |
 
 Default CTRL: tx_en=1, rx_en=1, promisc=0, speed=00 (1G), full_duplex=1,
 jumbo_en=0, tx_csum_off=0, passthrough=0, rx_csum_off=0  ->  0x23.

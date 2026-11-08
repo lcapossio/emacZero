@@ -12,8 +12,8 @@ expected VERSION comes from rtl/version.vh, like the bench's `include. The
 bench uses no $random. Checks, in bench order:
 
   1   VERSION == {MAJOR, MINOR, ID}
-  1b  CAPS == {MAX_FRAME, 0, RX_CSUM, TX_CSUM, MCAST} for the suite's
-      parameters (TB_CAPS); a write to CAPS changes nothing
+  1b  CAPS == {MAX_FRAME, 0, RX_AXIS_ADDR_WIDTH, 1, RX_CSUM, TX_CSUM, MCAST}
+      for the suite's parameters (TB_CAPS); a write to CAPS changes nothing
   2   SCRATCH write/read 0xDEADBEEF, overwrite 0x12345678
   2b  IP_ADDR reset default 0xC0A889C8, write/read 0xC0A8EDC8, cfg_ip_addr
   3   CTRL default 0x23, cfg_tx_en/rx_en/promisc defaults 1/1/0;
@@ -31,6 +31,11 @@ bench uses no $random. Checks, in bench order:
   13  SCRATCH partial strb byte1+2 0xCCDDEEBB
   14  SCRATCH back-to-back 0x33333333
   15  SCRATCH AW-first partial strb 0xFFFFFF42
+  16  automatic PAUSE registers (not in the bench): PAUSE_XOFF / PAUSE_XON
+      reset to half / a quarter of the RX FIFO (TB_RX_DEPTH), PAUSE_REFRESH
+      to 0; byte-strobed writes, 20 / 16 bits wide; PAUSE_CTRL[2] auto_en
+      reaches cfg_pause_auto_en, and the three status inputs read back in
+      PAUSE_CTRL[5:3]
 """
 import os
 import re
@@ -47,18 +52,20 @@ SUITES = {
         "toplevel": "axilite_regs",
         "sources": ["rtl/axilite_regs.v"],
         "params": {"ADDR_WIDTH": 8},
-        "env": {"TB_CAPS": "0x233A0000"},  # defaults: MAX_FRAME 9018, no options
+        # defaults: MAX_FRAME 9018, RX FIFO 2**11, no options
+        "env": {"TB_CAPS": "0x233A00B8", "TB_RX_DEPTH": "2048"},
     },
     "axilite_regs_caps": {
         "toplevel": "axilite_regs",
         "sources": ["rtl/axilite_regs.v"],
         "params": {"ADDR_WIDTH": 8, "MCAST_HASH_FILTER": 1, "TX_CSUM_OFFLOAD": 1,
-                   "RX_CSUM_OFFLOAD": 1, "MAX_FRAME": 1518},
-        "env": {"TB_CAPS": "0x05EE0007"},
+                   "RX_CSUM_OFFLOAD": 1, "MAX_FRAME": 1518, "RX_AXIS_ADDR_WIDTH": 13},
+        "env": {"TB_CAPS": "0x05EE00DF", "TB_RX_DEPTH": "8192"},
     },
 }
 
-EXPECTED_CAPS = int(os.environ.get("TB_CAPS", "0x233A0000"), 0)
+EXPECTED_CAPS = int(os.environ.get("TB_CAPS", "0x233A00B8"), 0)
+RX_DEPTH = int(os.environ.get("TB_RX_DEPTH", "2048"), 0)
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -77,7 +84,11 @@ A_RX_FRAME = 0x30
 A_RX_ERR = 0x38
 A_SCRATCH = 0x3C
 A_IP_ADDR = 0x40
+A_PAUSE_CTRL = 0x84
 A_CAPS = 0x98
+A_PAUSE_XOFF = 0x9C
+A_PAUSE_XON = 0xA0
+A_PAUSE_REFRESH = 0xA4
 
 # Inputs the bench ties to a constant 0.
 TIED_ZERO = [
@@ -89,6 +100,7 @@ TIED_ZERO = [
     "stat_rx_size_1024_1518_cnt", "stat_rx_size_jumbo_cnt",
     "stat_rx_drop_cnt", "stat_rx_err_csum_cnt",
     "stat_pause_rx_cnt", "stat_pause_tx_cnt",
+    "sts_pause_auto_active", "sts_pause_auto_err", "sts_pause_tx_pending",
 ]
 
 
@@ -373,6 +385,37 @@ async def axilite_regs_tests(dut):
     await axi.write(A_SCRATCH, 0xFFFFFFFF)
     await axi.write_aw_first(A_SCRATCH, 0x00000042, 0x1)
     chk.eq("SCRATCH AW-first partial strb", await axi.read(A_SCRATCH), 0xFFFFFF42)
+
+    # Test 16: automatic PAUSE registers
+    chk.eq("PAUSE_XOFF reset", await axi.read(A_PAUSE_XOFF), RX_DEPTH // 2)
+    chk.eq("PAUSE_XON reset", await axi.read(A_PAUSE_XON), RX_DEPTH // 4)
+    chk.eq("PAUSE_REFRESH reset", await axi.read(A_PAUSE_REFRESH), 0)
+    chk.eq("PAUSE_CTRL reset", await axi.read(A_PAUSE_CTRL), 0)
+    await axi.write(A_PAUSE_XOFF, 0xFFFFFFFF)
+    chk.eq("PAUSE_XOFF 20 bits", await axi.read(A_PAUSE_XOFF), 0xFFFFF)
+    chk.eq("cfg_pause_xoff", dut.cfg_pause_xoff.value, 0xFFFFF, 5)
+    await axi.write_strb(A_PAUSE_XOFF, 0x00012300, 0x2)
+    chk.eq("PAUSE_XOFF strb byte1", await axi.read(A_PAUSE_XOFF), 0xF23FF)
+    await axi.write(A_PAUSE_XON, 0x000ABCDE)
+    chk.eq("PAUSE_XON", await axi.read(A_PAUSE_XON), 0xABCDE)
+    chk.eq("cfg_pause_xon", dut.cfg_pause_xon.value, 0xABCDE, 5)
+    await axi.write(A_PAUSE_REFRESH, 0xFFFF1234)
+    chk.eq("PAUSE_REFRESH 16 bits", await axi.read(A_PAUSE_REFRESH), 0x1234)
+    chk.eq("cfg_pause_refresh", dut.cfg_pause_refresh.value, 0x1234, 4)
+    await axi.write(A_PAUSE_CTRL, 0x4)
+    chk.eq("PAUSE_CTRL auto_en", await axi.read(A_PAUSE_CTRL), 0x4)
+    chk.eq("cfg_pause_auto_en", dut.cfg_pause_auto_en.value, 1, 1)
+    chk.eq("cfg_pause_rx_en", dut.cfg_pause_rx_en.value, 0, 1)
+    dut.sts_pause_auto_active.value = 1
+    dut.sts_pause_auto_err.value = 1
+    dut.sts_pause_tx_pending.value = 1
+    chk.eq("PAUSE_CTRL status", await axi.read(A_PAUSE_CTRL), 0x3C)
+    dut.sts_pause_auto_active.value = 0
+    dut.sts_pause_auto_err.value = 0
+    dut.sts_pause_tx_pending.value = 0
+    await axi.write(A_PAUSE_CTRL, 0x2)
+    chk.eq("PAUSE_CTRL rx_en only", await axi.read(A_PAUSE_CTRL), 0x2)
+    chk.eq("cfg_pause_auto_en off", dut.cfg_pause_auto_en.value, 0, 1)
 
     await Timer(20, "ns")
     chk.finish()

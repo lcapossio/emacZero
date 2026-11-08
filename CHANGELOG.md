@@ -7,6 +7,17 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
+  MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
+  with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while
+  the level stays at or above PAUSE_XON (`0xA0`), and sends a quanta-0 PAUSE
+  when it falls below PAUSE_XON or auto_en is cleared. The values are latched
+  when auto_en is set; an invalid set raises `PAUSE_CTRL[4]`. CAPS reports
+  the feature (`[3]`) and the RX FIFO size (`[8:4]`), which
+  `docs/registers.md` shows how to size for loss-free operation: the default
+  2 KB FIFO of a `MAX_FRAME=1518` build is not enough. Verilog and VHDL,
+  proven equivalent.
+
 - Linux netdev driver (work in progress) in `sw/linux/`: an out-of-tree module
   for Linux 6.12 or later that moves frames through dmaengine channels (AMD AXI
   DMA), with threaded NAPI, a page pool for RX buffers, scatter-gather and TX
@@ -160,6 +171,9 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- A `PAUSE_CTRL` `tx_send` that arrived while the MAC was still generating a
+  PAUSE frame was dropped. It now waits and is sent next; `PAUSE_CTRL[5]`
+  reads 1 meanwhile.
 - **Received PAUSE frames now hold TX within the 802.3 Annex 31B bound on
   every PHY.** A received PAUSE frame was recognized only after the RX CDC
   FIFO had delivered it, behind any frames received before it, and on GMII
