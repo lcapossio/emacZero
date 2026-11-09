@@ -62,6 +62,7 @@ module tb_mii_tx_saf_oversize;
         .tx_busy       (tx_busy),
         .tx_fifo_level (tx_fifo_level),
         .tx_active     (tx_active),
+        .tx_media_active (),
         .tx_byte_stb   (tx_byte_stb),
         .tx_frame_done (tx_frame_done),
         .dbg_saf       (dbg_saf)

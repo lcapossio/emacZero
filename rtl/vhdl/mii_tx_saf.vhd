@@ -66,6 +66,7 @@ entity mii_tx_saf is
 
         -- ---- TX observability for stats/IRQ (sys clk) ----
         tx_active     : out std_logic;       -- high while a frame is on the wire
+        tx_media_active : out std_logic;     -- MII TX_EN (low in the IFG), one TX clock early
         tx_byte_stb   : out std_logic;       -- 1-cycle pulse per byte put on the wire
         tx_frame_done : out std_logic;       -- 1-cycle pulse when a frame finishes
 
@@ -287,6 +288,8 @@ architecture rtl of mii_tx_saf is
     signal tx_done_s3   : std_logic;
     signal tx_active_s1 : std_logic;
     signal tx_active_s2 : std_logic;
+    signal tx_en_s1     : std_logic;
+    signal tx_en_s2     : std_logic;
     attribute ASYNC_REG of tx_byte_s1   : signal is "TRUE";
     attribute ASYNC_REG of tx_byte_s2   : signal is "TRUE";
     attribute ASYNC_REG of tx_byte_s3   : signal is "TRUE";
@@ -295,6 +298,8 @@ architecture rtl of mii_tx_saf is
     attribute ASYNC_REG of tx_done_s3   : signal is "TRUE";
     attribute ASYNC_REG of tx_active_s1 : signal is "TRUE";
     attribute ASYNC_REG of tx_active_s2 : signal is "TRUE";
+    attribute ASYNC_REG of tx_en_s1     : signal is "TRUE";
+    attribute ASYNC_REG of tx_en_s2     : signal is "TRUE";
 
     -- =========================================================================
     -- Debug: synchronize the read-side (mii_tx_clk) framer signals into the
@@ -682,15 +687,22 @@ begin
             tx_byte_s1 <= '0'; tx_byte_s2 <= '0'; tx_byte_s3 <= '0';
             tx_done_s1 <= '0'; tx_done_s2 <= '0'; tx_done_s3 <= '0';
             tx_active_s1 <= '0'; tx_active_s2 <= '0';
+            tx_en_s1     <= '0'; tx_en_s2     <= '0';
         elsif rising_edge(clk) then
             tx_byte_s1 <= tx_byte_tgl; tx_byte_s2 <= tx_byte_s1; tx_byte_s3 <= tx_byte_s2;
             tx_done_s1 <= tx_done_tgl; tx_done_s2 <= tx_done_s1; tx_done_s3 <= tx_done_s2;
             tx_active_s1 <= tx_active_media; tx_active_s2 <= tx_active_s1;
+            tx_en_s1     <= mii_tx_en_int;   tx_en_s2     <= tx_en_s1;
         end if;
     end process;
     tx_byte_stb   <= tx_byte_s2 xor tx_byte_s3;
     tx_frame_done <= tx_done_s2 xor tx_done_s3;
     tx_active     <= tx_active_s2;
+    -- tx_active stays high through the IFG and across back-to-back frames;
+    -- eth_pause needs each frame's end, so it gets TX_EN. Taken from the
+    -- register ahead of the IOB one (which drives the pad only), it leads the
+    -- pin by one TX clock, under 1% of a pause quantum.
+    tx_media_active <= tx_en_s2;
 
     -- =========================================================================
     -- Debug: read-side framer signals synchronized into the sys domain.

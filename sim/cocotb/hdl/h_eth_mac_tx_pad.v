@@ -75,6 +75,7 @@ module h_eth_mac_tx_pad #(
         .tx_busy       (),
         .tx_fifo_level (),
         .tx_active     (),
+        .tx_media_active (),
         .tx_byte_stb   (),
         .tx_frame_done (),
         .dbg_saf       ()

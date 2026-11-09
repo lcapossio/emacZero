@@ -15,7 +15,11 @@
 //                pause_remaining, which decrements at one tick per "pause
 //                quantum" of the current line rate. While pause_remaining != 0,
 //                tx_paused is asserted to hold data frames that have not yet
-//                started on the medium. A quanta of 0 cancels the pause
+//                started on the medium. If one of our frames is on the wire
+//                when the PAUSE arrives (tx_wire_busy), the countdown starts
+//                only once it has ended (802.3 Figure 31B-2,
+//                transmission_in_progress), so the pause is never shortened
+//                by the rest of that frame. A quanta of 0 cancels the pause
 //                immediately.
 //
 //   * TX generator: when cfg_pause_tx_send pulses, enqueues a single 60-byte
@@ -80,6 +84,9 @@ module eth_pause #(
     input  wire        rx_pause_tgl,          // flips once per valid PAUSE frame
     input  wire [15:0] rx_pause_quanta,       // its pause_time; stable between flips
 
+    // ---- Our transmitter: a frame is on the wire (synchronized to clk) ----
+    input  wire        tx_wire_busy,
+
     // ---- TX gate to eth_mac_tx ----
     output wire        tx_paused,             // 1 = block new frame starts
 
@@ -121,21 +128,52 @@ module eth_pause #(
     wire pause_load = prx_evt && cfg_pause_rx_en;
 
     // ============================================================
-    // Pause-quantum tick prescaler (speed-dependent). It restarts when a
-    // PAUSE frame loads the timer, so N quanta always last N full quanta.
+    // Countdown start. A nonzero PAUSE sets start_pend; while it is set and
+    // our frame is on the wire, the prescaler is held and no tick is taken,
+    // so the first quantum counts from the end of that frame. A frame that
+    // starts just after the load, before tx_paused has reached the TX clock
+    // domain, is caught the same way: its TX_EN comes back within a few TX
+    // clocks, well inside a quarter quantum at every speed. start_pend clears
+    // when that frame ends, after a quarter quantum with the wire idle, or at
+    // the first tick taken; after that our own PAUSE frames (sent while
+    // paused) do not stop the countdown.
     // ============================================================
+    reg  start_pend;
+    reg  tx_wire_busy_d;
+    reg  pause_tick;
+    reg  [15:0] pause_remaining;
     reg  [15:0] tick_cnt;
     wire [15:0] tick_div = (cfg_speed == 2'b00) ? TICK_DIV_1G   :
                            (cfg_speed == 2'b01) ? TICK_DIV_100M :
                                                   TICK_DIV_10M;
-    reg pause_tick;
+    wire start_hold   = start_pend && tx_wire_busy;
+    wire tx_wire_done = tx_wire_busy_d && !tx_wire_busy;
+    wire start_idle   = !tx_wire_busy && (tick_cnt >= {2'b00, tick_div[15:2]});
+    wire pause_step   = pause_tick && !start_hold && (pause_remaining != 16'd0);
 
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            start_pend     <= 1'b0;
+            tx_wire_busy_d <= 1'b0;
+        end else begin
+            tx_wire_busy_d <= tx_wire_busy;
+            if (pause_load)
+                start_pend <= (rx_pause_quanta != 16'd0);
+            else if (tx_wire_done || start_idle || pause_step)
+                start_pend <= 1'b0;
+        end
+    end
+
+    // ============================================================
+    // Pause-quantum tick prescaler (speed-dependent). It restarts when a
+    // PAUSE frame loads the timer, so N quanta always last N full quanta.
+    // ============================================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             tick_cnt   <= 16'd0;
             pause_tick <= 1'b0;
         end else begin
-            if (pause_load) begin
+            if (pause_load || start_hold) begin
                 tick_cnt   <= 16'd0;
                 pause_tick <= 1'b0;
             end else if (tick_cnt >= tick_div - 16'd1) begin
@@ -154,7 +192,6 @@ module eth_pause #(
     // tx_paused_r is (pause_remaining != 0), kept in a flop of its own:
     // gmii_cdc and mii_tx_saf synchronize tx_paused into the TX clock domain,
     // so it must not glitch.
-    reg [15:0] pause_remaining;
     reg        tx_paused_r;
 
     always @(posedge clk or negedge rst_n) begin
@@ -166,7 +203,7 @@ module eth_pause #(
             if (pause_load) begin
                 pause_remaining <= rx_pause_quanta;
                 tx_paused_r     <= (rx_pause_quanta != 16'd0);
-            end else if (pause_tick && pause_remaining != 16'd0) begin
+            end else if (pause_step) begin
                 pause_remaining <= pause_remaining - 16'd1;
                 if (pause_remaining == 16'd1)
                     tx_paused_r <= 1'b0;

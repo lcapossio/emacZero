@@ -16,7 +16,11 @@
 --                pause_remaining, which decrements at one tick per "pause
 --                quantum" of the current line rate. While pause_remaining != 0,
 --                tx_paused is asserted to hold data frames that have not yet
---                started on the medium. A quanta of 0 cancels the pause
+--                started on the medium. If one of our frames is on the wire
+--                when the PAUSE arrives (tx_wire_busy), the countdown starts
+--                only once it has ended (802.3 Figure 31B-2,
+--                transmission_in_progress), so the pause is never shortened
+--                by the rest of that frame. A quanta of 0 cancels the pause
 --                immediately.
 --
 --   * TX generator: when cfg_pause_tx_send pulses, enqueues a single 60-byte
@@ -86,6 +90,9 @@ entity eth_pause is
         rx_pause_tgl        : in  std_logic;                      -- flips once per valid PAUSE frame
         rx_pause_quanta     : in  std_logic_vector(15 downto 0);  -- its pause_time; stable between flips
 
+        -- ---- Our transmitter: a frame is on the wire (synchronized to clk) ----
+        tx_wire_busy        : in  std_logic;
+
         -- ---- TX gate to eth_mac_tx ----
         tx_paused           : out std_logic;                      -- 1 = block new frame starts
 
@@ -116,6 +123,16 @@ architecture rtl of eth_pause is
     signal prx_tgl_s3 : std_logic;
     signal prx_evt    : std_logic;
     signal pause_load : std_logic;
+
+    -- ============================================================
+    -- Countdown start
+    -- ============================================================
+    signal start_pend     : std_logic;
+    signal tx_wire_busy_d : std_logic;
+    signal start_hold     : std_logic;
+    signal tx_wire_done   : std_logic;
+    signal start_idle     : std_logic;
+    signal pause_step     : std_logic;
 
     -- ============================================================
     -- Pause-quantum tick prescaler (speed-dependent)
@@ -224,6 +241,43 @@ begin
     pause_load <= prx_evt and cfg_pause_rx_en;
 
     -- ============================================================
+    -- Countdown start. A nonzero PAUSE sets start_pend; while it is set and
+    -- our frame is on the wire, the prescaler is held and no tick is taken,
+    -- so the first quantum counts from the end of that frame. A frame that
+    -- starts just after the load, before tx_paused has reached the TX clock
+    -- domain, is caught the same way: its TX_EN comes back within a few TX
+    -- clocks, well inside a quarter quantum at every speed. start_pend clears
+    -- when that frame ends, after a quarter quantum with the wire idle, or at
+    -- the first tick taken; after that our own PAUSE frames (sent while
+    -- paused) do not stop the countdown.
+    -- ============================================================
+    start_hold   <= start_pend and tx_wire_busy;
+    tx_wire_done <= tx_wire_busy_d and not tx_wire_busy;
+    start_idle   <= '1' when tx_wire_busy = '0' and
+                             tick_cnt >= shift_right(tick_div, 2) else '0';
+    pause_step   <= '1' when pause_tick = '1' and start_hold = '0' and
+                             pause_remaining /= 0 else '0';
+
+    process (clk, rst_n)
+    begin
+        if rst_n = '0' then
+            start_pend     <= '0';
+            tx_wire_busy_d <= '0';
+        elsif rising_edge(clk) then
+            tx_wire_busy_d <= tx_wire_busy;
+            if pause_load = '1' then
+                if unsigned(rx_pause_quanta) /= 0 then
+                    start_pend <= '1';
+                else
+                    start_pend <= '0';
+                end if;
+            elsif tx_wire_done = '1' or start_idle = '1' or pause_step = '1' then
+                start_pend <= '0';
+            end if;
+        end if;
+    end process;
+
+    -- ============================================================
     -- Pause-quantum tick prescaler (speed-dependent). It restarts when a
     -- PAUSE frame loads the timer, so N quanta always last N full quanta.
     -- ============================================================
@@ -237,7 +291,7 @@ begin
             tick_cnt   <= (others => '0');
             pause_tick <= '0';
         elsif rising_edge(clk) then
-            if pause_load = '1' then
+            if pause_load = '1' or start_hold = '1' then
                 tick_cnt   <= (others => '0');
                 pause_tick <= '0';
             elsif tick_cnt >= tick_div - 1 then
@@ -267,7 +321,7 @@ begin
                 else
                     tx_paused_r <= '0';
                 end if;
-            elsif pause_tick = '1' and pause_remaining /= 0 then
+            elsif pause_step = '1' then
                 pause_remaining <= pause_remaining - 1;
                 if pause_remaining = 1 then
                     tx_paused_r <= '0';

@@ -72,7 +72,8 @@ module gmii_cdc #(
     // ---- Status ----
     output wire        tx_busy,
     output wire        tx_ctl_busy,    // control FIFO cannot take a whole frame
-    output wire [11:0] tx_fifo_level
+    output wire [11:0] tx_fifo_level,
+    output wire        tx_media_active // gmii_tx_en_out, synchronized to sys_clk
 );
 
     // =========================================================================
@@ -599,6 +600,21 @@ module gmii_cdc #(
             tx_hold_s2 <= tx_hold_s1;
         end
     end
+
+    // gmii_tx_en_out into the sys domain: a frame is on the wire (eth_pause
+    // starts a received PAUSE's countdown once it ends). A level from a flop;
+    // even a minimum frame keeps it high for 72 media clocks.
+    (* ASYNC_REG = "TRUE" *) reg tx_media_active_s1, tx_media_active_s2;
+    always @(posedge sys_clk or negedge sys_rst_n) begin
+        if (!sys_rst_n) begin
+            tx_media_active_s1 <= 1'b0;
+            tx_media_active_s2 <= 1'b0;
+        end else begin
+            tx_media_active_s1 <= gmii_tx_en_out;
+            tx_media_active_s2 <= tx_media_active_s1;
+        end
+    end
+    assign tx_media_active = tx_media_active_s2;
 
     // The selected FIFO: tx_sel_ctl is set when a frame is loaded and held
     // until the next one is, so the close-out pop (applied the cycle after the
