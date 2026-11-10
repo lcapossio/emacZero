@@ -69,7 +69,8 @@ module tb_gmii_cdc;
         .tx_busy        (tx_busy),
         .tx_ctl_busy    (),
         .tx_fifo_level  (tx_fifo_level),
-        .tx_media_active()
+        .tx_media_active(),
+        .tx_media_data_active()
     );
 
     // ---- TX frame injection (sys_clk domain) ----

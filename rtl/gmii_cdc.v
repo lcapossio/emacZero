@@ -73,7 +73,8 @@ module gmii_cdc #(
     output wire        tx_busy,
     output wire        tx_ctl_busy,    // control FIFO cannot take a whole frame
     output wire [11:0] tx_fifo_level,
-    output wire        tx_media_active // gmii_tx_en_out, synchronized to sys_clk
+    output wire        tx_media_active,     // gmii_tx_en_out, synchronized to sys_clk
+    output wire        tx_media_data_active // the same, for data frames only
 );
 
     // =========================================================================
@@ -624,6 +625,20 @@ module gmii_cdc #(
     wire       tx_rd_empty = tx_sel_ctl ? ctl_rd_empty : txd_rd_empty;
     assign     txd_rd_en   = tx_rd_en && !tx_sel_ctl;
     assign     ctl_rd_en   = tx_rd_en &&  tx_sel_ctl;
+
+    // The same as tx_media_active, for data frames only. tx_sel_ctl only
+    // changes while no frame is loaded, with gmii_tx_en_out already low.
+    (* ASYNC_REG = "TRUE" *) reg tx_media_data_s1, tx_media_data_s2;
+    always @(posedge sys_clk or negedge sys_rst_n) begin
+        if (!sys_rst_n) begin
+            tx_media_data_s1 <= 1'b0;
+            tx_media_data_s2 <= 1'b0;
+        end else begin
+            tx_media_data_s1 <= gmii_tx_en_out && !tx_sel_ctl;
+            tx_media_data_s2 <= tx_media_data_s1;
+        end
+    end
+    assign tx_media_data_active = tx_media_data_s2;
 
     // =========================================================================
     // TX readout state machine (media_clk domain)

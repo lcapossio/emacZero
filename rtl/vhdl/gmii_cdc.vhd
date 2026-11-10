@@ -80,7 +80,8 @@ entity gmii_cdc is
         tx_busy        : out std_logic;
         tx_ctl_busy    : out std_logic;   -- control FIFO cannot take a whole frame
         tx_fifo_level  : out std_logic_vector(11 downto 0);
-        tx_media_active : out std_logic   -- gmii_tx_en_out, synchronized to sys_clk
+        tx_media_active : out std_logic;  -- gmii_tx_en_out, synchronized to sys_clk
+        tx_media_data_active : out std_logic  -- the same, for data frames only
     );
 end entity gmii_cdc;
 
@@ -307,6 +308,9 @@ architecture rtl of gmii_cdc is
     signal tx_media_active_s1, tx_media_active_s2 : std_logic;
     attribute ASYNC_REG of tx_media_active_s1 : signal is "TRUE";
     attribute ASYNC_REG of tx_media_active_s2 : signal is "TRUE";
+    signal tx_media_data_s1, tx_media_data_s2 : std_logic;
+    attribute ASYNC_REG of tx_media_data_s1 : signal is "TRUE";
+    attribute ASYNC_REG of tx_media_data_s2 : signal is "TRUE";
 
     -- The selected FIFO.
     signal tx_sel_ctl  : std_logic;
@@ -793,6 +797,20 @@ begin
     end process;
     tx_media_active <= tx_media_active_s2;
     gmii_tx_en_out  <= gmii_tx_en_r;
+
+    -- The same as tx_media_active, for data frames only. tx_sel_ctl only
+    -- changes while no frame is loaded, with gmii_tx_en_r already low.
+    process (sys_clk, sys_rst_n)
+    begin
+        if sys_rst_n = '0' then
+            tx_media_data_s1 <= '0';
+            tx_media_data_s2 <= '0';
+        elsif rising_edge(sys_clk) then
+            tx_media_data_s1 <= gmii_tx_en_r and (not tx_sel_ctl);
+            tx_media_data_s2 <= tx_media_data_s1;
+        end if;
+    end process;
+    tx_media_data_active <= tx_media_data_s2;
 
     -- The selected FIFO: tx_sel_ctl is set when a frame is loaded and held
     -- until the next one is, so the close-out pop (applied the cycle after the

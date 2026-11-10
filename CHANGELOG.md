@@ -178,11 +178,13 @@ This project does not yet maintain long-lived release branches.
   (`transmission_in_progress`) and UNH-IOL flow control test 31.1.5 require
   the full quanta after that frame ends. The TX gate still closes at once;
   the countdown now waits for the frame at the PHY interface to end, which
-  also covers a frame that starts just after the PAUSE. Our own PAUSE frames
-  sent after that do not hold it. With the transmitter idle, timing is
-  unchanged. `gmii_cdc` and `mii_tx_saf` gain a `tx_media_active` output
-  (TX enable, synchronized to the sys clock) and `eth_pause` a
-  `tx_wire_busy` input; Verilog and VHDL, proven equivalent.
+  also covers a data frame that slips out just after the PAUSE. Our own
+  PAUSE frames whose TX enable is seen more than three sys clocks after it
+  do not hold it, so with the transmitter idle, timing is unchanged. `gmii_cdc` and `mii_tx_saf` gain
+  `tx_media_active` and `tx_media_data_active` outputs (TX enable, and TX
+  enable for data frames only, synchronized to the sys clock) and
+  `eth_pause` the matching `tx_wire_busy` and `tx_wire_data_busy` inputs;
+  Verilog and VHDL, proven equivalent.
 - A `PAUSE_CTRL` `tx_send` that arrived while the MAC was still generating a
   PAUSE frame was dropped. It now waits and is sent next; `PAUSE_CTRL[5]`
   reads 1 meanwhile.

@@ -258,6 +258,7 @@ architecture rtl of eth_mac_sys is
     -- Status
     signal tx_active      : std_logic;
     signal tx_wire_busy   : std_logic;   -- our frame is at the PHY interface (eth_pause)
+    signal tx_wire_data_busy : std_logic; -- the same, data frames only
     signal tx_fifo_busy   : std_logic;
     signal tx_fifo_level  : std_logic_vector(12 downto 0);
     signal dbg_mii_tx_saf : std_logic_vector(15 downto 0);   -- mii_tx_saf read-side debug (0 on RGMII)
@@ -571,6 +572,7 @@ begin
             rx_pause_tgl        => rx_pause_tgl,
             rx_pause_quanta     => rx_pause_quanta,
             tx_wire_busy        => tx_wire_busy,
+            tx_wire_data_busy   => tx_wire_data_busy,
             tx_paused           => tx_paused,
             pause_tdata         => pause_tdata,
             pause_tvalid        => pause_tvalid,
@@ -744,6 +746,7 @@ begin
                 tx_fifo_level => tx_fifo_level,
                 tx_active     => tx_active,
                 tx_media_active => tx_wire_busy,
+                tx_media_data_active => tx_wire_data_busy,
                 tx_byte_stb   => tx_byte_ev,
                 tx_frame_done => tx_frame_done_ev,
                 dbg_saf       => dbg_mii_tx_saf
@@ -902,7 +905,8 @@ begin
                 tx_busy        => tx_fifo_busy,
                 tx_ctl_busy    => tx_ctl_busy,
                 tx_fifo_level  => gmii_tx_fifo_level,
-                tx_media_active => tx_wire_busy
+                tx_media_active => tx_wire_busy,
+                tx_media_data_active => tx_wire_data_busy
             );
 
         tx_fifo_level <= '0' & gmii_tx_fifo_level;
@@ -1077,7 +1081,8 @@ begin
                 tx_busy        => tx_fifo_busy,
                 tx_ctl_busy    => tx_ctl_busy,
                 tx_fifo_level  => rgmii_tx_fifo_level,
-                tx_media_active => tx_wire_busy
+                tx_media_active => tx_wire_busy,
+                tx_media_data_active => tx_wire_data_busy
             );
 
         tx_fifo_level <= '0' & rgmii_tx_fifo_level;

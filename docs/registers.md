@@ -259,9 +259,13 @@ but the countdown waits for the frame then on the wire to end (802.3 Figure
 31B-2, `transmission_in_progress`): with the transmitter idle the first
 quantum starts at once; otherwise it starts when that frame's TX_EN falls,
 so no data frame starts for the full quanta after it. The wait covers a
-frame that slips out just after the PAUSE, before the gate reaches the TX
-clock domain. Our own PAUSE frames sent after that frame do not stop the
-countdown. The end of a frame is taken one register before the pins on MII
+data frame that slips out just after the PAUSE, before the gate reaches the
+TX clock domain. Our own PAUSE frames whose TX enable reaches `eth_pause`
+(through its two-flop synchronizer) more than three sys clocks after the
+PAUSE do not stop the countdown, also when they were requested before it
+arrived. One whose TX enable rose just before the PAUSE does, and on MII it
+can then reach the pin, one TX clock later, a little after those three
+clocks. The end of a frame is taken one register before the pins on MII
 and GMII, and at the GMII side of `rgmii_if` on RGMII, a few ns to under
 1% of a quantum early. A quanta of 0 cancels the pause at once, also while
 the countdown is waiting. (cocotb `pause_mid_frame` in the

@@ -17,8 +17,9 @@
 --                quantum" of the current line rate. While pause_remaining != 0,
 --                tx_paused is asserted to hold data frames that have not yet
 --                started on the medium. If one of our frames is on the wire
---                when the PAUSE arrives (tx_wire_busy), the countdown starts
---                only once it has ended (802.3 Figure 31B-2,
+--                when the PAUSE arrives (tx_wire_busy, or tx_wire_data_busy
+--                for a data frame that slips out just after it), the
+--                countdown starts only once it has ended (802.3 Figure 31B-2,
 --                transmission_in_progress), so the pause is never shortened
 --                by the rest of that frame. A quanta of 0 cancels the pause
 --                immediately.
@@ -90,8 +91,9 @@ entity eth_pause is
         rx_pause_tgl        : in  std_logic;                      -- flips once per valid PAUSE frame
         rx_pause_quanta     : in  std_logic_vector(15 downto 0);  -- its pause_time; stable between flips
 
-        -- ---- Our transmitter: a frame is on the wire (synchronized to clk) ----
-        tx_wire_busy        : in  std_logic;
+        -- ---- Our transmitter, synchronized to clk: a frame is on the wire ----
+        tx_wire_busy        : in  std_logic;                      -- any frame
+        tx_wire_data_busy   : in  std_logic;                      -- a data frame (not MAC Control)
 
         -- ---- TX gate to eth_mac_tx ----
         tx_paused           : out std_logic;                      -- 1 = block new frame starts
@@ -128,10 +130,11 @@ architecture rtl of eth_pause is
     -- Countdown start
     -- ============================================================
     signal start_pend     : std_logic;
-    signal tx_wire_busy_d : std_logic;
+    signal start_seen     : std_logic;                     -- the frame in progress is holding it
+    signal raw_grace      : std_logic_vector(2 downto 0);
+    signal any_busy       : std_logic;
     signal start_hold     : std_logic;
-    signal tx_wire_done   : std_logic;
-    signal start_idle     : std_logic;
+    signal start_done     : std_logic;
     signal pause_step     : std_logic;
 
     -- ============================================================
@@ -242,37 +245,54 @@ begin
 
     -- ============================================================
     -- Countdown start. A nonzero PAUSE sets start_pend; while it is set and
-    -- our frame is on the wire, the prescaler is held and no tick is taken,
-    -- so the first quantum counts from the end of that frame. A frame that
-    -- starts just after the load, before tx_paused has reached the TX clock
-    -- domain, is caught the same way: its TX_EN comes back within a few TX
-    -- clocks, well inside a quarter quantum at every speed. start_pend clears
-    -- when that frame ends, after a quarter quantum with the wire idle, or at
-    -- the first tick taken; after that our own PAUSE frames (sent while
-    -- paused) do not stop the countdown.
+    -- the frame in progress is on the wire, the prescaler is held and no
+    -- tick is taken, so the first quantum counts from the end of that frame.
+    -- The frame in progress is
+    --   * any frame whose busy is seen at the load or within the three clocks
+    --     after it (raw_grace: the busy synchronizer's latency), or
+    --   * a data frame: data frames cannot start once tx_paused has reached
+    --     the TX clock domain, so one that shows up later slipped out just
+    --     before (its TX_EN comes back within a few TX clocks).
+    -- start_pend clears when that frame ends (start_done) or at the first
+    -- tick taken. Our own control frames that start later (a PAUSE sent just
+    -- before or while paused) do not stop the countdown.
     -- ============================================================
-    start_hold   <= start_pend and tx_wire_busy;
-    tx_wire_done <= tx_wire_busy_d and not tx_wire_busy;
-    start_idle   <= '1' when tx_wire_busy = '0' and
-                             tick_cnt >= shift_right(tick_div, 2) else '0';
-    pause_step   <= '1' when pause_tick = '1' and start_hold = '0' and
-                             pause_remaining /= 0 else '0';
+    any_busy   <= tx_wire_busy or tx_wire_data_busy;
+    start_hold <= '1' when start_pend = '1' and
+                           (tx_wire_data_busy = '1' or
+                            (tx_wire_busy = '1' and
+                             (start_seen = '1' or raw_grace /= "000"))) else '0';
+    start_done <= start_pend and start_seen and not any_busy;
+    pause_step <= '1' when pause_tick = '1' and start_hold = '0' and
+                           pause_remaining /= 0 else '0';
 
     process (clk, rst_n)
     begin
         if rst_n = '0' then
-            start_pend     <= '0';
-            tx_wire_busy_d <= '0';
+            start_pend <= '0';
+            start_seen <= '0';
+            raw_grace  <= "000";
         elsif rising_edge(clk) then
-            tx_wire_busy_d <= tx_wire_busy;
             if pause_load = '1' then
                 if unsigned(rx_pause_quanta) /= 0 then
                     start_pend <= '1';
+                    start_seen <= any_busy;
+                    raw_grace  <= "111";
                 else
                     start_pend <= '0';
+                    start_seen <= '0';
+                    raw_grace  <= "000";
                 end if;
-            elsif tx_wire_done = '1' or start_idle = '1' or pause_step = '1' then
-                start_pend <= '0';
+            else
+                -- raw_grace runs out on its own, also while the countdown is held.
+                raw_grace <= '0' & raw_grace(2 downto 1);
+                if start_done = '1' or pause_step = '1' then
+                    start_pend <= '0';
+                    start_seen <= '0';
+                    raw_grace  <= "000";
+                elsif start_hold = '1' then
+                    start_seen <= '1';
+                end if;
             end if;
         end if;
     end process;

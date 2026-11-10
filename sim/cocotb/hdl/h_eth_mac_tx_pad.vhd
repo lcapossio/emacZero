@@ -93,6 +93,7 @@ begin
             tx_fifo_level => open,
             tx_active     => open,
             tx_media_active => open,
+            tx_media_data_active => open,
             tx_byte_stb   => open,
             tx_frame_done => open,
             dbg_saf       => open

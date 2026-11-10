@@ -37,7 +37,10 @@ There are three kinds of suite:
   `tx_send` during a busy generator is held and sent; and a PAUSE frame
   received while our frame is on the wire counts its quanta from the end of
   that frame (802.3 Figure 31B-2), also with our own PAUSE frames going out
-  after it and at 12 phases across a stream of minimum-size frames;
+  after it and at 12 phases across a stream of minimum-size frames, while a
+  PAUSE received with the wire idle is not stretched by our own PAUSE frame
+  starting after it (also when that frame starts about an eighth of a
+  quantum after it, checked between Q/16 and Q/4);
   `eth_mac_sys_pause_headroom_gmii` and `_mii` check the PAUSE_XOFF limit
   that `docs/registers.md` recommends for an 8 KB RX FIFO, with
   maximum-size frames from the partner and queued on `s_axis` (no overflow

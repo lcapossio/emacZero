@@ -78,6 +78,10 @@ quantum; a frame's end is its last byte at the TX pins.
     path spaces them wider): tx_paused falls 8Q after the long frame ended, as
     the control frames after it do not hold the countdown, and the next data
     frame starts no earlier
+  3b quanta 4 with the wire idle: tx_paused lasts 4Q to one sys clock more,
+    also (not on GMII) with our own PAUSE frame starting after the load,
+    requested Q/3 after the incoming PAUSE (and its IFG) ended, or requested
+    before it ended so that it starts Q/16..Q/4 after tx_paused rose
   4 minimum-size data frames queued all along, quanta 2 ending at 12 phases
     across a frame period: no data frame starts after the budget until 2Q
     after the end of the last frame that started within it (or after RX_DV
@@ -1012,14 +1016,12 @@ async def pause_mid_frame(dut):
             bool(dat) and dat[0][0] - end_of(big) >= 8 * q_ns
             and seq_of(dat[0][1]) == (nums[1], True))
 
-    # 3b. Quanta 4 with the transmitter idle, then our PAUSE frame inside the
-    #     first quantum (past the first quarter, which covers a frame that
-    #     slips out after the PAUSE): the countdown does not wait for it.
-    #     Not on GMII, where a tx_send takes more than a quantum to reach the
-    #     pins through the store-and-forward control path.
-    await Timer(int(2 * q_ns + 4 * frame_ns), "ns")
-    n0 = len(tx.frames)
-
+    # 3b. Quanta 4 with the transmitter idle, then our PAUSE frame starting
+    #     after the load: once requested a third of a quantum after the
+    #     incoming PAUSE ends, once requested before it ends so that it
+    #     starts about an eighth of a quantum after the load. The countdown
+    #     waits for neither. Not on GMII, where a tx_send takes more than a
+    #     quantum to reach the pins through the store-and-forward control path.
     async def paused_span():
         while True:
             await RisingEdge(clk)
@@ -1035,24 +1037,56 @@ async def pause_mid_frame(dut):
             if not bit(dut.tx_paused):
                 return t, n
 
-    span = cocotb.start_soon(paused_span())
-    await pins.send(wire(pause_frame(4)))
-    if MODE != "gmii":
-        while not bit(dut.tx_paused):
-            await RisingEdge(clk)
-        await Timer(int(q_ns // 3), "ns")
-        await axil.write(0x84, 0x03)              # rx_en + tx_send
-    t_rise, n = await with_timeout(span, 8 * q_ns, "ns")
-    c.check(f"idle PAUSE, quanta 4, our PAUSE frame in the first quantum: paused "
-            f"{n} clocks (expect {4 * QUANTUM_CLKS}..{4 * QUANTUM_CLKS + 1})",
-            4 * QUANTUM_CLKS <= n <= 4 * QUANTUM_CLKS + 1)
-    if MODE != "gmii":
-        await wait_for(lambda: len(tx.frames) > n0, 4 * frame_ns)
-        t_ctl = tx.frames[n0][0] - t_rise if len(tx.frames) > n0 else None
-        c.check(f"our PAUSE frame started {t_ctl} ns after tx_paused rose "
-                f"(expect {q_ns / 4:.0f}..{q_ns:.0f})",
-                t_ctl is not None and is_ctl(tx.frames[n0][1])
-                and q_ns / 4 < t_ctl < q_ns)
+    async def idle_pause(send_after=None, send_at=None):
+        """Quanta 4 with the wire idle, and a tx_send send_after ns after
+        the incoming PAUSE (and its IFG) ends, or send_at ns after it starts.
+        Returns (PAUSE start, tx_paused rise, pause clocks, tx_send time,
+        control frame)."""
+        await Timer(int(2 * q_ns + 4 * frame_ns), "ns")
+        n0 = len(tx.frames)
+        span = cocotb.start_soon(paused_span())
+        t_rx = now_ns()
+        rx = cocotb.start_soon(pins.send(wire(pause_frame(4))))
+        t_w = None
+        if send_at is not None:
+            await Timer(max(int(send_at), 1), "ns")
+            t_w = now_ns()
+            await axil.write(0x84, 0x03)          # rx_en + tx_send
+        await rx
+        if send_after is not None:
+            while not bit(dut.tx_paused):
+                await RisingEdge(clk)
+            await Timer(int(send_after), "ns")
+            t_w = now_ns()
+            await axil.write(0x84, 0x03)
+        t_rise, n = await with_timeout(span, 8 * q_ns, "ns")
+        ctl = None
+        if t_w is not None:
+            await wait_for(lambda: len(tx.frames) > n0, 4 * frame_ns)
+            ctl = tx.frames[n0] if len(tx.frames) > n0 else None
+        return t_rx, t_rise, n, t_w, ctl
+
+    def check_idle(label, n, t_rise, ctl, lo, hi):
+        c.check(f"idle PAUSE, quanta 4, {label}: paused {n} clocks "
+                f"(expect {4 * QUANTUM_CLKS}..{4 * QUANTUM_CLKS + 1})",
+                4 * QUANTUM_CLKS <= n <= 4 * QUANTUM_CLKS + 1)
+        if MODE == "gmii":
+            return
+        t_ctl = None if ctl is None else ctl[0] - t_rise
+        c.check(f"{label}: our PAUSE frame started {t_ctl} ns after tx_paused "
+                f"rose (expect {lo:.0f}..{hi:.0f})",
+                ctl is not None and is_ctl(ctl[1]) and lo < t_ctl < hi)
+
+    send = None if MODE == "gmii" else q_ns // 3
+    t_rx, t_rise, n, t_w, ctl = await idle_pause(send_after=send)
+    check_idle("tx_send Q/3 after it", n, t_rise, ctl, q_ns / 4, q_ns)
+    if MODE != "gmii" and ctl is not None:
+        # Same again, with tx_send timed from the latencies just seen.
+        lat_rise, lat_ctl = t_rise - t_rx, ctl[0] - t_w
+        t_rx, t_rise, n, t_w, ctl = await idle_pause(
+            send_at=lat_rise + q_ns / 8 - lat_ctl)
+        check_idle("our PAUSE frame starting after Q/8", n, t_rise, ctl,
+                   q_ns / 16, q_ns / 4)
 
     # 4. Minimum frames queued all along, quanta 2 at 12 phases.
     await Timer(int(4 * frame_ns), "ns")
