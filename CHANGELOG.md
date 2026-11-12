@@ -171,6 +171,20 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- **A PAUSE frame received while one of our frames was on the wire was cut
+  short.** Its countdown started when it was recognized, so the rest of our
+  frame used up part of the pause, and a quanta below about 24 received
+  during a 1518-byte frame gave no pause at all. 802.3 Figure 31B-2
+  (`transmission_in_progress`) and UNH-IOL flow control test 31.1.5 require
+  the full quanta after that frame ends. The TX gate still closes at once;
+  the countdown now waits for the frame at the PHY interface to end, which
+  also covers a data frame that slips out just after the PAUSE. Our own
+  PAUSE frames whose TX enable is seen more than three sys clocks after it
+  do not hold it, so with the transmitter idle, timing is unchanged. `gmii_cdc` and `mii_tx_saf` gain
+  `tx_media_active` and `tx_media_data_active` outputs (TX enable, and TX
+  enable for data frames only, synchronized to the sys clock) and
+  `eth_pause` the matching `tx_wire_busy` and `tx_wire_data_busy` inputs;
+  Verilog and VHDL, proven equivalent.
 - A `PAUSE_CTRL` `tx_send` that arrived while the MAC was still generating a
   PAUSE frame was dropped. It now waits and is sent next; `PAUSE_CTRL[5]`
   reads 1 meanwhile.

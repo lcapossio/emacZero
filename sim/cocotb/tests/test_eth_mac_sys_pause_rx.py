@@ -64,6 +64,29 @@ XOFF 600, XON 200, refresh 0 = 4 quanta) against a link partner that sends
     nothing; XOFF = 2044 is valid
   6 two tx_send writes during one generated frame: tx_pending reads 1, and
     both frames go out in order with their own quanta
+
+pause_mid_frame checks, per suite: a PAUSE that arrives while our frame is
+on the wire counts from the end of that frame (802.3 Figure 31B-2,
+transmission_in_progress; UNH-IOL flow control test 31.1.5). Q = one pause
+quantum; a frame's end is its last byte at the TX pins.
+  1 quanta 4 during our 1514-byte frame, the next data frame queued behind
+    it: that frame starts 4Q..4Q+Q/2 after the long one ends; both intact
+  2 quanta 4, then quanta 0, both during the long frame: the next frame
+    follows within Q/2 (the zero cancels the pause before it has started)
+  3 quanta 8 during the long frame, then our own PAUSE frames back to back
+    (PAUSE_CTRL.tx_send; less than Q apart, except on GMII where the control
+    path spaces them wider): tx_paused falls 8Q after the long frame ended, as
+    the control frames after it do not hold the countdown, and the next data
+    frame starts no earlier
+  3b quanta 4 with the wire idle: tx_paused lasts 4Q to one sys clock more,
+    also (not on GMII) with our own PAUSE frame starting after the load,
+    requested Q/3 after the incoming PAUSE (and its IFG) ended, or requested
+    before it ended so that it starts Q/16..Q/4 after tx_paused rose
+  4 minimum-size data frames queued all along, quanta 2 ending at 12 phases
+    across a frame period: no data frame starts after the budget until 2Q
+    after the end of the last frame that started within it (or after RX_DV
+    fell, if later), nor more than Q/2 + the budget after that; then every
+    data frame reached the pins once, in order, with a good FCS
 """
 import os
 import zlib
@@ -424,6 +447,9 @@ class TxPins:
     def __init__(self, dut):
         self.dut = dut
         self.frames = []
+        self.cur_t0 = None                        # start of the frame in flight
+        self.end_at = {}                          # start -> first idle sample
+        self.odd = 0                              # frames ending on a lone nibble
 
     async def _rgmii_sample(self):
         """TX_CTL / TXD where TXC rises. The DDR outputs are read settled at
@@ -460,6 +486,7 @@ class TxPins:
             if en:
                 if cur is None:
                     cur, t0, nib = [], now_ns(), []
+                    self.cur_t0 = t0
                 if MODE == "gmii":
                     cur.append(v)
                 else:
@@ -469,7 +496,10 @@ class TxPins:
                         nib = []
             elif cur is not None:
                 self.frames.append((t0, cur))
+                self.end_at[t0] = now_ns()
+                self.odd += 1 if nib else 0
                 cur = None
+                self.cur_t0 = None
 
     def starts(self, t_from, t_to=None):
         return [f for f in self.frames
@@ -490,11 +520,23 @@ def is_ctl(byts):
     return f is not None and f[12:14] == [0x88, 0x08]
 
 
-async def send_data(dut, n):
-    """One minimum-size data frame on s_axis, numbered n in bytes 14-15."""
-    clk = dut.clk
-    f = data_frame(60)
+def numbered(n, size=60):
+    """A data frame of `size` bytes, numbered n in bytes 14-15."""
+    f = data_frame(size)
     f[14], f[15] = (n >> 8) & 0xFF, n & 0xFF
+    return f
+
+
+def seq_of(byts):
+    """(number, FCS good) of a data frame from its wire bytes."""
+    f, ok = split(byts)
+    return (None, False) if f is None else ((f[14] << 8) | f[15], ok)
+
+
+async def send_data(dut, n, size=60):
+    """One data frame on s_axis, numbered n in bytes 14-15."""
+    clk = dut.clk
+    f = numbered(n, size)
     for k, b in enumerate(f):
         await FallingEdge(clk)
         dut.s_axis_tdata.value = b
@@ -851,5 +893,246 @@ async def pause_auto(dut):
     await Timer(int(4 * ctl_ns + 2000), "ns")
     c.eq("both tx_send frames, in order", [q for _, q in ctls(t0)], [0x11, 0x22])
     c.eq("PAUSE_CTRL: nothing pending", await axil.read(0x84), 0x02)
+
+    c.finish()
+
+
+@cocotb.test(timeout_time=300, timeout_unit="ms")
+async def pause_mid_frame(dut):
+    """A PAUSE received during our frame counts from the end of that frame."""
+    c = Checks(dut._log)
+    clk = dut.clk
+    pins, axil = await bring_up(dut)
+    tx = TxPins(dut)
+    cocotb.start_soon(tx.run())
+    q_ns = 512 * BIT_NS                           # one pause quantum
+    long_ns = 1526 * BYTE_NS
+    frame_ns = 84 * BYTE_NS                       # a minimum frame and its IFG
+
+    def end_of(fr):
+        return tx.end_at[fr[0]]
+
+    async def wait_for(cond, limit_ns):
+        t = now_ns()
+        while not cond() and now_ns() - t < limit_ns:
+            await Timer(BYTE_NS, "ns")
+        return cond()
+
+    async def paused_fall():
+        """Time of the first sys clock edge where tx_paused reads 0 again."""
+        while True:
+            await RisingEdge(clk)
+            await ReadOnly()
+            if bit(dut.tx_paused):
+                break
+        while True:
+            await RisingEdge(clk)
+            await ReadOnly()
+            if not bit(dut.tx_paused):
+                return now_ns()
+
+    seq = [0]
+
+    async def long_then_short():
+        """Queue a 1514-byte frame and a minimum one behind it, and wait
+        until the long one is a few bytes onto the wire. Returns the frame
+        count before them and their numbers."""
+        n0 = len(tx.frames)
+        a, b = seq[0], seq[0] + 1
+        seq[0] += 2
+
+        async def feed():
+            await send_data(dut, a, 1514)
+            await send_data(dut, b)
+
+        cocotb.start_soon(feed())
+        ok = await wait_for(lambda: tx.cur_t0 is not None, 4 * long_ns)
+        c.check("long frame on the wire", ok)
+        await Timer(8 * BYTE_NS, "ns")
+        return n0, (a, b)
+
+    def check_pair(label, n0, nums, lo, hi):
+        ok = len(tx.frames) >= n0 + 2
+        c.check(f"{label}: both frames at the pins", ok)
+        if not ok:
+            return
+        big, nxt = tx.frames[n0], tx.frames[n0 + 1]
+        gap = nxt[0] - end_of(big)
+        c.check(f"{label}: next frame {gap:.0f} ns after the long one "
+                f"(expect {lo:.0f}..{hi:.0f})", lo <= gap <= hi)
+        c.eq(f"{label}: frames (number, FCS good)",
+             [seq_of(big[1]), seq_of(nxt[1])], [(nums[0], True), (nums[1], True)])
+
+    # 1. Quanta 4 during the long frame.
+    n0, nums = await long_then_short()
+    await pins.send(wire(pause_frame(4)))
+    await wait_for(lambda: len(tx.frames) >= n0 + 2, 2 * long_ns + 6 * q_ns)
+    check_pair("quanta 4 mid-frame", n0, nums, 4 * q_ns, 4.5 * q_ns)
+
+    # 2. Quanta 4 then quanta 0, both during the long frame.
+    await Timer(int(2 * frame_ns), "ns")
+    n0, nums = await long_then_short()
+    await pins.send(wire(pause_frame(4)))
+    await pins.send(wire(pause_frame(0)))
+    c.check("quanta 0 arrived while the long frame was on the wire",
+            tx.cur_t0 is not None)
+    await wait_for(lambda: len(tx.frames) >= n0 + 2, 2 * long_ns + 6 * q_ns)
+    check_pair("quanta 4 then 0 mid-frame", n0, nums, 0, 0.5 * q_ns)
+
+    # 3. Quanta 8 during the long frame, then our PAUSE frames back to back.
+    await Timer(int(2 * frame_ns), "ns")
+    n0, nums = await long_then_short()
+    w = cocotb.start_soon(paused_fall())
+    await pins.send(wire(pause_frame(8)))
+    await wait_for(lambda: len(tx.frames) > n0, 2 * long_ns)
+    await axil.write(0x88, 0x0010)
+    await axil.write(0x8C, 0)                     # clear PAUSE_RX/TX_CNT
+    # tx_send writes faster than the frames go out: one always waits in the
+    # generator's slot (a later one replaces it), so they leave back to back.
+    t_stop = end_of(tx.frames[n0]) + 7 * q_ns
+    while now_ns() < t_stop:
+        await axil.write(0x84, 0x03)              # rx_en + tx_send
+    t_fall = await with_timeout(w, 4 * q_ns, "ns")
+    while (await axil.read(0x84)) & 0x20:         # tx_pending
+        pass
+    await Timer(int(2 * q_ns + 4 * frame_ns), "ns")
+    n_ctl = await axil.read(0x90)
+    big = tx.frames[n0]
+    ctl = [f for f in tx.frames[n0 + 1:] if is_ctl(f[1])]
+    dat = [f for f in tx.frames[n0 + 1:] if not is_ctl(f[1])]
+    c.eq("our PAUSE frames at the pins = PAUSE_TX_CNT", len(ctl), n_ctl)
+    ctl_gaps = [b[0] - end_of(a) for a, b in zip(ctl, ctl[1:])]
+    # At 1G the store-and-forward control FIFO in gmii_cdc spaces PAUSE
+    # frames more than a quantum apart (a frame goes out only once it is
+    # whole in the FIFO), so there the case is not reachable this way.
+    c.check(f"{len(ctl)} PAUSE frames, gaps {max(ctl_gaps, default=0):.0f} ns at most "
+            f"(< Q, so no quantum passes with the wire idle; not at 1G)",
+            len(ctl) >= 4 and (MODE == "gmii" or all(g < q_ns for g in ctl_gaps)))
+    lat = t_fall - end_of(big)
+    lo, hi = 8 * q_ns - 2 * BYTE_NS, 8 * q_ns + 2 * BYTE_NS + 16 * SYS_NS
+    c.check(f"tx_paused fell {lat:.0f} ns after the long frame ended "
+            f"(expect {lo:.0f}..{hi:.0f})", lo <= lat <= hi)
+    c.check("next data frame after the PAUSE frames, at least 8Q after the long one",
+            bool(dat) and dat[0][0] - end_of(big) >= 8 * q_ns
+            and seq_of(dat[0][1]) == (nums[1], True))
+
+    # 3b. Quanta 4 with the transmitter idle, then our PAUSE frame starting
+    #     after the load: once requested a third of a quantum after the
+    #     incoming PAUSE ends, once requested before it ends so that it
+    #     starts about an eighth of a quantum after the load. The countdown
+    #     waits for neither. Not on GMII, where a tx_send takes more than a
+    #     quantum to reach the pins through the store-and-forward control path.
+    async def paused_span():
+        while True:
+            await RisingEdge(clk)
+            await ReadOnly()
+            if bit(dut.tx_paused):
+                break
+        t = now_ns()
+        n = 0
+        while True:
+            n += 1
+            await RisingEdge(clk)
+            await ReadOnly()
+            if not bit(dut.tx_paused):
+                return t, n
+
+    async def idle_pause(send_after=None, send_at=None):
+        """Quanta 4 with the wire idle, and a tx_send send_after ns after
+        the incoming PAUSE (and its IFG) ends, or send_at ns after it starts.
+        Returns (PAUSE start, tx_paused rise, pause clocks, tx_send time,
+        control frame)."""
+        await Timer(int(2 * q_ns + 4 * frame_ns), "ns")
+        n0 = len(tx.frames)
+        span = cocotb.start_soon(paused_span())
+        t_rx = now_ns()
+        rx = cocotb.start_soon(pins.send(wire(pause_frame(4))))
+        t_w = None
+        if send_at is not None:
+            await Timer(max(int(send_at), 1), "ns")
+            t_w = now_ns()
+            await axil.write(0x84, 0x03)          # rx_en + tx_send
+        await rx
+        if send_after is not None:
+            while not bit(dut.tx_paused):
+                await RisingEdge(clk)
+            await Timer(int(send_after), "ns")
+            t_w = now_ns()
+            await axil.write(0x84, 0x03)
+        t_rise, n = await with_timeout(span, 8 * q_ns, "ns")
+        ctl = None
+        if t_w is not None:
+            await wait_for(lambda: len(tx.frames) > n0, 4 * frame_ns)
+            ctl = tx.frames[n0] if len(tx.frames) > n0 else None
+        return t_rx, t_rise, n, t_w, ctl
+
+    def check_idle(label, n, t_rise, ctl, lo, hi):
+        c.check(f"idle PAUSE, quanta 4, {label}: paused {n} clocks "
+                f"(expect {4 * QUANTUM_CLKS}..{4 * QUANTUM_CLKS + 1})",
+                4 * QUANTUM_CLKS <= n <= 4 * QUANTUM_CLKS + 1)
+        if MODE == "gmii":
+            return
+        t_ctl = None if ctl is None else ctl[0] - t_rise
+        c.check(f"{label}: our PAUSE frame started {t_ctl} ns after tx_paused "
+                f"rose (expect {lo:.0f}..{hi:.0f})",
+                ctl is not None and is_ctl(ctl[1]) and lo < t_ctl < hi)
+
+    send = None if MODE == "gmii" else q_ns // 3
+    t_rx, t_rise, n, t_w, ctl = await idle_pause(send_after=send)
+    check_idle("tx_send Q/3 after it", n, t_rise, ctl, q_ns / 4, q_ns)
+    if MODE != "gmii" and ctl is not None:
+        # Same again, with tx_send timed from the latencies just seen.
+        lat_rise, lat_ctl = t_rise - t_rx, ctl[0] - t_w
+        t_rx, t_rise, n, t_w, ctl = await idle_pause(
+            send_at=lat_rise + q_ns / 8 - lat_ctl)
+        check_idle("our PAUSE frame starting after Q/8", n, t_rise, ctl,
+                   q_ns / 16, q_ns / 4)
+
+    # 4. Minimum frames queued all along, quanta 2 at 12 phases.
+    await Timer(int(4 * frame_ns), "ns")
+    t_start = now_ns()
+    base = seq[0]
+
+    def data_since():
+        return [f for f in tx.starts(t_start) if not is_ctl(f[1])]
+
+    class Fed(Feeder):
+        async def run(self):
+            while self.go:
+                while self.sent - len(data_since()) >= self.AHEAD:
+                    await Timer(BYTE_NS, "ns")
+                await send_data(self.dut, base + self.sent)
+                self.sent += 1
+
+    feed = Fed(dut, tx)
+    feed_task = cocotb.start_soon(feed.run())
+    await wait_for(lambda: len(data_since()) >= 3, 20 * frame_ns)
+    lo, hi = 2 * q_ns, 2.5 * q_ns + BUDGET_NS
+    seen = []
+    for ph in range(12):
+        await Timer(int(ph * frame_ns // 12 + 3 * frame_ns), "ns")
+        t_end = await pins.send(wire(pause_frame(2)))
+        await Timer(int(2 * q_ns + BUDGET_NS + 4 * frame_ns), "ns")
+        data = data_since()
+        before = [f for f in data if f[0] <= t_end + BUDGET_NS]
+        after = [f for f in data if f[0] > t_end + BUDGET_NS]
+        t_from = max([t_end] + [end_of(f) for f in before])
+        d = after[0][0] - t_from if after else None
+        if d is not None:
+            seen.append(d)
+        c.check(f"phase {ph}: first data frame after the budget "
+                f"{d if d is None else round(d)} ns after the countdown could "
+                f"start (expect {lo:.0f}..{hi:.0f})",
+                d is not None and lo <= d <= hi)
+    dut._log.info("phase sweep: %.0f..%.0f ns from countdown start to the next frame",
+                  min(seen, default=0), max(seen, default=0))
+    feed.go = False
+    await feed_task
+    await Timer(int((Feeder.AHEAD + 4) * frame_ns), "ns")
+    got = [seq_of(f[1]) for f in data_since()]
+    c.check(f"phase sweep: data frames {base}..{base + feed.sent - 1} each once, "
+            f"in order, good FCS ({len(got)} seen)",
+            got == [(base + i, True) for i in range(feed.sent)])
+    c.eq("frames ending on a lone nibble at the TX pins", tx.odd, 0)
 
     c.finish()

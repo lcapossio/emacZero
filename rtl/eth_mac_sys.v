@@ -228,6 +228,8 @@ module eth_mac_sys #(
 
     // Status
     wire        tx_active;
+    wire        tx_wire_busy;     // our frame is at the PHY interface (eth_pause)
+    wire        tx_wire_data_busy; // the same, data frames only
     wire        tx_fifo_busy;
     wire [12:0] tx_fifo_level;
     wire [15:0] dbg_mii_tx_saf;   // mii_tx_saf read-side debug (0 on RGMII)
@@ -494,6 +496,8 @@ module eth_mac_sys #(
         .tx_pending          (sts_pause_tx_pending),
         .rx_pause_tgl        (rx_pause_tgl),
         .rx_pause_quanta     (rx_pause_quanta),
+        .tx_wire_busy        (tx_wire_busy),
+        .tx_wire_data_busy   (tx_wire_data_busy),
         .tx_paused           (tx_paused),
         .pause_tdata         (pause_tdata),
         .pause_tvalid        (pause_tvalid),
@@ -656,6 +660,8 @@ module eth_mac_sys #(
                 .tx_busy       (tx_fifo_busy),
                 .tx_fifo_level (tx_fifo_level),
                 .tx_active     (tx_active),
+                .tx_media_active (tx_wire_busy),
+                .tx_media_data_active (tx_wire_data_busy),
                 .tx_byte_stb   (tx_byte_ev),
                 .tx_frame_done (tx_frame_done_ev),
                 .dbg_saf       (dbg_mii_tx_saf)
@@ -792,7 +798,9 @@ module eth_mac_sys #(
                 .gmii_rx_ce_in  (1'b1),
                 .tx_busy        (tx_fifo_busy),
                 .tx_ctl_busy    (tx_ctl_busy),
-                .tx_fifo_level  (gmii_tx_fifo_level)
+                .tx_fifo_level  (gmii_tx_fifo_level),
+                .tx_media_active(tx_wire_busy),
+                .tx_media_data_active(tx_wire_data_busy)
             );
 
             assign tx_fifo_level = {1'b0, gmii_tx_fifo_level};
@@ -943,7 +951,9 @@ module eth_mac_sys #(
                 .gmii_rx_ce_in  (media_gmii_rx_ce),
                 .tx_busy        (tx_fifo_busy),
                 .tx_ctl_busy    (tx_ctl_busy),
-                .tx_fifo_level  (rgmii_tx_fifo_level)
+                .tx_fifo_level  (rgmii_tx_fifo_level),
+                .tx_media_active(tx_wire_busy),
+                .tx_media_data_active(tx_wire_data_busy)
             );
 
             assign tx_fifo_level = {1'b0, rgmii_tx_fifo_level};

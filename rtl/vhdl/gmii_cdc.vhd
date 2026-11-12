@@ -79,7 +79,9 @@ entity gmii_cdc is
         -- ---- Status ----
         tx_busy        : out std_logic;
         tx_ctl_busy    : out std_logic;   -- control FIFO cannot take a whole frame
-        tx_fifo_level  : out std_logic_vector(11 downto 0)
+        tx_fifo_level  : out std_logic_vector(11 downto 0);
+        tx_media_active : out std_logic;  -- gmii_tx_en_out, synchronized to sys_clk
+        tx_media_data_active : out std_logic  -- the same, for data frames only
     );
 end entity gmii_cdc;
 
@@ -300,6 +302,15 @@ architecture rtl of gmii_cdc is
     signal tx_hold_s1, tx_hold_s2 : std_logic;
     attribute ASYNC_REG of tx_hold_s1 : signal is "TRUE";
     attribute ASYNC_REG of tx_hold_s2 : signal is "TRUE";
+
+    -- gmii_tx_en_out (driven from gmii_tx_en_r) into the sys domain.
+    signal gmii_tx_en_r : std_logic;
+    signal tx_media_active_s1, tx_media_active_s2 : std_logic;
+    attribute ASYNC_REG of tx_media_active_s1 : signal is "TRUE";
+    attribute ASYNC_REG of tx_media_active_s2 : signal is "TRUE";
+    signal tx_media_data_s1, tx_media_data_s2 : std_logic;
+    attribute ASYNC_REG of tx_media_data_s1 : signal is "TRUE";
+    attribute ASYNC_REG of tx_media_data_s2 : signal is "TRUE";
 
     -- The selected FIFO.
     signal tx_sel_ctl  : std_logic;
@@ -771,6 +782,36 @@ begin
         end if;
     end process;
 
+    -- gmii_tx_en_out into the sys domain: a frame is on the wire (eth_pause
+    -- starts a received PAUSE's countdown once it ends). A level from a flop;
+    -- even a minimum frame keeps it high for 72 media clocks.
+    process (sys_clk, sys_rst_n)
+    begin
+        if sys_rst_n = '0' then
+            tx_media_active_s1 <= '0';
+            tx_media_active_s2 <= '0';
+        elsif rising_edge(sys_clk) then
+            tx_media_active_s1 <= gmii_tx_en_r;
+            tx_media_active_s2 <= tx_media_active_s1;
+        end if;
+    end process;
+    tx_media_active <= tx_media_active_s2;
+    gmii_tx_en_out  <= gmii_tx_en_r;
+
+    -- The same as tx_media_active, for data frames only. tx_sel_ctl only
+    -- changes while no frame is loaded, with gmii_tx_en_r already low.
+    process (sys_clk, sys_rst_n)
+    begin
+        if sys_rst_n = '0' then
+            tx_media_data_s1 <= '0';
+            tx_media_data_s2 <= '0';
+        elsif rising_edge(sys_clk) then
+            tx_media_data_s1 <= gmii_tx_en_r and (not tx_sel_ctl);
+            tx_media_data_s2 <= tx_media_data_s1;
+        end if;
+    end process;
+    tx_media_data_active <= tx_media_data_s2;
+
     -- The selected FIFO: tx_sel_ctl is set when a frame is loaded and held
     -- until the next one is, so the close-out pop (applied the cycle after the
     -- frame ends) still reaches the FIFO the frame came from.
@@ -799,7 +840,7 @@ begin
         if rising_edge(media_clk) then
             if media_rst_n_s2 = '0' then
                 gmii_txd_out          <= (others => '0');
-                gmii_tx_en_out        <= '0';
+                gmii_tx_en_r          <= '0';
                 gmii_tx_er_out        <= '0';
                 tx_rd_en              <= '0';
                 tx_frame_loaded       <= '0';
@@ -819,7 +860,7 @@ begin
                 end if;
 
                 if tx_frame_loaded = '0' then
-                    gmii_tx_en_out <= '0';
+                    gmii_tx_en_r   <= '0';
                     -- Pick the next frame: a control frame first, else a data
                     -- frame unless held.
                     if ctl_frame_pending_media = '1' or
@@ -839,7 +880,7 @@ begin
                         tx_frame_loaded <= '0';
                     elsif tx_start_delay /= 0 then
                         tx_start_delay <= tx_start_delay - 1;
-                        gmii_tx_en_out <= '0';
+                        gmii_tx_en_r   <= '0';
                         -- Prefetch: pulse rd_en one cycle before start_delay==0 so
                         -- byte 0 is at the FIFO output for the first pace_tick. Also
                         -- align pace_cnt so pace_tick fires at start_delay==0.
@@ -866,7 +907,7 @@ begin
                             if is_1g = '0' then
                                 tx_rd_en <= '1';
                             end if;
-                            gmii_tx_en_out        <= '0';
+                            gmii_tx_en_r          <= '0';
                             tx_frame_loaded       <= '0';
                             tx_frame_end          <= '0';
                             if tx_sel_ctl = '1' then
@@ -878,7 +919,7 @@ begin
                     elsif tx_rd_empty = '0' then
                         if pace_tick = '1' then
                             gmii_txd_out   <= tx_rd_data(7 downto 0);
-                            gmii_tx_en_out <= '1';
+                            gmii_tx_en_r   <= '1';
                             gmii_tx_er_out <= tx_rd_data(9);   -- per-byte error passthrough
                             if tx_rd_data(8) = '1' then
                                 tx_frame_end <= '1';   -- last byte of the frame

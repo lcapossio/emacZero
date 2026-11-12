@@ -60,6 +60,8 @@ module mii_tx_saf #(
 
     // ---- TX observability for stats/IRQ (sys clk) ----
     output wire        tx_active,       // high while a frame is on the wire
+    output wire        tx_media_active, // MII TX_EN (low in the IFG), one TX clock early
+    output wire        tx_media_data_active, // the same, for data frames only
     output wire        tx_byte_stb,     // 1-cycle pulse per byte put on the wire
     output wire        tx_frame_done,   // 1-cycle pulse when a frame finishes
 
@@ -541,20 +543,33 @@ module mii_tx_saf #(
     (* ASYNC_REG = "TRUE" *) reg tx_byte_s1, tx_byte_s2, tx_byte_s3;
     (* ASYNC_REG = "TRUE" *) reg tx_done_s1, tx_done_s2, tx_done_s3;
     (* ASYNC_REG = "TRUE" *) reg tx_active_s1, tx_active_s2;
+    (* ASYNC_REG = "TRUE" *) reg tx_en_s1, tx_en_s2;
+    (* ASYNC_REG = "TRUE" *) reg tx_den_s1, tx_den_s2;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             tx_byte_s1 <= 1'b0; tx_byte_s2 <= 1'b0; tx_byte_s3 <= 1'b0;
             tx_done_s1 <= 1'b0; tx_done_s2 <= 1'b0; tx_done_s3 <= 1'b0;
             tx_active_s1 <= 1'b0; tx_active_s2 <= 1'b0;
+            tx_en_s1     <= 1'b0; tx_en_s2     <= 1'b0;
+            tx_den_s1    <= 1'b0; tx_den_s2    <= 1'b0;
         end else begin
             tx_byte_s1 <= tx_byte_tgl; tx_byte_s2 <= tx_byte_s1; tx_byte_s3 <= tx_byte_s2;
             tx_done_s1 <= tx_done_tgl; tx_done_s2 <= tx_done_s1; tx_done_s3 <= tx_done_s2;
             tx_active_s1 <= tx_active_media; tx_active_s2 <= tx_active_s1;
+            tx_en_s1     <= mii_tx_en_int;   tx_en_s2     <= tx_en_s1;
+            // src_ctl only changes in S_IDLE, with TX_EN already low.
+            tx_den_s1    <= mii_tx_en_int && !src_ctl; tx_den_s2 <= tx_den_s1;
         end
     end
     assign tx_byte_stb   = tx_byte_s2 ^ tx_byte_s3;
     assign tx_frame_done = tx_done_s2 ^ tx_done_s3;
     assign tx_active     = tx_active_s2;
+    // tx_active stays high through the IFG and across back-to-back frames;
+    // eth_pause needs each frame's end, so it gets TX_EN. Taken from the
+    // register ahead of the IOB one (which drives the pad only), it leads the
+    // pin by one TX clock, under 1% of a pause quantum.
+    assign tx_media_active      = tx_en_s2;
+    assign tx_media_data_active = tx_den_s2;
 
     // =========================================================================
     // Debug: synchronize the read-side (mii_tx_clk) framer signals into the

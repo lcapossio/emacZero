@@ -73,7 +73,9 @@ module tb_gmii_cdc_rx_overflow;
         .gmii_rx_ce_in  (1'b1),
         .tx_busy        (),
         .tx_ctl_busy    (),
-        .tx_fifo_level  ()
+        .tx_fifo_level  (),
+        .tx_media_active(),
+        .tx_media_data_active()
     );
 
     integer pass_cnt, fail_cnt;
