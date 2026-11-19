@@ -43,7 +43,7 @@ target you build, not the whole repository.
 | Debug submodule | `fcapz` (fpgacapZero, pinned by the submodule commit) | Used only by the board debug builds, never by the core. |
 | Verification | `build_and_test.py`, `sim/tb/`, `sim/cocotb/`, `sim/parity/`, `tests/` | Executable verification intent and evidence. `sim/parity/` holds the formal equivalence manifests of the VHDL port. |
 | Build scripts | `fpga/*/scripts/`, `fpga/scripts/` | Synthesis, implementation, and hardware-test flows. |
-| Documentation | `README.md`, `SECURITY.md`, `CHANGELOG.md`, `docs/` | Integration, security, register, and evidence guidance. |
+| Documentation | `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `docs/` | Integration, security, register, and evidence guidance. |
 | Examples | `examples/` | Only examples used by the downstream product or evidence flow. |
 
 The core has no third-party HDL dependencies. The formal proofs of the VHDL
