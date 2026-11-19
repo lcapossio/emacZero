@@ -40,7 +40,7 @@
 module eth_mac_sys #(
     parameter PHY_INTERFACE     = "MII",
     parameter MCAST_HASH_FILTER = 0,
-    parameter MAX_FRAME         = 9018,
+    parameter MAX_FRAME         = 1518,
     parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
     parameter TX_CSUM_OFFLOAD   = 0,
     parameter RX_CSUM_OFFLOAD   = 0,
@@ -48,7 +48,7 @@ module eth_mac_sys #(
     parameter CLK_FREQ_HZ       = 100_000_000,
     parameter RGMII_SPEEDS      = "ALL",
     parameter MII_DEBUG         = 0,
-    parameter TXRX_EN_AT_RESET  = 1
+    parameter TXRX_EN_AT_RESET  = 0
 )(
     input  wire        clk,
     input  wire        rst_n,

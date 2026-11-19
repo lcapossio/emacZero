@@ -16,7 +16,8 @@ bench uses no $random. Checks, in bench order:
       for the suite's parameters (TB_CAPS); a write to CAPS changes nothing
   2   SCRATCH write/read 0xDEADBEEF, overwrite 0x12345678
   2b  IP_ADDR reset default 0xC0A889C8, write/read 0xC0A8EDC8, cfg_ip_addr
-  3   CTRL default 0x23, cfg_tx_en/rx_en/promisc defaults 1/1/0;
+  3   CTRL default 0x20 (0x23 with TXRX_EN_AT_RESET=1), cfg_tx_en/rx_en/promisc
+      defaults 0/0/0 (1/1/0);
       after CTRL=0x6: cfg_tx_en/rx_en/promisc 0/1/1 (then CTRL=0x3)
   4   MAC_LO 0xAABBCCDD, MAC_HI 0x1122, cfg_mac_addr 0x1122AABBCCDD
   5   mdio_go cleared, mdio_write 1, MDIO_CMD go bit reads 0, MDIO_RDATA 0xBEEF
@@ -52,20 +53,28 @@ SUITES = {
         "toplevel": "axilite_regs",
         "sources": ["rtl/axilite_regs.v"],
         "params": {"ADDR_WIDTH": 8},
-        # defaults: MAX_FRAME 9018, RX FIFO 2**11, no options
-        "env": {"TB_CAPS": "0x233A00B8", "TB_RX_DEPTH": "2048"},
+        # defaults: MAX_FRAME 1518, RX FIFO 2**11, no options
+        "env": {"TB_CAPS": "0x05EE00B8", "TB_RX_DEPTH": "2048"},
     },
     "axilite_regs_caps": {
         "toplevel": "axilite_regs",
         "sources": ["rtl/axilite_regs.v"],
         "params": {"ADDR_WIDTH": 8, "MCAST_HASH_FILTER": 1, "TX_CSUM_OFFLOAD": 1,
-                   "RX_CSUM_OFFLOAD": 1, "MAX_FRAME": 1518, "RX_AXIS_ADDR_WIDTH": 13},
-        "env": {"TB_CAPS": "0x05EE00DF", "TB_RX_DEPTH": "8192"},
+                   "RX_CSUM_OFFLOAD": 1, "MAX_FRAME": 9018, "RX_AXIS_ADDR_WIDTH": 13},
+        "env": {"TB_CAPS": "0x233A00DF", "TB_RX_DEPTH": "8192"},
+    },
+    "axilite_regs_txrx_en": {
+        "toplevel": "axilite_regs",
+        "sources": ["rtl/axilite_regs.v"],
+        "params": {"ADDR_WIDTH": 8, "TXRX_EN_AT_RESET": 1},
+        "env": {"TB_TXRX_EN_AT_RESET": "1"},
     },
 }
 
-EXPECTED_CAPS = int(os.environ.get("TB_CAPS", "0x233A00B8"), 0)
+EXPECTED_CAPS = int(os.environ.get("TB_CAPS", "0x05EE00B8"), 0)
 RX_DEPTH = int(os.environ.get("TB_RX_DEPTH", "2048"), 0)
+# TXRX_EN_AT_RESET of the DUT (a suite that sets the parameter sets this too).
+TXRX_EN = int(os.environ.get("TB_TXRX_EN_AT_RESET", "0"))
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -294,9 +303,9 @@ async def axilite_regs_tests(dut):
     chk.eq("cfg_ip_addr output", dut.cfg_ip_addr.value, 0xC0A8EDC8)
 
     # Test 3: CTRL + config outputs
-    chk.eq("CTRL default", await axi.read(A_CTRL), 0x00000023)
-    chk.eq("cfg_tx_en default", dut.cfg_tx_en.value, 1, 1)
-    chk.eq("cfg_rx_en default", dut.cfg_rx_en.value, 1, 1)
+    chk.eq("CTRL default", await axi.read(A_CTRL), 0x00000023 if TXRX_EN else 0x00000020)
+    chk.eq("cfg_tx_en default", dut.cfg_tx_en.value, TXRX_EN, 1)
+    chk.eq("cfg_rx_en default", dut.cfg_rx_en.value, TXRX_EN, 1)
     chk.eq("cfg_promisc default", dut.cfg_promisc.value, 0, 1)
     await axi.write(A_CTRL, 0x00000006)
     await posedge_plus1(dut)

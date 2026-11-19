@@ -45,7 +45,7 @@ ICMPv6 over IPv4 and IPv6).
 - **RGMII PHY interface** - 10/100/1G with **runtime speed selection** via `cfg_speed[1:0]` and parameterizable `RGMII_SPEEDS = "ALL" | "1G_ONLY" | "10_100"` for resource-conscious builds
 - **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`) on TX and
   RX for the **GMII** and **RGMII** paths. `gmii_cdc`'s store-and-forward RX
-  CDC FIFO is sized from `MAX_FRAME` (16K words at the 9018 default, 4K floor),
+  CDC FIFO is sized from `MAX_FRAME` (16K words at `MAX_FRAME=9018`, 4K floor),
   so a full `MAX_FRAME` frame is received intact. If that FIFO does overflow
   (sustained line-rate 1G reception when `clk` is slower than the 125 MHz
   media clock - the reader drains one byte per `clk`), the
@@ -137,7 +137,7 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 module eth_mac_sys #(
     parameter PHY_INTERFACE     = "MII",  // "MII", "GMII" or "RGMII"
     parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash
-    parameter MAX_FRAME         = 9018,   // jumbo MTU + Ethernet headers
+    parameter MAX_FRAME         = 1518,   // standard; up to 9018 for jumbo (GMII/RGMII)
     // RX AXIS buffer depth (address width). Defaults to one full MAX_FRAME
     // frame (2048-byte floor) so a jumbo frame survives downstream
     // backpressure; lower to save BRAM on standard-MTU builds.
@@ -152,7 +152,10 @@ module eth_mac_sys #(
     parameter CLK_FREQ_HZ       = 100_000_000,
     parameter RGMII_SPEEDS      = "ALL",  // "ALL" | "1G_ONLY" | "10_100"
     parameter MII_DEBUG         = 0,      // 0 = debug capture/counters off
-    parameter TXRX_EN_AT_RESET  = 1       // CTRL tx_en/rx_en reset value
+    // 0 = CTRL resets with tx_en/rx_en clear: no frame is sent or delivered
+    // until software has programmed the MAC address and set them. 1 = both
+    // set at reset (the pre-0.3 behaviour), for designs with no CPU.
+    parameter TXRX_EN_AT_RESET  = 0
 )(
     input  wire        clk,           // system clock, CLK_FREQ_HZ
     input  wire        rst_n,
@@ -287,9 +290,12 @@ system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
 | 0xA0 | PAUSE_XON | RW | Automatic PAUSE: send XON below this level (reset: FIFO / 4) |
 | 0xA4 | PAUSE_REFRESH | RW | Automatic PAUSE: XOFF repeat interval, quanta (0 = half of PAUSE_QUANTA). Loss-free sizing in [docs/registers.md](docs/registers.md). |
 
-Default CTRL: tx_en=1, rx_en=1, promisc=0, speed=00 (1G), full_duplex=1,
-jumbo_en=0, tx_csum_off=0, passthrough=0, rx_csum_off=0  ->  0x23.
-With `TXRX_EN_AT_RESET=0`, tx_en and rx_en reset to 0 (CTRL = 0x20).
+Default CTRL: tx_en=0, rx_en=0, promisc=0, speed=00 (1G), full_duplex=1,
+jumbo_en=0, tx_csum_off=0, passthrough=0, rx_csum_off=0  ->  0x20, or 0x23
+(tx_en and rx_en set) with `TXRX_EN_AT_RESET=1`. With TX disabled
+`s_axis_tready` stays low; with RX disabled received frames are drained, not
+delivered. Program the MAC address, then set tx_en and rx_en (`emz_init` in
+`sw/emaczero/` does both).
 Default MAC: 02:00:00:00:00:01 (locally administered).
 
 ## Simulation

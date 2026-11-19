@@ -109,7 +109,7 @@ targets:
     description: eth_mac_sys IP (MII, GMII or RGMII), no L3
     filesets: [rtl_core]
     toplevel: eth_mac_sys
-    parameters: [PHY_INTERFACE, RGMII_SPEEDS, CLK_FREQ_HZ, MAX_FRAME, MCAST_HASH_FILTER]
+    parameters: [PHY_INTERFACE, RGMII_SPEEDS, CLK_FREQ_HZ, MAX_FRAME, MCAST_HASH_FILTER, TXRX_EN_AT_RESET]
 
   vhdl:
     description: eth_mac_sys VHDL port (MII, GMII or RGMII), no L3. Set generics in the tool flow.
@@ -120,7 +120,7 @@ targets:
     description: eth_mac_sys plus L3 RX parser and ICMP echo responder
     filesets: [rtl_core, rtl_l3]
     toplevel: eth_mac_sys
-    parameters: [PHY_INTERFACE, RGMII_SPEEDS, CLK_FREQ_HZ, MAX_FRAME, MCAST_HASH_FILTER]
+    parameters: [PHY_INTERFACE, RGMII_SPEEDS, CLK_FREQ_HZ, MAX_FRAME, MCAST_HASH_FILTER, TXRX_EN_AT_RESET]
 
   arty_a7:
     description: Arty A7-100T hardware test (MII)
@@ -158,5 +158,11 @@ parameters:
   MCAST_HASH_FILTER:
     datatype: int
     description: Enable 64-bit multicast hash filter (1=enabled)
+    paramtype: vlogparam
+    default: 0
+
+  TXRX_EN_AT_RESET:
+    datatype: int
+    description: 1 = TX and RX enabled at reset (for designs with no CPU); 0 = disabled until software sets CTRL
     paramtype: vlogparam
     default: 0

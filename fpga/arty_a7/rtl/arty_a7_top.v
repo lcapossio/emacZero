@@ -241,7 +241,9 @@ module arty_a7_top (
     // over the MII path (the 4096-byte mii_if TX FIFO cannot buffer a jumbo
     // frame while the 12.5 MB/s MII side drains it), and pinning the standard
     // MTU keeps the RX AXIS buffer at the 2048-byte default.
-    eth_mac_sys #(.PHY_INTERFACE("MII"), .MAX_FRAME(1518)) u_mac_sys (
+    // TXRX_EN_AT_RESET=1: no CPU here; ARP, ICMP and the UDP helpers run from
+    // reset, with the MAC and IP set by their CSR defaults or over JTAG-AXI.
+    eth_mac_sys #(.PHY_INTERFACE("MII"), .MAX_FRAME(1518), .TXRX_EN_AT_RESET(1)) u_mac_sys (
         .clk            (sys_clk),
         .rst_n          (int_rst_n),
         // AXI4-Lite CSR

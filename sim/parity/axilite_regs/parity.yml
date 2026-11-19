@@ -5,7 +5,7 @@
 # Proves the configuration eth_mac_sys instantiates (ADDR_WIDTH=8) with the
 # multicast hash filter both off and on, with every CAPS bit set and a
 # MAX_FRAME other than the default, and with CTRL's tx_en/rx_en clear at reset
-# (TXRX_EN_AT_RESET=0) as well as set (the default). The golden pulls rtl/version.vh in via
+# (TXRX_EN_AT_RESET=0, the default) as well as set. The golden pulls rtl/version.vh in via
 # `include (resolved next to the including file); the VHDL side gets the same
 # values from emz_version_pkg.
 version: 1
@@ -36,8 +36,8 @@ formal:
       param_sets:
         - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 0}
         - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 1}
-        - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 1, TX_CSUM_OFFLOAD: 1, RX_CSUM_OFFLOAD: 1, MAX_FRAME: 1518}
-        - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 0, TXRX_EN_AT_RESET: 0}
+        - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 1, TX_CSUM_OFFLOAD: 1, RX_CSUM_OFFLOAD: 1, MAX_FRAME: 9018}
+        - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 0, TXRX_EN_AT_RESET: 1}
 
 # L4 is a sanity check, not proof. Flop counts match exactly ($adff 7, $adffe
 # 43); 59 of the 69 extra cells (MCAST=1, v0.2.0 map) are $eq. GHDL's netlist
@@ -52,4 +52,4 @@ synth:
   param_sets:
     - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 0}
     - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 1}
-    - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 1, TX_CSUM_OFFLOAD: 1, RX_CSUM_OFFLOAD: 1, MAX_FRAME: 1518}
+    - {ADDR_WIDTH: 8, MCAST_HASH_FILTER: 1, TX_CSUM_OFFLOAD: 1, RX_CSUM_OFFLOAD: 1, MAX_FRAME: 9018}

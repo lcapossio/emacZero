@@ -119,14 +119,33 @@ This project does not yet maintain long-lived release branches.
   (`sim/parity/run_all.py`), with translateHDL and yowasp-yosys pinned. CI runs on Ubuntu 24.04 instead of
   `ubuntu-latest`.
 
-- `eth_mac_sys` / `axilite_regs` parameter `TXRX_EN_AT_RESET` (default 1,
-  unchanged behaviour): with 0, CTRL resets to `0x20`, with `tx_en` and
+- `eth_mac_sys` / `axilite_regs` parameter `TXRX_EN_AT_RESET` (default 0;
+  see Changed): with 0, CTRL resets to `0x20`, with `tx_en` and
   `rx_en` clear, so the core neither accepts an `s_axis` frame nor
-  delivers an `m_axis` frame until software sets them. Verilog and VHDL alike, proven equivalent with the
-  parameter at 0 as well.
+  delivers an `m_axis` frame until software sets them; 1 sets both at reset.
+  Verilog and VHDL alike, proven equivalent at both values.
 
 ### Changed
 
+- **Breaking:** safer reset defaults for `eth_mac_sys`.
+  - `MAX_FRAME` defaults to 1518 instead of 9018. A design that relied on the
+    old default for jumbo frames must now set `MAX_FRAME(9018)` (the ZCU106
+    `sfp_lb_tester` and `zcu106_eth_demo` now do). Its RX AXIS buffer and
+    GMII/RGMII CDC FIFO shrink with it, which saves BRAM.
+  - `TXRX_EN_AT_RESET` (see Added) now defaults to 0: CTRL resets to `0x20`,
+    so TX and RX stay disabled (`s_axis_tready` low, received frames drained,
+    not delivered) until software has programmed the MAC address and set
+    `tx_en` and `rx_en`. `emz_init` in `sw/emaczero/` and the Linux driver
+    already do. Set `TXRX_EN_AT_RESET=1` for the old `0x23` reset value in a
+    design with no CPU (the Arty A7 top, `sfp_lb_tester` and
+    `zcu106_eth_demo` do; `gmii_lb_selftest` and `rgmii_lb_selftest` write
+    CTRL themselves before sending).
+  - The FuseSoC core (parameter `TXRX_EN_AT_RESET`) and the LiteX wrapper
+    (`txrx_en_at_reset`) now expose it. The formal equivalence proofs cover
+    both values. `eth_mac_sys_reset_txrx_off` now builds with the default
+    parameters, so it checks the new defaults; `eth_mac_sys_reset_txrx_on`
+    sets `TXRX_EN_AT_RESET=1`. New suite `axilite_regs_txrx_en` checks the
+    `0x23` reset value.
 - The parity stand-ins for `eth_mac_sys`, MMCME2_BASE/BUFG and
   IDELAYE2/IDELAYCTRL (`sim/parity/sfp_lb_tester/eth_mac_sys_standin`,
   `sim/parity/stubs/xilinx_clk_standin`, `xilinx_io_standin`) also XOR into
@@ -249,8 +268,8 @@ This project does not yet maintain long-lived release branches.
   that reset CTRL with TX disabled they disagreed for one clock after reset,
   so a frame whose first beat was offered across the reset release was taken
   and sent whole. Both gates now
-  reset from `TXRX_EN_AT_RESET`, as CTRL does. With the default (1) nothing
-  changes. Verilog and VHDL changed alike. New cocotb suites
+  reset from `TXRX_EN_AT_RESET`, as CTRL does (this matters with the new
+  default of 0; see Changed). Verilog and VHDL changed alike. New cocotb suites
   `eth_mac_sys_reset_txrx_off` and `eth_mac_sys_reset_txrx_on`, on both
   languages.
 - `eth_mac_sys`: CTRL[0] (`tx_en`) gated `s_axis` combinationally, so

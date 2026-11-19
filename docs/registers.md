@@ -14,7 +14,7 @@ dropped.
 | Offset | Name | Access | Reset | Description |
 |-------:|------|:------:|------:|-------------|
 | `0x00` | VERSION | RO | `0x0002454D` | Version and unique ID |
-| `0x04` | CTRL | RW | `0x00000023` (`0x00000020` with `TXRX_EN_AT_RESET=0`) | Master control bits |
+| `0x04` | CTRL | RW | `0x00000020` | Master control bits (`0x00000023` with `TXRX_EN_AT_RESET=1`) |
 | `0x08` | STATUS | RO | - | Live status |
 | `0x0C` | MAC_LO | RW | `0x00000001` | `our_mac[31:0]` |
 | `0x10` | MAC_HI | RW | `0x00000200` | `our_mac[47:32]`, upper 16 bits read as 0 |
@@ -77,8 +77,8 @@ across all three on every run.
 
 | Bits | Name | Reset | Description |
 |-----:|------|:-----:|-------------|
-| `[0]` | `tx_en` | `1`* | TX path enable. While 0, `s_axis_tready` is held low and no new frame is taken. A change takes effect at the next frame boundary of `s_axis`: a frame part-way accepted when TX is disabled, or whose first beat the source is already offering, is still taken whole and sent. PAUSE frames are not gated. The source must still not leave gaps inside a frame: with `TX_CSUM_OFFLOAD=0` on GMII / RGMII the framer is cut-through, and a gap of 8 or more cycles aborts the frame with `tx_er`. |
-| `[1]` | `rx_en` | `1`* | RX path enable. While 0, `m_axis_tvalid` is held low and the MAC drains received frames itself. A change takes effect at the next frame boundary of the MAC's RX stream: a frame part-way out to `m_axis` when RX is disabled, or whose first beat `m_axis` is already offering, is still delivered whole (it still needs the sink's `tready`; `m_axis_tvalid` never drops before a handshake), and one part-way through when RX is enabled is drained whole, so the sink never gets a frame without its start or its TLAST. |
+| `[0]` | `tx_en` | `0`* | TX path enable. While 0, `s_axis_tready` is held low and no new frame is taken. A change takes effect at the next frame boundary of `s_axis`: a frame part-way accepted when TX is disabled, or whose first beat the source is already offering, is still taken whole and sent. PAUSE frames are not gated. The source must still not leave gaps inside a frame: with `TX_CSUM_OFFLOAD=0` on GMII / RGMII the framer is cut-through, and a gap of 8 or more cycles aborts the frame with `tx_er`. |
+| `[1]` | `rx_en` | `0`* | RX path enable. While 0, `m_axis_tvalid` is held low and the MAC drains received frames itself. A change takes effect at the next frame boundary of the MAC's RX stream: a frame part-way out to `m_axis` when RX is disabled, or whose first beat `m_axis` is already offering, is still delivered whole (it still needs the sink's `tready`; `m_axis_tvalid` never drops before a handshake), and one part-way through when RX is enabled is drained whole, so the sink never gets a frame without its start or its TLAST. |
 | `[2]` | `promisc` | `0` | Accept frames regardless of dst-MAC. |
 | `[4:3]` | `speed` | `00` | `00` = 1G, `01` = 100M, `10` = 10M. |
 | `[5]` | `full_duplex` | `1` | Informational only; MAC is full-duplex by construction. |
@@ -89,8 +89,9 @@ across all three on every run.
 | `[31:10]` | reserved | `0` | Reads as 0; writes ignored. |
 
 \* `tx_en` and `rx_en` reset to the value of the `eth_mac_sys` parameter
-`TXRX_EN_AT_RESET` (default 1). With 0 the core neither accepts an `s_axis`
-frame nor delivers an `m_axis` frame until software sets them. The TX and RX frame-boundary gates leave reset
+`TXRX_EN_AT_RESET` (default 0). With 0 the core neither accepts an `s_axis`
+frame nor delivers an `m_axis` frame until software sets them; 1 sets both at
+reset, for designs with no CPU. The TX and RX frame-boundary gates leave reset
 in the same state as these bits.
 
 Checksum offload scope (both directions): Ethernet II with at most one 802.1Q
@@ -121,8 +122,11 @@ per-protocol capabilities and keep IPv6 extension-header and fragment checks
 in software). RX checksum offload only flags a failing frame with
 `m_axis_terror`; whatever consumes `m_axis` must drop frames that end with it.
 
-Reset value `0x23` = `tx_en | rx_en | full_duplex`, or `0x20` = `full_duplex`
-with `TXRX_EN_AT_RESET=0`.
+Reset value `0x20` = `full_duplex`: TX and RX stay disabled until software
+has programmed the MAC address and sets `tx_en` and `rx_en`. With the
+`eth_mac_sys` parameter `TXRX_EN_AT_RESET=1` the reset value is `0x23` =
+`tx_en | rx_en | full_duplex` (the behaviour of v0.2.0 and earlier), for designs with no
+CPU to enable them.
 
 ## 0x08 - STATUS
 

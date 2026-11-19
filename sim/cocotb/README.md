@@ -288,6 +288,18 @@ frame after the first; hard-wiring `gmii_tx_er_out` to 0 fails the error
 passthrough; closing out the paced frame one cycle early shortens the last
 byte's span from `len*period` to `(len-1)*period+1`.
 
+## Reset defaults
+
+`eth_mac_sys_reset_txrx_off` builds `eth_mac_sys` (MII, MII TX looped back to
+RX) with its default parameters. It checks that CTRL resets to `0x20`, that a
+frame offered on `s_axis` across the reset release is not accepted and nothing
+is sent while `tx_en` is 0, that with only `tx_en` set the frame goes out but
+its looped-back copy is not delivered, and that with both set a frame comes
+back byte-exact. `eth_mac_sys_reset_txrx_on` sets `TXRX_EN_AT_RESET=1` and
+checks that CTRL resets to `0x23` and the frame comes back with no CTRL write.
+`axilite_regs_txrx_en` reruns the `axilite_regs` port with the same
+parameter.
+
 ## Adding a suite
 
 Add `tests/test_<name>.py` with a `SUITES` dict and the tests; `run.py` finds

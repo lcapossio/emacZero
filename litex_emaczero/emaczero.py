@@ -131,7 +131,8 @@ class EmacZero(LiteXModule):
         Pass-through to the same parameter on ``eth_mac_sys`` (0 disables the
         64-bit multicast hash table; 1 enables it).
     max_frame : int
-        Pass-through to ``MAX_FRAME``. Default 9018 covers jumbo.
+        Pass-through to ``MAX_FRAME``. Default 1518 (standard MTU); 9018
+        covers jumbo, on RGMII only.
     tx_csum_offload : int
         Pass-through to ``TX_CSUM_OFFLOAD``. Default 0 removes the frame-
         buffering TX checksum inserter (IPv4 header, TCP, UDP, ICMP, ICMPv6);
@@ -147,16 +148,21 @@ class EmacZero(LiteXModule):
         Pass-through to ``RGMII_SPEEDS``: ``"ALL"``, ``"1G_ONLY"`` or
         ``"10_100"``. ``"10_100"`` drops 1G and its 125 MHz ``sys`` clock
         requirement.
+    txrx_en_at_reset : int
+        Pass-through to ``TXRX_EN_AT_RESET``. Default 0: TX and RX stay
+        disabled until firmware programs the MAC address and sets CTRL[0]
+        and CTRL[1]. 1 enables both at reset (the behaviour of v0.2.0 and earlier).
     """
 
     def __init__(self, platform, pads,
                  phy_interface="MII",
                  mcast_hash_filter=0,
-                 max_frame=9018,
+                 max_frame=1518,
                  tx_csum_offload=0,
                  rx_csum_offload=0,
                  clk_freq=100e6,
-                 rgmii_speeds="ALL"):
+                 rgmii_speeds="ALL",
+                 txrx_en_at_reset=0):
         if phy_interface not in ("MII", "RGMII"):
             raise ValueError(f"phy_interface must be 'MII' or 'RGMII', got {phy_interface!r}")
         if rgmii_speeds not in ("ALL", "1G_ONLY", "10_100"):
@@ -200,6 +206,7 @@ class EmacZero(LiteXModule):
             p_RX_CSUM_OFFLOAD   = rx_csum_offload,
             p_CLK_FREQ_HZ       = int(clk_freq),
             p_RGMII_SPEEDS      = rgmii_speeds,
+            p_TXRX_EN_AT_RESET  = txrx_en_at_reset,
 
             i_clk   = ClockSignal("sys"),
             i_rst_n = ~ResetSignal("sys"),
