@@ -145,4 +145,7 @@ accept these gaps:
 - Standalone resource/timing matrices are not yet maintained for every target
   FPGA, PHY mode, and parameter set.
 - Optional L3 helpers are demo-oriented and should be reviewed before product
-  use.
+  use. `net_rx` drops IPv4 fragments, ICMP to broadcast and frames from an
+  invalid source MAC or IP. It does not reassemble, and the responders reply
+  to the request's source MAC without an ARP lookup, one reply per request,
+  so a spoofed source still draws a reply.

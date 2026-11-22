@@ -642,11 +642,12 @@ module test_sequencer_x0 #(
                     print_next_state <= S_EN_MAC;
                 end
 
-                // --- Enable MAC (tx+rx+promisc) ---
+                // --- Enable MAC (tx+rx; promisc off, so the MAC address
+                // filter passes only our unicast, broadcast and multicast) ---
                 S_EN_MAC: begin
                     m_axi_awaddr  <= A_CTRL;
                     m_axi_awvalid <= 1'b1;
-                    m_axi_wdata   <= 32'h0000_0007;
+                    m_axi_wdata   <= 32'h0000_0003;
                     m_axi_wstrb   <= 4'hF;
                     m_axi_wvalid  <= 1'b1;
                     m_axi_bready  <= 1'b1;

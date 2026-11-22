@@ -645,11 +645,12 @@ begin
                     printing  <= '1';
                     print_next_state <= S_EN_MAC;
 
-                -- --- Enable MAC (tx+rx+promisc) ---
+                -- --- Enable MAC (tx+rx; promisc off, so the MAC address
+                -- filter passes only our unicast, broadcast and multicast) ---
                 when S_EN_MAC =>
                     m_axi_awaddr  <= A_CTRL;
                     m_axi_awvalid <= '1';
-                    m_axi_wdata   <= x"00000007";
+                    m_axi_wdata   <= x"00000003";
                     m_axi_wstrb   <= x"F";
                     m_axi_wvalid  <= '1';
                     m_axi_bready  <= '1';

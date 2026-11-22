@@ -378,7 +378,7 @@ module and configuration in [sim/parity/](sim/parity/); see
 | ETH-MAC-RX-BYTE0 | RX byte-zero/start-of-frame handling | 4 |
 | MDIO-MASTER | MDIO master read/write protocol, 1-bit shift fix | 10 |
 | TX-CSUM-OFF | TX checksum inserter: exact IPv4 header and UDP checksums on a known frame | 5 |
-| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage: IPv4 header and ICMP checksums, payload cut at the IPv4 total length, `terror` and truncated frames flagged, a frame cut at the end of its IPv4 header not affecting the next | 39 |
+| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage: IPv4 header and ICMP checksums, payload cut at the IPv4 total length, `terror` and truncated frames flagged, a frame cut at the end of its IPv4 header not affecting the next, fragments, ICMP to broadcast and invalid source MAC / IP dropped | 61 |
 | ICMP-ECHO | ICMP echo responder packet generation | 35 |
 | UDP-IPERF-SINK | iperf2 UDP header parsing, counters, gap tracking | 16 |
 | UDP-BLAST-TRIGGER | trigger payload parsing and busy/port filtering | 13 |

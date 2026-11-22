@@ -190,6 +190,23 @@ This project does not yet maintain long-lived release branches.
 
 ### Fixed
 
+- Arty demo and L3 helpers, hardening after an external probe of the demo:
+  - The Arty `test_sequencer` (Verilog and VHDL) enabled the MAC with CTRL
+    `0x07`, so the demo ran in promiscuous mode and answered frames sent to
+    other unicast MACs. It now writes `0x03`, and the MAC's address filter
+    passes only our unicast, broadcast and multicast.
+  - `net_rx` passed IPv4 fragments on as whole datagrams, so a lone fragment
+    (e.g. offset 65520) carrying an ICMP echo header was answered. Nothing
+    reassembles, and `icmp_echo` never used the offset, so no buffer was at
+    risk. Fragments (MF set or a non-zero offset) are now dropped.
+  - `net_rx` now drops frames from an invalid source: a group or all-zero
+    source MAC (ARP included), or a source IP in 0.0.0.0/8, 127.0.0.0/8 or
+    224.0.0.0 and above (RFC 1122 3.2.1.3). Replies to such a request went
+    to a group address or to an address that cannot send.
+  - ICMP to the IPv4 broadcast address is dropped, so the demo no longer
+    answers broadcast pings (RFC 1122 3.2.2.6). UDP to broadcast is still
+    passed on.
+
 - **A PAUSE frame received while one of our frames was on the wire was cut
   short.** Its countdown started when it was recognized, so the rest of our
   frame used up part of the pause, and a quanta below about 24 received
