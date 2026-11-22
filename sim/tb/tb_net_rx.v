@@ -29,6 +29,10 @@
 //        ARP)
 //   T17: source IP 0.0.0.0, 127.0.0.1, 224.0.0.1, 240.0.0.1 or
 //        255.255.255.255 -> dropped (ICMP and UDP); 223.255.255.254 accepted
+//   T18: IHL=6 (one 4-byte option word): the destination filter uses the
+//        real destination, not the last option byte -> to our IP accepted
+//        whatever the option bytes; to .201 with an option byte equal to our
+//        last octet dropped
 // (rx_src_mac is checked in T1 and T2; frames carry valid checksums unless
 // a test corrupts one.)
 // Verilog 2001
@@ -328,6 +332,38 @@ module tb_net_rx;
             for (i = 34; i < 42; i = i + 1) frame[i] = i[7:0];
             frame_len = 42;
             fix_csums;
+        end
+    endtask
+
+    // ICMP echo request with IHL=6: options NOP NOP NOP <opt_last>, total
+    // length 32, 8-byte ICMP at 38..45, padded to 60. Both checksums valid.
+    task load_icmp_opts;
+        input [31:0] dst_ip;
+        input [7:0]  opt_last;
+        integer i, sum;
+        begin
+            load_icmp(dst_ip);
+            frame[14] = 8'h46;                    // IHL=6
+            frame[17] = 8'h20;                    // total len = 32
+            frame[34] = 8'h01; frame[35] = 8'h01; // NOP NOP
+            frame[36] = 8'h01; frame[37] = opt_last;
+            frame[38] = 8'h08; frame[39] = 8'h00; // echo request
+            frame[40] = 8'h00; frame[41] = 8'h00; // csum (below)
+            frame[42] = 8'h00; frame[43] = 8'h07; // id
+            frame[44] = 8'h00; frame[45] = 8'h01; // seq
+            for (i = 46; i < 60; i = i + 1) frame[i] = 8'h00;
+            frame_len = 60;
+            frame[24] = 8'h00; frame[25] = 8'h00;
+            sum = 0;
+            for (i = 14; i < 38; i = i + 2) sum = sum + {frame[i], frame[i+1]};
+            sum = (sum & 32'hFFFF) + (sum >> 16);
+            sum = (sum & 32'hFFFF) + (sum >> 16);
+            frame[24] = ~sum[15:8]; frame[25] = ~sum[7:0];
+            sum = 0;
+            for (i = 38; i < 46; i = i + 2) sum = sum + {frame[i], frame[i+1]};
+            sum = (sum & 32'hFFFF) + (sum >> 16);
+            sum = (sum & 32'hFFFF) + (sum >> 16);
+            frame[40] = ~sum[15:8]; frame[41] = ~sum[7:0];
         end
     endtask
 
@@ -668,6 +704,26 @@ module tb_net_rx;
         feed_frame;
         check_int("T17 src 223.255.255.254: icmp_last_seen = 1", icmp_last_seen, 1);
         check_int("T17 src 223.255.255.254: icmp_err = 0", icmp_err_seen, 0);
+
+        // =================================================================
+        // T18: IPv4 options: destination filter uses the real destination
+        // =================================================================
+        reset_counters;
+        load_icmp_opts(OUR_IP, 8'h00);
+        feed_frame;
+        check_int("T18 IHL=6 to us, opt byte 0x00: icmp_byte_cnt = 8", icmp_byte_cnt, 8);
+        check_int("T18 IHL=6 to us, opt byte 0x00: icmp_err = 0", icmp_err_seen, 0);
+        check_eq32("T18 IHL=6 to us: icmp_src_ip", icmp_src_ip, 32'hC0A80132);
+
+        reset_counters;
+        load_icmp_opts(OUR_IP, OUR_IP[7:0]);
+        feed_frame;
+        check_int("T18 IHL=6 to us, opt byte = our octet: icmp_byte_cnt = 8", icmp_byte_cnt, 8);
+
+        reset_counters;
+        load_icmp_opts(OUR_IP + 32'd1, OUR_IP[7:0]);
+        feed_frame;
+        check_int("T18 IHL=6 to .201, opt byte = our octet: icmp_last_seen = 0", icmp_last_seen, 0);
 
         // =================================================================
         // Summary

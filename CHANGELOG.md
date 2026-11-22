@@ -202,7 +202,22 @@ This project does not yet maintain long-lived release branches.
   - `net_rx` now drops frames from an invalid source: a group or all-zero
     source MAC (ARP included), or a source IP in 0.0.0.0/8, 127.0.0.0/8 or
     224.0.0.0 and above (RFC 1122 3.2.1.3). Replies to such a request went
-    to a group address or to an address that cannot send.
+    to a group address or to an address that cannot send. The Arty
+    `arp_responder` (Verilog and VHDL), which reads the MAC directly rather
+    than through `net_rx`, likewise ignores a request whose Ethernet source
+    or ARP sender hardware address is a group address or all zeros.
+  - `arty_tx_arbiter` released a source when its last byte left the output
+    register, so in that cycle it also took the first byte of the same
+    source's next frame. If another source won the next arbitration, that
+    byte went out in front of the other source's frame and the first frame
+    lost it: e.g. during a UDP blast, an ARP or ICMP reply with a shifted
+    header and a wrong source MAC. A source is now released when its last
+    byte enters the output register, and latched only once a byte is taken.
+  - `net_rx` checked the destination IP against the last IPv4 header byte,
+    which with options (IHL > 5) is an option byte, so a packet with options
+    could be dropped though sent to us, or accepted though sent to another
+    address whose last octet matched. The destination is now the registered
+    one when the header has options.
   - ICMP to the IPv4 broadcast address is dropped, so the demo no longer
     answers broadcast pings (RFC 1122 3.2.2.6). UDP to broadcast is still
     passed on.

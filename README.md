@@ -378,12 +378,13 @@ module and configuration in [sim/parity/](sim/parity/); see
 | ETH-MAC-RX-BYTE0 | RX byte-zero/start-of-frame handling | 4 |
 | MDIO-MASTER | MDIO master read/write protocol, 1-bit shift fix | 10 |
 | TX-CSUM-OFF | TX checksum inserter: exact IPv4 header and UDP checksums on a known frame | 5 |
-| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage: IPv4 header and ICMP checksums, payload cut at the IPv4 total length, `terror` and truncated frames flagged, a frame cut at the end of its IPv4 header not affecting the next, fragments, ICMP to broadcast and invalid source MAC / IP dropped | 61 |
+| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage: IPv4 header and ICMP checksums, payload cut at the IPv4 total length, `terror` and truncated frames flagged, a frame cut at the end of its IPv4 header not affecting the next, fragments, ICMP to broadcast and invalid source MAC / IP dropped, IPv4 options | 66 |
 | ICMP-ECHO | ICMP echo responder packet generation | 35 |
 | UDP-IPERF-SINK | iperf2 UDP header parsing, counters, gap tracking | 16 |
 | UDP-BLAST-TRIGGER | trigger payload parsing and busy/port filtering | 13 |
 | UDP-BLAST-START-DELAY | First-packet delay after UDP blast trigger | 7 |
-| ARTY-TX-ARBITER | Arty six-source TX arbitration and blast holdoff | 9 |
+| ARP-RESPONDER | Arty ARP responder: reply fields, other-IP requests and group / zero source or sender hardware addresses ignored, ARP probe answered | 14 |
+| ARTY-TX-ARBITER | Arty six-source TX arbitration and blast holdoff; no frame mixing at handover, with and without backpressure | 17 |
 | AXIL-ARB2 | 2:1 AXI4-Lite arbiter: independent RW channels, concurrency, hammer | 24 |
 | UDP-BLAST-PATH | UDP trigger frame through `net_rx` into `udp_blast` TX | 9 |
 | UDP-STATS-REPLY | binary stats query/clear responder packet generation | 19 |

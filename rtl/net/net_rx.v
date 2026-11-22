@@ -134,6 +134,11 @@ module net_rx (
     wire [31:0] hdr_sum_now = hdr_sum + hdr_word;
     wire [31:0] pl_word   = pl_odd ? {24'd0, s_axis_tdata}
                                    : {16'd0, s_axis_tdata, 8'd0};
+    // Destination IP as of the last IPv4 header byte. With IHL=5 that byte is
+    // the destination's last octet and is still on the bus; with options it
+    // is an option byte and the destination is already fully registered.
+    wire [31:0] dst_ip_now = (byte_cnt == 14'd19) ? {dst_ip_buf[31:8], s_axis_tdata}
+                                                  : dst_ip_buf;
     wire        in_payload = (state == P_ICMP_DATA) || (state == P_UDP_HDR) ||
                              (state == P_UDP_DATA);
     wire [15:0] rem_next  = (rem != 16'd0) ? rem - 16'd1 : 16'd0;
@@ -319,12 +324,10 @@ module net_rx (
                             byte_cnt <= 14'd0;
                             rem      <= ip_tot_len - {2'd0, ip_hdr_bytes};
                             // Destination filter: our IP or broadcast
-                            if ({dst_ip_buf[31:8], s_axis_tdata} != our_ip &&
-                                {dst_ip_buf[31:8], s_axis_tdata} != 32'hFFFFFFFF)
+                            if (dst_ip_now != our_ip && dst_ip_now != 32'hFFFFFFFF)
                                 state <= P_DROP;
                             // No ICMP to broadcast (no broadcast echo replies)
-                            else if (ip_protocol == 8'd1 &&
-                                     {dst_ip_buf[31:8], s_axis_tdata} == 32'hFFFFFFFF)
+                            else if (ip_protocol == 8'd1 && dst_ip_now == 32'hFFFFFFFF)
                                 state <= P_DROP;
                             else if (ip_frag)
                                 state <= P_DROP;           // fragment: no reassembly
@@ -340,13 +343,11 @@ module net_rx (
                             else if (ip_protocol == 8'd1) begin
                                 state       <= P_ICMP_DATA;
                                 hdr_chk     <= 1'b1;
-                                icmp_src_ip <= {src_ip_buf[31:8],
-                                    (byte_cnt == 14'd15) ? s_axis_tdata : src_ip_buf[7:0]};
+                                icmp_src_ip <= src_ip_buf;
                             end else if (ip_protocol == 8'd17) begin
                                 state      <= P_UDP_HDR;
                                 hdr_chk    <= 1'b1;
-                                udp_src_ip <= {src_ip_buf[31:8],
-                                    (byte_cnt == 14'd15) ? s_axis_tdata : src_ip_buf[7:0]};
+                                udp_src_ip <= src_ip_buf;
                             end else
                                 state <= P_DROP;
                         end
