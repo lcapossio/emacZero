@@ -3,92 +3,49 @@
 [![sim](https://github.com/lcapossio/emacZero/actions/workflows/sim.yml/badge.svg?branch=main)](https://github.com/lcapossio/emacZero/actions/workflows/sim.yml?query=branch%3Amain)
 [![parity](https://github.com/lcapossio/emacZero/actions/workflows/parity.yml/badge.svg?branch=main)](https://github.com/lcapossio/emacZero/actions/workflows/parity.yml?query=branch%3Amain)
 
-Open-source Ethernet MAC in Verilog 2001, with a VHDL-93 port of the MAC IP
-that is formally proven equivalent to it ([docs/vhdl_port.md](docs/vhdl_port.md)).
-Supports 10/100/1G operation through
-MII (10/100 only), GMII (1000 Mbps only), or RGMII (10/100/1G with runtime
-speed selection).
-Provides AXI4-Stream interfaces, AXI4-Lite register control, MDIO management,
-hardware statistics counters, jumbo-frame support, optional ICMP echo
-responder, and optional TX/RX checksum offload (IPv4 header, TCP, UDP, ICMP,
-ICMPv6 over IPv4 and IPv6).
+Open-source 10/100/1G Ethernet MAC in Verilog 2001, with a VHDL-93 port that
+is formally proven equivalent to it ([docs/vhdl_port.md](docs/vhdl_port.md)).
+It connects through MII (10/100), GMII (1G, e.g. to a 1000BASE-X / SGMII
+PCS) or RGMII (10/100/1G, speed selected at run time), and has AXI4-Stream
+data ports and AXI4-Lite control.
 
 ## Index
 
 - [Features](#features)
 - [Architecture](#architecture)
-- [Module Hierarchy](#module-hierarchy)
-- [Port Interface (eth_mac_sys.v)](#port-interface-eth_mac_sysv)
-- [Register Map](#register-map)
-- [Simulation](#simulation)
-- [Hardware Test (Arty A7-100T)](#hardware-test-arty-a7-100t)
-- [ZCU106 SFP Demo (1000BASE-X)](#zcu106-sfp-demo-1000base-x)
-- [Integration](#integration)
-- [Security and CRA Readiness](#security-and-cra-readiness)
+- [Usage](#usage)
+- [Software](#software)
+- [Hardware](#hardware)
+- [Testing](#testing)
 - [Resource Usage](#resource-usage)
+- [Security and CRA Readiness](#security-and-cra-readiness)
 - [License](#license)
 - [Author](#author)
 
 ## Features
 
-- **AXI4-Stream TX/RX** - standard streaming interface for packet data with buffered RX backpressure
-- **AXI4-Lite CSR** - control/status block with runtime MAC address, TX/RX enable, promiscuous mode, **runtime speed select (10/100/1G)**, full-duplex, jumbo-enable, TX / RX checksum offload
-- **MII PHY interface** - 10/100 Mbps with store-and-forward async FIFOs
-  (standard MTU only; jumbo TX requires the GMII or RGMII path)
-- **GMII PHY interface** - 1000 Mbps, registered SDR I/O with forwarded GTX_CLK
-  (`PHY_INTERFACE="GMII"`, `rtl/gmii_if.v`). GMII is gigabit-only by definition -
-  a tri-speed PHY exposing GMII falls back to 4-bit MII at 10/100, which is the
-  `"MII"` mode above - so this path pins the internal pacing to 1G and ignores
-  the `cfg_speed` speed field. Its main use is driving a vendor 1G PCS/PMA core
-  for **SGMII / 1000BASE-X**, which presents a GMII bus rather than PHY pins.
-  Jumbo TX and RX work here as on RGMII.
-- **RGMII PHY interface** - 10/100/1G with **runtime speed selection** via `cfg_speed[1:0]` and parameterizable `RGMII_SPEEDS = "ALL" | "1G_ONLY" | "10_100"` for resource-conscious builds
-- **Jumbo frames** - up to 9018 bytes (parameterizable `MAX_FRAME`) on TX and
-  RX for the **GMII** and **RGMII** paths. `gmii_cdc`'s store-and-forward RX
-  CDC FIFO is sized from `MAX_FRAME` (16K words at `MAX_FRAME=9018`, 4K floor),
-  so a full `MAX_FRAME` frame is received intact. If that FIFO does overflow
-  (sustained line-rate 1G reception when `clk` is slower than the 125 MHz
-  media clock - the reader drains one byte per `clk`), the
-  affected frame is truncated and tagged with `rx_er` - delivered with
-  `m_axis_terror` and counted in `RX_ERR_ALIGN` - or dropped whole; frame
-  boundaries are never merged. Builds that don't need jumbo RX can set
-  `MAX_FRAME=1518` to keep the RX CDC FIFO at 4K words.
-  The MII 10/100 path is standard-MTU only: its 4096-byte TX FIFO and RX replay
-  buffer cannot buffer a jumbo frame while the slow MII side drains it, so set
-  `MAX_FRAME=1518` for MII builds.
-  On RX, `MAX_FRAME` is the wire size with the FCS, like the 1518 standard
-  limit: with `jumbo_en=1` RX accepts up to `MAX_FRAME` bytes, with
-  `jumbo_en=0` 1518, or 1522 with an 802.1Q / 802.1ad tag. TX counts the same
-  parameter in AXIS bytes, before the FCS it appends, so it can send a frame
-  4 bytes longer than an identically built RX accepts. `MAX_FRAME` must be at
-  most 16382 (16370 on GMII and RGMII, where a whole frame must fit in the
-  16K-word TX CDC FIFO); a larger value is an elaboration error.
-- **Checksum offload** - optional, per direction. TX (`TX_CSUM_OFFLOAD=1`,
-  `rtl/net/tx_csum_off.v`, CTRL[7]) computes and inserts the IPv4 header
-  checksum and the TCP / UDP / ICMP (IPv4) or TCP / UDP / ICMPv6 (IPv6)
-  checksum, pseudo-header included; RX (`RX_CSUM_OFFLOAD=1`, CTRL[9]) verifies
-  the same checksums and ends a frame that fails with `m_axis_terror`,
-  counting it in `RX_ERR_CSUM`. The core does not drop it: the consumer must
-  discard every frame that ends with `terror`. Both handle one 802.1Q /
-  802.1ad tag and any IPv4 header length, and UDP is summed over its own
-  Length field. Not covered (left to software): IPv4 fragments and IPv4 with
-  a source route option (header checksum only), UDP whose Length is below 8
-  or beyond the IP payload, a datagram longer than its frame (RX: header
-  checksum only), IPv6 packets with extension headers, and tunnels. RX does
-  not judge a UDP checksum of 0, over IPv4 ("none") or IPv6 (allowed per
-  socket by RFC 6935/6936), and leaves it to software; a UDP
-  checksum that computes to 0 is sent as 0xFFFF. The TX side stores each frame whole before sending it (one
-  `MAX_FRAME` of block RAM, a few cycles per frame), since the checksum fields
-  precede the bytes they cover. The checksum logic is `rtl/net/csum_calc.v`.
-- **CRC-32** - IEEE 802.3 FCS generation (TX) and validation (RX)
-- **MDIO master** - PHY register read/write, accessible through AXI4-Lite CSR
-- **Statistics counters** - TX/RX frame count, byte count, CRC error count (32-bit saturating)
-- **MAC address filtering** - unicast, broadcast, multicast hash filter (optional), promiscuous
-- **Interrupt support** - TX done, RX frame, MDIO done with enable/mask
-- **Minimum frame padding** - auto-pads to 64 bytes
-- **Inter-frame gap** - 12-byte IFG enforcement
-- **Vendor-agnostic** - DDR I/O wrappers for Xilinx/Intel/simulation; portable async FIFO with selectable block-RAM or distributed-RAM storage (`mii_if` uses XPM FIFOs on Xilinx)
-- **Optional L3** - Ethernet/IP/ICMP/UDP RX parser, ICMP echo, UDP echo, UDP blast generator, and passive iperf2 sink/stat responder (`rtl/net/`)
+- **AXI4-Stream TX/RX**: byte-wide, with buffered RX back-pressure.
+- **AXI4-Lite registers**: MAC address, TX/RX enable, promiscuous mode, run-time
+  speed select, jumbo enable, checksum offload controls
+  ([docs/registers.md](docs/registers.md)).
+- **PHY interfaces**: MII (10/100, store-and-forward CDC FIFOs), GMII (1G),
+  RGMII (10/100/1G, `RGMII_SPEEDS` drops the unused rates).
+- **Jumbo frames**: up to 9018 bytes on GMII and RGMII (`MAX_FRAME`).
+- **Checksum offload** (optional, per direction): IPv4 header, TCP, UDP, ICMP
+  and ICMPv6 over IPv4 and IPv6, inserted on TX, verified on RX.
+- **802.3x PAUSE**: send, honour, and automatic PAUSE from the RX FIFO level.
+- **CRC-32** FCS generation and checking, minimum-frame padding, 12-byte IFG.
+- **MAC address filtering**: unicast, broadcast, optional multicast hash,
+  promiscuous.
+- **Statistics counters** (32-bit, saturating), **MDIO master** (Clause 22
+  and 45), **interrupts** (TX done, RX frame, MDIO done).
+- **Vendor-agnostic**: DDR I/O wrappers for Xilinx 7-series and UltraScale+,
+  portable async FIFO.
+- **Optional L3 helpers** (`rtl/net/`): IPv4/ICMP/UDP parser, ICMP and UDP
+  echo, UDP blast generator, iperf2 sink.
+
+The details and limits of each are in
+[docs/integration.md](docs/integration.md).
 
 ## Architecture
 
@@ -98,355 +55,13 @@ Rendered block diagrams are clock-domain coloured and clickable for the full SVG
 
 [![eth_mac_sys architecture](docs/eth_mac_sys_architecture.svg)](docs/eth_mac_sys_architecture.svg)
 
-## Module Hierarchy
+The top level is `eth_mac_sys`: registers, statistics, MAC, PHY interface and
+MDIO. The source files, ports and clocking rules are in
+[docs/integration.md](docs/integration.md).
 
-| Module | Description |
-|--------|-------------|
-| `eth_mac_sys.v` | **System wrapper**: CSR + stats + MAC + PHY IF + MDIO |
-| `axilite_regs.v` | AXI4-Lite CSR block for configuration, counters, MDIO, multicast, and PAUSE |
-| `eth_stats.v` | TX/RX frame, byte, and error counters |
-| `eth_pause.v` | 802.3x PAUSE TX gate timer, PAUSE frame generator and automatic PAUSE from the RX FIFO level |
-| `eth_pause_rx.v` | 802.3x PAUSE frame recognizer on the PHY receive stream, ahead of the RX FIFO |
-| `eth_mac_tx.v` | TX path: preamble, SFD, data, padding, CRC, IFG |
-| `eth_mac_rx.v` | RX path: preamble detect, data, CRC check, MAC filter |
-| `mii_if.v` | MII PHY interface with store-and-forward CDC FIFOs |
-| `sync_fifo.v` | Synchronous FIFO used by MAC RX/TX buffering |
-| `gmii_cdc.v` | GMII clock domain crossing bridge (GMII and RGMII modes) |
-| `rgmii_if.v` | RGMII DDR interface using vendor-agnostic wrappers |
-| `gmii_if.v` | GMII pin interface: registered SDR I/O + transmit-clock (GTX_CLK) forwarding |
-| `ddr_output.v` | Vendor-agnostic DDR output (Xilinx ODDR / Intel / behavioral) |
-| `ddr_input.v` | Vendor-agnostic DDR input (Xilinx IDDR / Intel / behavioral) |
-| `crc32.v` | IEEE 802.3 CRC-32 (reflected polynomial 0xEDB88320) |
-| `async_fifo.v` | Gray-pointer async FIFO, first-word-fall-through; `RAM_STYLE="BLOCK"` (block RAM, registered read) or `"DISTRIBUTED"` (LUTRAM) |
-| `mdio_master.v` | MDIO serial interface for PHY register access |
-| `eth_mac.v` | Bare MAC wrapper (TX + RX + MII, no CSR) for simple designs |
-| `csum_calc.v` | IPv4 header / TCP / UDP / ICMP / ICMPv6 checksum engine shared by TX insert and RX verify |
-| `tx_csum_off.v` | TX checksum offload: stores each frame and inserts its checksums |
-| `net_rx.v` | Ethernet/IPv4/ICMP/UDP parser used by the Arty demo |
-| `icmp_echo.v` | ICMP echo responder |
-| `udp_echo.v` | UDP echo responder |
-| `udp_blast.v` | Line-rate UDP/iperf2-format packet generator |
-| `udp_blast_trigger.v` | UDP/9997 control parser for `udp_blast` |
-| `udp_iperf_sink.v` | Passive iperf2 UDP/5001 receiver/stat counter |
-| `udp_stats_reply.v` | UDP/9996 binary stats query/clear responder |
-| `arty_tx_arbiter.v` | Arty demo TX arbiter with blast-service holdoff |
+## Usage
 
-## Port Interface (eth_mac_sys.v)
-
-```verilog
-module eth_mac_sys #(
-    parameter PHY_INTERFACE     = "MII",  // "MII", "GMII" or "RGMII"
-    parameter MCAST_HASH_FILTER = 0,      // 1 = enable 64-bit multicast hash
-    parameter MAX_FRAME         = 1518,   // standard; up to 9018 for jumbo (GMII/RGMII)
-    // RX AXIS buffer depth (address width). Defaults to one full MAX_FRAME
-    // frame (2048-byte floor) so a jumbo frame survives downstream
-    // backpressure; lower to save BRAM on standard-MTU builds.
-    parameter RX_AXIS_ADDR_WIDTH = ($clog2(MAX_FRAME) > 11) ? $clog2(MAX_FRAME) : 11,
-    parameter TX_CSUM_OFFLOAD   = 0,      // 1 = synthesize TX checksum inserter
-    parameter RX_CSUM_OFFLOAD   = 0,      // 1 = synthesize RX checksum checker
-    parameter CDC_RAM_STYLE     = "BLOCK",// GMII/RGMII CDC FIFOs: "BLOCK" | "DISTRIBUTED"
-    // clk frequency: sets the pause-quanta and MDC dividers. A build that can
-    // run at 1G (GMII, or RGMII with RGMII_SPEEDS != "10_100") needs >= 125 MHz
-    // and fails elaboration below that: a slower clk cannot drain the RX CDC
-    // FIFO at gigabit line rate.
-    parameter CLK_FREQ_HZ       = 100_000_000,
-    parameter RGMII_SPEEDS      = "ALL",  // "ALL" | "1G_ONLY" | "10_100"
-    parameter MII_DEBUG         = 0,      // 0 = debug capture/counters off
-    // 0 = CTRL resets with tx_en/rx_en clear: no frame is sent or delivered
-    // until software has programmed the MAC address and set them. 1 = both
-    // set at reset (the pre-0.3 behaviour), for designs with no CPU.
-    parameter TXRX_EN_AT_RESET  = 0
-)(
-    input  wire        clk,           // system clock, CLK_FREQ_HZ
-    input  wire        rst_n,
-
-    // AXI4-Lite CSR (32-bit data, 8-bit byte address)
-    input  wire [7:0]  s_axi_awaddr, s_axi_araddr,
-    // ... standard AXI4-Lite signals ...
-
-    // AXI4-Stream TX (from network stack)
-    input  wire [7:0]  s_axis_tdata,
-    input  wire        s_axis_tvalid,
-    output wire        s_axis_tready,
-    input  wire        s_axis_tlast,
-
-    // AXI4-Stream RX (to network stack)
-    output wire [7:0]  m_axis_tdata,
-    output wire        m_axis_tvalid,
-    input  wire        m_axis_tready,
-    output wire        m_axis_tlast,
-    output wire        m_axis_terror,  // CRC error
-    output wire        m_axis_tsof,    // start of frame
-
-    // MII PHY pins (PHY_INTERFACE="MII")
-    output wire [3:0]  mii_txd,
-    output wire        mii_tx_en,
-    input  wire        mii_tx_clk, mii_rx_clk,
-    input  wire [3:0]  mii_rxd,
-    input  wire        mii_rx_dv, mii_rx_er,
-    input  wire        mii_col, mii_crs,
-
-    // RGMII PHY pins (PHY_INTERFACE="RGMII")
-    input  wire        clk_125, clk_125_90,
-                                         // clk_125_90: 90 deg, same source; TXC
-                                         // clock when 1G is built, unused for
-                                         // RGMII_SPEEDS="10_100"
-    input  wire        clk_25, clk_2_5,  // unused (10/100 TXC is made from
-                                         // clk_125); kept for compatibility
-    output wire [3:0]  rgmii_txd,
-    output wire        rgmii_tx_ctl, rgmii_txc,
-    input  wire [3:0]  rgmii_rxd,
-    input  wire        rgmii_rx_ctl, rgmii_rxc,
-
-    // GMII PHY pins (PHY_INTERFACE="GMII"; uses clk_125 above, not clk_125_90)
-    output wire [7:0]  phy_gmii_txd,
-    output wire        phy_gmii_tx_en, phy_gmii_tx_er,
-    output wire        phy_gmii_txc,     // GTX_CLK: clk_125, inverted (180 deg)
-    input  wire        phy_gmii_rx_clk,  // 125 MHz, PHY-sourced
-    input  wire [7:0]  phy_gmii_rxd,
-    input  wire        phy_gmii_rx_dv, phy_gmii_rx_er,
-
-    // MDIO
-    output wire        mdc,
-    input  wire        mdio_i,
-    output wire        mdio_o, mdio_oe,
-
-    // Interrupt
-    output wire        irq
-);
-```
-
-### RGMII clocks and delays
-
-- `clk_125` and `clk_125_90` must come from the same MMCM or PLL, with
-  `clk_125_90` 90 degrees (2 ns) behind. `rgmii_if` reads its TX phase counter
-  and speed from `clk_125_90` into `clk_125` over a timed 6 ns path, so
-  constrain the two as related clocks: never put them in asynchronous clock
-  groups or set a false path between them.
-- At 1G, TXC leaves 90 degrees after TXD / TX_CTL, which suits a PHY with no TX
-  internal delay. If the PHY's TX delay is on (RGMII-ID or RGMII-TXID, often
-  the strap default), turn it off over MDIO or with the straps, or drive
-  `clk_125_90` from `clk_125` so TXC leaves edge-aligned. At 10/100 every TXC
-  edge stays at least 8 ns from a data change either way.
-- RX samples RXD / RX_CTL on RXC directly, with no IDELAY, so RXC must arrive
-  centred on the data: turn on the PHY's RX internal delay, or delay RXC on
-  the board.
-- `cfg_speed` is synchronized separately into the TX and RX clocks, and the RX
-  copy follows only while RXC runs. Change the speed only while the link is
-  down. TXC switches only at the end of a period, so it never glitches. The TX
-  side takes a speed only after reading it for 5 TX clock cycles running. With
-  synchronizer metastability settling within a cycle (the usual MTBF
-  assumption), a wrong mixed speed would need `cfg_speed` to change on 5
-  consecutive cycles, which the CTRL register, written by software, does not.
-
-`MII_DEBUG` defaults off. When enabled it keeps low-level MII capture counters
-alive inside `mii_if` / `eth_mac` for testbench or bring-up probes; the
-system wrapper (`eth_mac_sys`) does not export a board-level debug bus.
-
-## Register Map
-
-| Offset | Name | R/W | Description |
-|--------|------|-----|-------------|
-| 0x00 | VERSION | RO | 0x0002454D: [31:24] major [23:16] minor [15:0] ID `"EM"` |
-| 0x04 | CTRL | RW | [0] tx_en [1] rx_en [2] promisc [4:3] speed (00=1G,01=100M,10=10M) [5] full_duplex (informational; FD-only MAC) [6] jumbo_en [7] tx_csum_off [8] passthrough [9] rx_csum_off |
-| 0x08 | STATUS | RO | [0] tx_active [1] tx_fifo_busy [2] mdio_busy [3] mdio_cmd_dropped (sticky: a GO was written while busy and ignored; cleared by the next successful GO) |
-| 0x0C | MAC_LO | RW | MAC address [31:0] |
-| 0x10 | MAC_HI | RW | MAC address [47:32] |
-| 0x14 | MDIO_CMD | RW | [4:0] reg/devad [9:5] phy [10] write [11] go [12] c45_en [14:13] c45_op |
-| 0x18 | MDIO_WDATA | RW | [15:0] MDIO write data |
-| 0x1C | MDIO_RDATA | RO | [15:0] MDIO read data |
-| 0x20 | IRQ_EN | RW | [0] tx_done [1] rx_frame [2] mdio_done |
-| 0x24 | IRQ_STATUS | W1C | Same bits as IRQ_EN, write-1-to-clear |
-| 0x28 | TX_FRAME_CNT | RO/WC | TX frame counter (write-any-to-clear) |
-| 0x2C | TX_BYTE_CNT | RO/WC | TX byte counter |
-| 0x30 | RX_FRAME_CNT | RO/WC | RX frames delivered to the AXIS sink (one per TLAST handshake, incl. errored) |
-| 0x34 | RX_BYTE_CNT | RO/WC | RX byte counter |
-| 0x38 | RX_ERR_CNT | RO/WC | RX frames delivered with `m_axis_terror` (FCS, `rx_er`, overflow, size, or a wrong checksum with CTRL[9]) |
-| 0x3C | SCRATCH | RW | Read-back test register |
-| 0x40 | IP_ADDR | RW | Demo L3 stack IPv4, `cfg_ip_addr[31:0]` (default 0xC0A889C8 = 192.168.137.200); sets the ARP/ICMP/UDP match address in the example L3 design. Unused by the bare MAC. |
-| 0x44 | MCAST_LO | RW | mcast_hash_table[31:0] (only if MCAST_HASH_FILTER=1) |
-| 0x48 | MCAST_HI | RW | mcast_hash_table[63:32] (only if MCAST_HASH_FILTER=1) |
-| 0x4C | RX_ERR_ALIGN | RO/WC | RX frames with `rx_er` asserted |
-| 0x50 | RX_ERR_OVERFLOW | RO/WC | RX frames truncated by FIFO overflow (delivered with terror) |
-| 0x54 | RX_ERR_OVERSIZE | RO/WC | RX frames longer than current MAX |
-| 0x58 | RX_BCAST | RO/WC | RX broadcast frames |
-| 0x5C | RX_MCAST | RO/WC | RX multicast frames |
-| 0x60 | RX_SIZE_64 | RO/WC | RX frames exactly 64 wire bytes |
-| 0x64 | RX_SIZE_65_127 | RO/WC | RX frames 65-127 bytes |
-| 0x68 | RX_SIZE_128_255 | RO/WC | RX frames 128-255 bytes |
-| 0x6C | RX_SIZE_256_511 | RO/WC | RX frames 256-511 bytes |
-| 0x70 | RX_SIZE_512_1023 | RO/WC | RX frames 512-1023 bytes |
-| 0x74 | RX_SIZE_1024_1518 | RO/WC | RX frames 1024-1518 bytes |
-| 0x78 | RX_SIZE_JUMBO | RO/WC | RX frames > 1518 bytes |
-| 0x7C | RX_DROP | RO/WC | RX frames for us dropped whole: no RX FIFO room at their start (sink stalled). In no other RX frame counter (RX_BYTE includes their bytes) |
-| 0x80 | RX_ERR_CSUM | RO/WC | RX frames failed for a wrong IPv4 header / TCP / UDP / ICMP / ICMPv6 checksum (CTRL[9], `RX_CSUM_OFFLOAD=1`); counts only frames with no other error |
-| 0x84 | PAUSE_CTRL | RW | [0] tx_send [1] rx_en [2] auto_en; RO [3] auto_active [4] auto_cfg_err [5] tx_pending |
-| 0x88 | PAUSE_QUANTA | RW | [15:0] quanta for next emitted PAUSE frame |
-| 0x8C | PAUSE_RX_CNT | RO/WC | Received PAUSE frames |
-| 0x90 | PAUSE_TX_CNT | RO/WC | Transmitted PAUSE frames |
-| 0x94 | SAF_DBG | RO | `mii_tx_saf` framer/FIFO debug snapshot (MII path; 0 on RGMII). See [docs/registers.md](docs/registers.md). |
-| 0x98 | CAPS | RO | Build options: [0] multicast hash filter, [1] TX checksum inserter, [2] RX checksum checker, [3] automatic PAUSE, [8:4] RX FIFO address width, [31:16] `MAX_FRAME`. 0 on older cores. See [docs/registers.md](docs/registers.md). |
-| 0x9C | PAUSE_XOFF | RW | Automatic PAUSE: send XOFF at this RX FIFO level (bytes; reset: FIFO / 2) |
-| 0xA0 | PAUSE_XON | RW | Automatic PAUSE: send XON below this level (reset: FIFO / 4) |
-| 0xA4 | PAUSE_REFRESH | RW | Automatic PAUSE: XOFF repeat interval, quanta (0 = half of PAUSE_QUANTA). Loss-free sizing in [docs/registers.md](docs/registers.md). |
-
-Default CTRL: tx_en=0, rx_en=0, promisc=0, speed=00 (1G), full_duplex=1,
-jumbo_en=0, tx_csum_off=0, passthrough=0, rx_csum_off=0  ->  0x20, or 0x23
-(tx_en and rx_en set) with `TXRX_EN_AT_RESET=1`. With TX disabled
-`s_axis_tready` stays low; with RX disabled received frames are drained, not
-delivered. Program the MAC address, then set tx_en and rx_en (`emz_init` in
-`sw/emaczero/` does both).
-Default MAC: 02:00:00:00:00:01 (locally administered).
-
-## Simulation
-
-Requires [Icarus Verilog](http://iverilog.icarus.com/) (`iverilog` + `vvp` in
-PATH), Verilator (`verilator` in PATH, or WSL `verilator` on Windows), and
-Python 3. The normal test command runs Icarus lint, Verilator lint, and the full
-directed simulation regression; Verilator runs before simulation so interface
-drift such as missing module pins is caught early.
-
-```bash
-python build_and_test.py
-```
-
-`build_and_test.py` compiles with `-DSIM` so the behavioral DDR I/O models in
-`ddr_input.v` / `ddr_output.v` are selected. For **synthesis** you must define a
-target instead (`XILINX_7SERIES` for 7-series `IDDR`/`ODDR`,
-`XILINX_ULTRASCALE_PLUS` for UltraScale+ `IDDRE1`/`ODDRE1`, or supply a real
-vendor DDR atom); the `SIM` models are not synthesizable and the `INTEL_CYCLONE`
-branch is a flagged stub, not a real Altera DDIO instance.
-
-Where Vivado is on `PATH`, `PHASE 1b` also reruns the RGMII testbenches on
-Vivado's own models of the DDR cells, for each family the wrappers support, so
-the behavioral models cannot drift from the real cells unnoticed.
-`python build_and_test.py --impl` also implements `rgmii_if` alone on an
-xc7a100t and an xczu7ev for each `RGMII_SPEEDS` (about 10 minutes): every DDR
-output cell must drive only its output buffer, place and route must complete,
-and the internal paths must meet timing. No board build uses RGMII, so run it
-after changing `rgmii_if.v` or the DDR wrappers.
-
-`PHASE 2` runs the cocotb suites ([sim/cocotb/](sim/cocotb/)) on the Verilog
-under Icarus. They include a port of every core testbench in `sim/tb/`, with
-the same checks, plus directed and randomized suites with reference models.
-
-The VHDL port ([rtl/vhdl/](rtl/vhdl/)) is checked by three more phases, each
-skipped, not failed, when its tool is missing:
-
-- `PHASE 0d` analyses and elaborates it with GHDL, as VHDL-93, for every vendor
-  target, then does the same for the L3 and board VHDL. Before that, without
-  GHDL, it checks the generated parity models and the sensitivity lists of the
-  combinational processes.
-- `PHASE 1c` reruns the core testbenches against it in Vivado xsim.
-- `PHASE 2b` runs the same cocotb suites against it under GHDL, so both
-  languages pass exactly the same tests.
-
-GHDL is used from `PATH`, or from WSL on Windows. The formal equivalence
-proofs run separately (use GHDL 4.1 for them; with GHDL 6.0.0 four of them do
-not close) with
-[translateHDL](https://github.com/lcapossio/translateHDL), one manifest per
-module and configuration in [sim/parity/](sim/parity/); see
-[docs/vhdl_port.md](docs/vhdl_port.md#reproducing-the-proofs).
-
-### Test Suite
-
-| Test | Description | Checks |
-|------|-------------|--------|
-| CRC32 | Known test vectors, residue verification | 3 |
-| ASYNC-FIFO | Async FIFO pointer, full/empty, wraparound behavior | 11 |
-| ETH-MAC-FCS | FCS generation for multiple frame sizes | 4 |
-| ETH-MAC-TX-PAD | Minimum-frame padding in `eth_mac_tx` and `mii_tx_saf`: 14/58/59/60/61-byte frames, wire length, zero pad, FCS | 31 |
-| ETH-MAC-MULTIFRAME | Back-to-back frames, minimum padding, IFG | 1 |
-| ETH-MAC-JUMBO | Jumbo-frame TX/RX behavior | 6 |
-| MII-TX-BRIDGE | GMII-to-MII byte-to-nibble conversion | 1 |
-| MII-TX-BURST-BACKPRESSURE | MII TX burst pacing under downstream stalls | 4 |
-| MII-TX-SAF | Store-and-forward MII TX: bubbles, pad, byte-exact FCS | 6 |
-| MII-TX-SAF-BURST-STALL | Many small frames backed up: committed-frame counter must not wrap/stall | 1 |
-| MII-STORE-FORWARD | Store-and-forward CDC, frame toggle | 7 |
-| MII-LOOPBACK | Full TX-to-RX loopback through MII | 1 |
-| MII-RX-REPLAY-STRESS | RX frame-ready accounting under replay stalls | 7 |
-| ETH-STATS | Statistics counters: increment, saturation, clear | 19 |
-| AXILITE-REGS | AXI4-Lite CSR: all register behaviors | 35 |
-| GMII-CDC | GMII CDC bridge: loopback, data integrity, back-to-back | 7 |
-| ETH-MAC-SYS | Full integration: AXI-Lite config, MII loopback, stats, MDIO | 27 |
-| RGMII-IF | RGMII DDR pin packing/unpacking at 1G | 14 |
-| RGMII-IF-100M | 100M then 10M RGMII pin loopback, RX clocked by the forwarded TXC: low-nibble-first TX, byte-exact RX pairing, one unbroken `gmii_rx_dv` envelope per burst, TXC period and duty cycle, TXC edges >= 8 ns from data changes | 13 |
-| RGMII-IF-SPEED-SWITCH | `cfg_speed` changed between every pair of 1G / 100M / 10M at all 50 TX counter phases (100M <-> 10M also through `11` for a cycle): every TXC high time is a full pulse of a speed in flight, no short low time, TXC low through reset, a byte-exact burst after each change | 6 |
-| MCAST-FILTER | Multicast hash filter accept/drop behavior | 6 |
-| ETH-MAC-RX-BACKPRESSURE | RX path holds frames when downstream stalls | 3 |
-| ETH-MAC-RX-JUMBO-GATE | RX jumbo enable/disable length gate; 1518 untagged / 1522 VLAN-tagged standard limit; jumbo with a 1518 limit keeps the VLAN allowance; oversize stat pulses | 15 |
-| ETH-MAC-RX-BYTE0 | RX byte-zero/start-of-frame handling | 4 |
-| MDIO-MASTER | MDIO master read/write protocol, 1-bit shift fix | 10 |
-| TX-CSUM-OFF | TX checksum inserter: exact IPv4 header and UDP checksums on a known frame | 5 |
-| NET-RX | Ethernet/IPv4/ICMP/UDP parser coverage: IPv4 header and ICMP checksums, payload cut at the IPv4 total length, `terror` and truncated frames flagged, a frame cut at the end of its IPv4 header not affecting the next | 39 |
-| ICMP-ECHO | ICMP echo responder packet generation | 35 |
-| UDP-IPERF-SINK | iperf2 UDP header parsing, counters, gap tracking | 16 |
-| UDP-BLAST-TRIGGER | trigger payload parsing and busy/port filtering | 13 |
-| UDP-BLAST-START-DELAY | First-packet delay after UDP blast trigger | 7 |
-| ARTY-TX-ARBITER | Arty six-source TX arbitration and blast holdoff | 9 |
-| AXIL-ARB2 | 2:1 AXI4-Lite arbiter: independent RW channels, concurrency, hammer | 24 |
-| UDP-BLAST-PATH | UDP trigger frame through `net_rx` into `udp_blast` TX | 9 |
-| UDP-STATS-REPLY | binary stats query/clear responder packet generation | 19 |
-| ETH-MAC-SYS-CSUM | Integrated TX checksum-offload path with `TX_CSUM_OFFLOAD=1`: exact IPv4 and UDP checksums on the wire | 7 |
-| ETH-MAC-SYS-CSUM-BYPASS | Default `TX_CSUM_OFFLOAD=0` path ignores `CTRL[7]` and preserves checksums | 6 |
-| ETH-MAC-SYS-CSUM-LOOP | TX and RX offload through MII loopback: inserted checksums accepted, wrong ones flagged with `terror` and counted in `RX_ERR_CSUM` / `RX_ERR` only with CTRL[9], counter clear; an IPv6 UDP checksum of 0 passes unjudged, a wrong one is flagged | 24 |
-| ETH-MAC-SYS-JUMBO | Integrated jumbo-frame system path | 3 |
-| GMII-CDC-100M | 100M rate adaptation pacing in gmii_cdc | 4 |
-| GMII-CDC-10M | 10M rate adaptation pacing in gmii_cdc | 4 |
-| RGMII-IF-VARIANTS | `RGMII_SPEEDS` variants: TX_CTL activity per variant, 8 ns TXC for `"1G_ONLY"`, 40 ns TXC from `clk_125` for `"10_100"` | 6 |
-| RGMII-LOOPBACK | Full system + RGMII PHY loopback at 1G | 5 |
-| RGMII-100M-LOOPBACK | Full system + RGMII pin-level loopback at 100M, RXC = forwarded TXC: min/MTU/back-to-back/9018-byte jumbo byte-exact, IFG >= 12 byte times, TXC period / duty / TXC-to-data distance | 15 |
-| RGMII-10M-LOOPBACK | As RGMII-100M-LOOPBACK at 10M (no jumbo) | 14 |
-| GMII-CDC-RX-OVERFLOW | RX CDC FIFO overflow: truncation tagged with `rx_er` on the last kept byte, whole-frame drop, EOF-only frames, no merged frames, recovery | 31 |
-| GMII-LOOPBACK | Full system + GMII pin-level loopback at 1G: small/MTU/4000-byte/9018-byte jumbo byte-exact, back-to-back frames with IFG >= 12 byte times, oversize gate, GTX_CLK integrity | 27 |
-| ETH-MAC-SYS-MAX-FRAME | `eth_mac_sys` with `MAX_FRAME=2000`: RX jumbo limit follows `MAX_FRAME`, VLAN-tagged 1522-byte frame accepted with jumbo off, `RX_ERR_OVERSIZE` | 8 |
-| GMII-RX-LINE-RATE | Sustained 1G RX at line rate (minimum IFG, PHY clock +100 ppm, `clk` 125 MHz -100 ppm): 60 min/MTU/9018-byte frames byte-exact, no errors | 8 |
-| ZCU106-I2C-INIT | ZCU106 Si5328 I2C write sequence against the register list, NACK retry at the alternate address | 3 |
-| ZCU106-SFP-LB | ZCU106 loopback tester against the emacZero demo back to back: ARP / ICMP / UDP requests all answered exactly, a corrupted reply caught, frames for another MAC / IP / port or with a bad checksum / FCS / `tx_er` ignored, short (padded) payloads echoed exactly | 15 |
-| ZCU106-PERF | ZCU106 demo throughput blocks on GMII at 1G: UDP blast of 1518- and 64-byte frames at exactly 100% of line rate (every gap 12 byte times, FCS and iperf2 sequence checked), iperf2 sink counting line-rate traffic, both at once, stats replies during a blast, a trigger during a burst's last frame ignored, MAC TX frame count read over AXI4-Lite | 17 |
-
-## Hardware Test (Arty A7-100T)
-
-The Digilent Arty A7-100T hardware test uses the onboard TI DP83848J MII
-Ethernet PHY. Build, program, UART, LED, fcapz submodule, ARP/ICMP, UDP echo,
-UDP blast, host-to-FPGA iperf sink, bidirectional UDP, regression profile, and
-troubleshooting details are canonical in
-[fpga/arty_a7/README.md](fpga/arty_a7/README.md).
-
-Current Arty A7-100T hardware throughput, re-validated on 2026-09-23 (after the
-`tlast` back-pressure fix) with the DP83848J MII PHY at 100 Mbps full duplex and
-1472-byte UDP payloads:
-
-| Test | Result |
-|------|--------|
-| 5 s bidirectional smoke | PASS, FPGA->host 95.68 Mbps, host->FPGA 70.00 Mbps, 0 gaps |
-| 60 s bidirectional stress | PASS, FPGA->host 95.68 Mbps, host->FPGA 95.78 Mbps, 0 gaps both directions |
-
-These are UDP payload Mbps, not raw wire Mbps. Around 95 Mbps payload is
-expected on a 100 Mbps Ethernet link once preamble, IFG, headers, and FCS are
-included.
-
-## ZCU106 SFP Demo (1000BASE-X)
-
-The AMD ZCU106 port runs the MAC in `PHY_INTERFACE="GMII"` mode behind the
-AMD 1G/2.5G Ethernet PCS/PMA IP (1000BASE-X on a GTH transceiver) through SFP
-cage 0, with the ARP/ICMP/UDP-echo demo and the iperf2 sink / UDP blast
-throughput test. It passed the SFP0 <-> SFP1 fiber loopback tests on hardware
-with both reference clocks (on an earlier build of this branch; see the board
-README), and through a 1000BASE-T copper SFP to a PC it
-ran a 10-minute full-duplex test with no frame lost: 957 Mb/s of UDP
-payload from the FPGA (100% of line rate) and 955 Mb/s from the PC, as fast
-as it sends. The GTH reference clock is the on-board
-USER_MGT_SI570 (156.25 MHz, no setup) by default, with an optional Si5328
-build, and a loopback build tests SFP0 against SFP1 over a fiber. Setup and
-LED meanings are in
-[fpga/zcu106/README.md](fpga/zcu106/README.md).
-
-## Integration
-
-Drop `eth_mac_sys` into another design via either of:
-
-**FuseSoC** — see [emaczero.core](emaczero.core). Targets:
+**FuseSoC**: see [emaczero.core](emaczero.core).
 
 | Target | Top | Filesets |
 |--------|-----|----------|
@@ -459,190 +74,119 @@ Drop `eth_mac_sys` into another design via either of:
 fusesoc run --target=default bard0:eth:emaczero
 ```
 
-**Plain filelist** — for tools without FuseSoC:
+**Filelist**: [rtl/eth_mac_sys.f](rtl/eth_mac_sys.f) is the MAC IP and
+[rtl/eth_mac_sys_l3.f](rtl/eth_mac_sys_l3.f) adds the L3 helpers. `-I rtl` is
+needed for `version.vh`.
 
 ```bash
 iverilog -g2001 -I rtl -f rtl/eth_mac_sys.f your_top.v
 ```
 
-[rtl/eth_mac_sys.f](rtl/eth_mac_sys.f) covers the MAC IP;
-[rtl/eth_mac_sys_l3.f](rtl/eth_mac_sys_l3.f) adds the optional L3 helpers.
-`-I rtl` is required because [`axilite_regs.v`](rtl/axilite_regs.v) does
-`` `include "version.vh" `` (single source of truth — see *Versioning* below).
+For synthesis, define the DDR cell target: `XILINX_7SERIES` or
+`XILINX_ULTRASCALE_PLUS`. The `SIM` models are for simulation only.
 
-**VHDL** — [rtl/vhdl/](rtl/vhdl/) is a VHDL-93 port of the MAC IP, with
-the filelist [rtl/eth_mac_sys_vhdl.f](rtl/eth_mac_sys_vhdl.f). Its first file
-picks the vendor target (one package per target in
-[rtl/vhdl/target/](rtl/vhdl/target/)). Each module is formally proven
-equivalent to its Verilog original, and every cocotb suite, including a port
-of each core Verilog testbench, runs on both languages (Icarus and GHDL). The
-Verilog testbenches also run against it in Vivado xsim. Entity, generic and port
-names match the Verilog. One difference: the generics whose Verilog default is
-computed from `MAX_FRAME` (`RX_AXIS_ADDR_WIDTH` of `eth_mac` and `eth_mac_sys`,
-`RX_FIFO_ADDR_WIDTH` of `gmii_cdc`, `BUF_ADDR_WIDTH` of `tx_csum_off`) default
-to 0, which selects that same computed value. VHDL-93 cannot express a generic
-default that depends on another generic. The port has not been run on hardware
-yet. The L3 helpers ([rtl/eth_mac_sys_l3_vhdl.f](rtl/eth_mac_sys_l3_vhdl.f),
-all but `net_rx`) and most board modules of the Arty A7 and ZCU106 designs,
-including `zcu106_top`, are ported and proven too, but not simulated in VHDL;
-the board builds still need some Verilog. See [docs/vhdl_port.md](docs/vhdl_port.md).
+**VHDL**: [rtl/eth_mac_sys_vhdl.f](rtl/eth_mac_sys_vhdl.f). The first file picks
+the vendor target. Entity, generic and port names match the Verilog
+([docs/vhdl_port.md](docs/vhdl_port.md)).
 
-**LiteX** — `litex_emaczero/emaczero.py` ships an `EmacZero` `LiteXModule` that wraps
-`eth_mac_sys` with LiteX-native AXI-Lite + AXI-Stream interfaces:
+**LiteX**: `litex_emaczero/emaczero.py` wraps `eth_mac_sys` as a
+`LiteXModule` with LiteX AXI-Lite and AXI-Stream interfaces:
 
 ```python
 from litex_emaczero import EmacZero, add_sources
-from litex.soc.interconnect import axi
-from litex.soc.integration.soc import SoCRegion
-
 add_sources(platform)
 self.submodules.mac = mac = EmacZero(platform, platform.request("eth"),
                                      phy_interface="MII")
-self.bus.add_slave("emaczero",
-    axi.AXILite2Wishbone(mac.s_axi).wishbone,
-    SoCRegion(origin=0x6000_0000, size=0x100, mode="rw"))
-self.add_interrupt("emaczero")
 ```
 
-Supports MII and RGMII, configurable `MAX_FRAME` and multicast hash, MDIO
-exposed as a `TSTriple`, and optional `TX_CSUM_OFFLOAD` / `RX_CSUM_OFFLOAD`. See module docstring in
-[litex_emaczero/emaczero.py](litex_emaczero/emaczero.py) for the full pad contract.
+**Main parameters**
 
-### Bare-metal driver
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `PHY_INTERFACE` | `"MII"` | `"MII"`, `"GMII"` or `"RGMII"` |
+| `CLK_FREQ_HZ` | 100000000 | `clk` frequency; at least 125 MHz for a 1G-capable build |
+| `MAX_FRAME` | 1518 | Largest frame in bytes; up to 9018 on GMII / RGMII |
+| `RGMII_SPEEDS` | `"ALL"` | `"ALL"`, `"1G_ONLY"` or `"10_100"` |
+| `MCAST_HASH_FILTER` | 0 | 1 = 64-bit multicast hash filter |
+| `TX_CSUM_OFFLOAD` / `RX_CSUM_OFFLOAD` | 0 | 1 = build the checksum inserter / checker |
+| `TXRX_EN_AT_RESET` | 0 | 1 = TX and RX enabled at reset, for designs with no CPU |
 
-C99 driver in [sw/emaczero/](sw/emaczero/) — register offsets, MDIO
-read/write, MAC-address setter, IRQ ack. Two files (`emaczero.h` +
-`emaczero.c`), no malloc, no OS calls. See [sw/README.md](sw/README.md).
-
-### Linux driver
-
-Out-of-tree netdev driver in [sw/linux/](sw/linux/) for Linux 6.12 or later:
-frames move through a dmaengine provider (the AMD AXI DMA on the ZCU106),
-with NAPI, BQL, phylink (MDIO PHYs or a fixed link) and the MAC counters in
-`ethtool -S`. Work in progress: tested on a ZCU106 against a PC at 1G line
-rate in each direction (TCP 941 Mb/s received, 933 Mb/s sent); with both
-directions busy the A53 is the limit. See [sw/linux/README.md](sw/linux/README.md).
-
-### Minimal instantiation template
+With the defaults, CTRL resets to `0x20`, with TX and RX off. Software writes
+the MAC address, then sets `tx_en` and `rx_en` (`emz_init` in `sw/emaczero/`
+does both). The full register map is in [docs/registers.md](docs/registers.md).
 
 [examples/eth_mac_sys_minimal/](examples/eth_mac_sys_minimal/) is a
-copy-paste wrapper that exposes every host-side port (AXI-Lite, AXI-Stream
-TX/RX, MII / RGMII, MDIO, IRQ) with no demo logic — useful as a starting
-point when wiring the MAC into your own SoC.
+copy-paste wrapper that exposes every port with no demo logic.
 
-### AXI-Stream store-forward boundary
+## Software
 
-`emacZero` exposes byte-wide AXI4-Stream TX/RX ports, but this repository does
-not include a separate `axis_store_forward` block. That block is useful in a
-larger SoC when a DMA or packet producer can start a TX frame and then starve
-before `tlast`; it belongs at that parent-system AXI-Stream boundary.
+- **Bare metal**: C99 driver in [sw/emaczero/](sw/emaczero/), two files, no
+  malloc, no OS calls ([sw/README.md](sw/README.md)).
+- **Linux**: out-of-tree netdev driver in [sw/linux/](sw/linux/) for Linux
+  6.12 or later, over a dmaengine provider, with NAPI, BQL, phylink and the
+  MAC counters in `ethtool -S`. Work in progress: on a ZCU106 (AXI DMA,
+  1000BASE-X) against a PC it ran TCP at 941 Mb/s received and 933 Mb/s sent
+  ([sw/linux/README.md](sw/linux/README.md)).
 
-Inside this IP, the MII path already has its own frame-aware CDC buffering:
-MII RX stores a complete frame before replaying it into the system clock
-domain, and MII TX carries the frame boundary as an EOF sideband bit in its
-CDC data FIFO before driving the PHY.
-For normal standalone `eth_mac_sys` integration, do not add an external
-`axis_store_forward` dependency unless your upstream producer cannot meet the
-AXI-Stream frame contract under backpressure.
+## Hardware
 
-The checked-in Arty A7 design also has no Xilinx MIG/DDR controller. It uses
-the board 100 MHz clock as `sys_clk`, the onboard DP83848J MII PHY, and local
-clock generation only for the MAC/PHY logic.
+- **Arty A7-100T**: MII with the on-board DP83848J PHY, an ARP/ICMP/UDP demo
+  and iperf tests. At 100 Mb/s full duplex with 1472-byte UDP payloads, a 60 s
+  bidirectional test ran 95.68 Mb/s to the PC and 95.78 Mb/s from it,
+  with no gaps (2026-09-23).
+  See [fpga/arty_a7/README.md](fpga/arty_a7/README.md).
+- **ZCU106**: GMII behind the AMD 1G/2.5G PCS/PMA (1000BASE-X on SFP0). Through
+  a 1000BASE-T copper SFP to a PC it ran 10 minutes full duplex with no frame
+  lost: 957 Mb/s of UDP payload sent (100% of line rate) and 955 Mb/s received.
+  See [fpga/zcu106/README.md](fpga/zcu106/README.md).
 
-### Continuous integration
+## Testing
 
-Two workflows run on every push and PR to `main`:
+```bash
+python build_and_test.py
+```
 
-- [.github/workflows/sim.yml](.github/workflows/sim.yml) runs
-  `python build_and_test.py` with Icarus, Verilator, cocotb and GHDL installed.
-  That covers lint, the full Icarus Verilog regression, and the cocotb suites
-  on both languages. It also runs the GHDL analysis of the VHDL port for every
-  vendor target.
-- [.github/workflows/parity.yml](.github/workflows/parity.yml) proves the VHDL
-  port equivalent to the Verilog: one job runs every manifest in
-  `sim/parity/` with `--strict` (`sim/parity/run_all.py`). translateHDL and
-  Yosys are pinned, and GHDL is 4.1 from Ubuntu 24.04.
+This runs:
+- Icarus and Verilator lint;
+- the directed Icarus testbenches;
+- the cocotb suites on the Verilog and, under GHDL, on the VHDL port.
 
-The Vivado phases (`PHASE 1b`, `PHASE 1c`, `--impl`) need a Vivado install and
-run locally only.
+The Vivado phases (DDR cell models, xsim on the VHDL port) run when Vivado is
+on `PATH`. The formal Verilog/VHDL equivalence proofs run separately, in
+[sim/parity/](sim/parity/). CI (`sim.yml`, `parity.yml`) runs both on every
+push and PR to `main`.
 
-## Security and CRA Readiness
-
-Security reporting, threat assumptions, and EU Cyber Resilience Act preparation
-notes are tracked in:
-
-- [SECURITY.md](SECURITY.md) - vulnerability reporting policy and hardening guidance
-- [docs/security_model.md](docs/security_model.md) - intended use, trust boundaries, assumptions, and residual risks
-- [docs/cra-readiness.md](docs/cra-readiness.md) - CRA-oriented evidence map and release checklist
-- [docs/sbom.md](docs/sbom.md) - component inventory for building an SBOM of the configuration you use
+Tools, phases and the bench list: [sim/README.md](sim/README.md). cocotb
+suites: [sim/cocotb/README.md](sim/cocotb/README.md).
 
 ## Resource Usage
 
-Current measured numbers are from the routed Arty A7-100T reference build:
-Vivado 2025.2, `xc7a100tcsg324-1`, `PHY_INTERFACE="MII"`, `MII_DEBUG=0`,
-`TX_CSUM_OFFLOAD=0`, full demo logic enabled, re-validated on 2026-06-14 after
-the RTL review fixes. The per-scope LUT/FF/BRAM counts are unchanged from the
-prior 2026-05-28 snapshot (the dead-CRC removal was already pruned, and the
-remaining edits net out within existing slices).
+The routed Arty A7-100T reference build: Vivado 2025.2, `xc7a100tcsg324-1`,
+`PHY_INTERFACE="MII"`, `MAX_FRAME=1518`, `TX_CSUM_OFFLOAD=0`, full demo logic,
+measured 2026-06-14. Timing met at 100 MHz `clk` with WNS 0.349 ns.
 
 | Scope | LUTs | FFs | RAMB36 | RAMB18 | DSP | Notes |
 |-------|-----:|----:|-------:|-------:|----:|-------|
 | Full `arty_a7_top` | 9,959 | 19,254 | 4 | 1 | 0 | MAC + ARP/ICMP/UDP demo + UART/sequencer |
 | `u_mac_sys` hierarchy | 1,858 | 1,801 | 4 | 1 | 0 | CSR, stats, MAC, MII, MDIO, pause |
-| `gen_mii.u_mii_if` | 344 | 708 | 3 | 1 | 0 | MII CDC FIFOs with EOF sideband, debug disabled |
-| `u_mac_rx` | 200 | 212 | 1 | 0 | 0 | RX AXIS FIFO inferred as BRAM (2048 B, `MAX_FRAME=1518`) |
+| `gen_mii.u_mii_if` | 344 | 708 | 3 | 1 | 0 | MII CDC FIFOs |
+| `u_mac_rx` | 200 | 212 | 1 | 0 | 0 | RX AXIS FIFO (2048 B) |
 | `u_mac_tx` | 229 | 111 | 0 | 0 | 0 | TX preamble/FCS/IFG path |
 
-The Arty demo pins `MAX_FRAME=1518`, so its RX AXIS buffer stays at the
-2048-byte default (one BRAM). A jumbo-capable build (`MAX_FRAME > 2048`)
-allocates a larger RX buffer because `RX_AXIS_ADDR_WIDTH` scales with
-`MAX_FRAME` (e.g. `MAX_FRAME=9018` -> 16384-byte buffer) so a full jumbo frame
-can be absorbed under sustained downstream backpressure; override
-`RX_AXIS_ADDR_WIDTH` to trade that buffering back for BRAM.
+These are hierarchy figures from one design, not a standalone IP
+characterization. A jumbo build (`MAX_FRAME=9018`) has a larger RX buffer.
 
-Post-route timing met with WNS `0.349 ns` on the full Arty top. The generated
-reports live under `build_arty/` (`utilization_route.rpt`,
-`utilization_hier_route.rpt`, `timing.rpt`, `timing_summary_route.rpt`) and
-are intentionally ignored by git as build artifacts.
+## Security and CRA Readiness
 
-The table above is not a standalone IP resource matrix. Exact standalone
-`eth_mac`, `eth_mac_sys` MII, and `eth_mac_sys` RGMII reports need dedicated
-synthesis harnesses; until those exist, use the Arty hierarchy numbers as the
-checked measurement and treat old standalone estimates as superseded.
+- [SECURITY.md](SECURITY.md): vulnerability reporting and hardening guidance
+- [docs/security_model.md](docs/security_model.md): intended use, trust boundaries, residual risks
+- [docs/cra-readiness.md](docs/cra-readiness.md): EU Cyber Resilience Act evidence map
+- [docs/sbom.md](docs/sbom.md): component inventory for an SBOM
 
-## Versioning
-
-The MAJOR/MINOR/ID values that build the VERSION CSR (`0x00`) are defined
-exactly once in [`rtl/version.vh`](rtl/version.vh):
-
-```verilog
-`define EMZ_VERSION_MAJOR 8'h00
-`define EMZ_VERSION_MINOR 8'h02
-`define EMZ_VERSION_ID    16'h454D  // ASCII "EM"
-```
-
-`axilite_regs.v` `` `include "version.vh" `` builds the 32-bit constant from
-the three defines, so the simulator and synthesised CSR always agree.
-
-Three derived files mirror the same numbers:
-
-- [`sw/emaczero/emaczero.h`](sw/emaczero/emaczero.h) — `EMZ_VERSION_MAJOR /
-  MINOR / ID` for the bare-metal driver.
-- [`emaczero.core`](emaczero.core) — `name: bard0:eth:emaczero:<MAJOR>.<MINOR>.0`
-  for FuseSoC.
-- [`rtl/vhdl/emz_version_pkg.vhd`](rtl/vhdl/emz_version_pkg.vhd) — the same
-  constants for the VHDL port.
-
-`build_and_test.py`'s `PHASE 0a: Version consistency` parses all four on
-every run and fails if they disagree, so you cannot ship a mismatched bump.
-To change the version, edit `rtl/version.vh` and update the three mirrored
-constants in lockstep.
-
-Releases are published as tags and GitHub releases
-(https://github.com/lcapossio/emacZero/releases), each with the regression
-log of its commit; [CHANGELOG.md](CHANGELOG.md) lists the changes and
-security-relevant fixes of each one. The latest release is the supported
-version.
+Releases are tagged on GitHub with the regression log of their commit. The
+latest release is the supported version; [CHANGELOG.md](CHANGELOG.md) lists
+the changes. Versioning and contribution rules are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
