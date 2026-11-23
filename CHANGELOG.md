@@ -146,6 +146,12 @@ This project does not yet maintain long-lived release branches.
     parameters, so it checks the new defaults; `eth_mac_sys_reset_txrx_on`
     sets `TXRX_EN_AT_RESET=1`. New suite `axilite_regs_txrx_en` checks the
     `0x23` reset value.
+- README shortened to an overview. The port list, RGMII clocking, jumbo and
+  checksum-offload limits and source file table moved to
+  `docs/integration.md`, the regression phases and bench table to
+  `sim/README.md`, and versioning to `CONTRIBUTING.md`. The register map is
+  in `docs/registers.md` only.
+
 - The parity stand-ins for `eth_mac_sys`, MMCME2_BASE/BUFG and
   IDELAYE2/IDELAYCTRL (`sim/parity/sfp_lb_tester/eth_mac_sys_standin`,
   `sim/parity/stubs/xilinx_clk_standin`, `xilinx_io_standin`) also XOR into
