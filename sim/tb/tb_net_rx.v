@@ -23,11 +23,13 @@
 //   T14: frame ending on its last IPv4 header byte with a bad header
 //        checksum, then a valid ICMP frame -> the second one passed on
 //   T15: fragments -> dropped: MF set, offset 8 (MF clear), offset 65520
-//        (the lone last-fragment "ping of death" probe), a UDP fragment;
-//        DF set with offset 0 is still accepted
+//        (the lone last-fragment "ping of death" probe), offset 2048 (high
+//        offset bits only), a UDP fragment; DF set with offset 0 is still
+//        accepted
 //   T16: source MAC with the group bit set, or all zero -> dropped (ICMP and
 //        ARP)
-//   T17: source IP 0.0.0.0, 127.0.0.1, 224.0.0.1, 240.0.0.1 or
+//   T17: source IP 0.0.0.0, 0.1.2.3, 127.0.0.1, 127.255.255.254, 224.0.0.1,
+//        240.0.0.1 or
 //        255.255.255.255 -> dropped (ICMP and UDP); 223.255.255.254 accepted
 //   T18: IHL=6 (one 4-byte option word): the destination filter uses the
 //        real destination, not the last option byte -> to our IP accepted
@@ -599,6 +601,14 @@ module tb_net_rx;
         feed_frame;
         check_int("T15 offset 65520: icmp_last_seen = 0", icmp_last_seen, 0);
 
+        // MF clear, offset 256 (2048 bytes): only the high offset bits set
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[20] = 8'h01; frame[21] = 8'h00;
+        fix_csums;
+        feed_frame;
+        check_int("T15 offset 2048: icmp_last_seen = 0", icmp_last_seen, 0);
+
         // UDP first fragment
         reset_counters;
         load_udp;
@@ -666,6 +676,21 @@ module tb_net_rx;
         fix_csums;
         feed_frame;
         check_int("T17 src 127.0.0.1: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        // The rest of 0/8 and 127/8, not just the single addresses above
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = 8'h00; frame[27] = 8'h01; frame[28] = 8'h02; frame[29] = 8'h03;
+        fix_csums;
+        feed_frame;
+        check_int("T17 src 0.1.2.3: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = 8'h7F; frame[27] = 8'hFF; frame[28] = 8'hFF; frame[29] = 8'hFE;
+        fix_csums;
+        feed_frame;
+        check_int("T17 src 127.255.255.254: icmp_last_seen = 0", icmp_last_seen, 0);
 
         reset_counters;
         load_icmp(OUR_IP);
