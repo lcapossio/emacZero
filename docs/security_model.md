@@ -145,8 +145,14 @@ accept these gaps:
 - Standalone resource/timing matrices are not yet maintained for every target
   FPGA, PHY mode, and parameter set.
 - Optional L3 helpers are demo-oriented and should be reviewed before product
-  use. `net_rx` drops IPv4 fragments, ICMP to broadcast and frames from an
-  invalid source MAC or IP, and the Arty ARP responder ignores requests from
-  a group or all-zero MAC. Nothing reassembles, and the responders reply
-  to the request's source MAC without an ARP lookup, one reply per request,
-  so a spoofed source still draws a reply.
+  use. `net_rx` drops IPv4 fragments, ICMP to broadcast, unicast IP in an
+  Ethernet broadcast or multicast frame, and frames from an invalid source
+  MAC or IP (including our own IP), and the Arty ARP responder ignores
+  requests from a group or all-zero MAC. Nothing reassembles. The echo, ARP
+  and stats responders send one reply per request to the request's source
+  MAC without an ARP lookup, so a spoofed source still draws a reply. The
+  UDP blast trigger is not a responder in that sense: one trigger packet,
+  unicast or to IP broadcast, starts a burst of up to 2^32 - 1 frames
+  (default 1,000,000) at line rate toward the trigger's source. It is a
+  throughput test tool and is always built into the Arty demo, so keep that
+  build off untrusted networks.

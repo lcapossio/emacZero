@@ -12,11 +12,13 @@
 // IPv4 checks: version 4, IHL >= 5, header checksum, total length covering
 // the header plus 8 bytes, destination = our IP or broadcast (broadcast for
 // UDP only: an ICMP message to broadcast is dropped, so the echo responder
-// does not answer broadcast pings, RFC 1122 3.2.2.6), not a fragment (MF set
-// or a non-zero fragment offset: nothing here reassembles), and a source
-// address that a host may send from (not 0.0.0.0/8, 127.0.0.0/8 or
-// 224.0.0.0 and above, which covers multicast, class E and broadcast,
-// RFC 1122 3.2.1.3). Frames that fail are dropped before any ICMP/UDP byte
+// does not answer broadcast pings, RFC 1122 3.2.2.6), a unicast destination
+// only in a unicast frame (a link-layer broadcast or multicast frame must
+// carry IP broadcast, RFC 1122 3.3.6), not a fragment (MF set or a non-zero
+// fragment offset: nothing here reassembles), and a source address that a
+// host may send from (not 0.0.0.0/8, 127.0.0.0/8 or 224.0.0.0 and above,
+// which covers multicast, class E and broadcast, RFC 1122 3.2.1.3) and that
+// is not our own address. Frames that fail are dropped before any ICMP/UDP byte
 // is passed on. The header
 // checksum is judged one cycle after the last header byte, from the
 // registered sum: nothing has been passed on by then (the first ICMP byte is
@@ -329,6 +331,10 @@ module net_rx (
                             // No ICMP to broadcast (no broadcast echo replies)
                             else if (ip_protocol == 8'd1 && dst_ip_now == 32'hFFFFFFFF)
                                 state <= P_DROP;
+                            // Link-layer broadcast or multicast carrying a
+                            // unicast IP destination (RFC 1122 3.3.6)
+                            else if (dst_mac_buf[40] && dst_ip_now != 32'hFFFFFFFF)
+                                state <= P_DROP;
                             else if (ip_frag)
                                 state <= P_DROP;           // fragment: no reassembly
                             // Source must be a host address: not 0/8, 127/8,
@@ -337,6 +343,10 @@ module net_rx (
                             else if (src_ip_buf[31:24] == 8'd0 ||
                                      src_ip_buf[31:24] == 8'd127 ||
                                      src_ip_buf[31:29] == 3'b111)
+                                state <= P_DROP;
+                            // Our own address as source: the reply would go
+                            // to ourselves
+                            else if (src_ip_buf == our_ip)
                                 state <= P_DROP;
                             else if (ip_tot_len < {2'd0, ip_hdr_bytes} + 16'd8)
                                 state <= P_DROP;           // no room for ICMP/UDP header

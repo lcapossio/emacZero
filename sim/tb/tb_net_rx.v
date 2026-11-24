@@ -29,12 +29,14 @@
 //   T16: source MAC with the group bit set, or all zero -> dropped (ICMP and
 //        ARP)
 //   T17: source IP 0.0.0.0, 0.1.2.3, 127.0.0.1, 127.255.255.254, 224.0.0.1,
-//        240.0.0.1 or
+//        240.0.0.1, our own IP or
 //        255.255.255.255 -> dropped (ICMP and UDP); 223.255.255.254 accepted
 //   T18: IHL=6 (one 4-byte option word): the destination filter uses the
 //        real destination, not the last option byte -> to our IP accepted
 //        whatever the option bytes; to .201 with an option byte equal to our
 //        last octet dropped
+//   T19: ICMP or UDP to our IP in an Ethernet broadcast or multicast frame ->
+//        dropped; UDP to IP broadcast in an Ethernet broadcast frame accepted
 // (rx_src_mac is checked in T1 and T2; frames carry valid checksums unless
 // a test corrupts one.)
 // Verilog 2001
@@ -728,6 +730,24 @@ module tb_net_rx;
         fix_csums;
         feed_frame;
         check_int("T17 src 223.255.255.254: icmp_last_seen = 1", icmp_last_seen, 1);
+
+        // Our own address as source
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = OUR_IP[31:24]; frame[27] = OUR_IP[23:16];
+        frame[28] = OUR_IP[15:8];  frame[29] = OUR_IP[7:0];
+        fix_csums;
+        feed_frame;
+        check_int("T17 src = our IP: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_udp;
+        udp_payload5;
+        frame[26] = OUR_IP[31:24]; frame[27] = OUR_IP[23:16];
+        frame[28] = OUR_IP[15:8];  frame[29] = OUR_IP[7:0];
+        fix_csums;
+        feed_frame;
+        check_int("T17 UDP src = our IP: udp_last_seen = 0", udp_last_seen, 0);
         check_int("T17 src 223.255.255.254: icmp_err = 0", icmp_err_seen, 0);
 
         // =================================================================
@@ -749,6 +769,42 @@ module tb_net_rx;
         load_icmp_opts(OUR_IP + 32'd1, OUR_IP[7:0]);
         feed_frame;
         check_int("T18 IHL=6 to .201, opt byte = our octet: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        // =================================================================
+        // T19: unicast IP destination in a link-layer broadcast or multicast
+        // frame -> dropped (RFC 1122 3.3.6); IP broadcast in an Ethernet
+        // broadcast frame is still delivered
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        for (i = 0; i < 6; i = i + 1) frame[i] = 8'hFF;
+        feed_frame;
+        check_int("T19 eth bcast, ICMP to our IP: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_udp;
+        udp_payload5;
+        frame[0] = 8'h01; frame[1] = 8'h00; frame[2] = 8'h5E;
+        frame[3] = 8'h00; frame[4] = 8'h00; frame[5] = 8'h01;
+        fix_csums;
+        feed_frame;
+        check_int("T19 eth mcast, UDP to our IP: udp_last_seen = 0", udp_last_seen, 0);
+
+        reset_counters;
+        load_udp;
+        udp_payload5;
+        for (i = 0; i < 6; i = i + 1) frame[i] = 8'hFF;
+        frame[30] = 8'hFF; frame[31] = 8'hFF; frame[32] = 8'hFF; frame[33] = 8'hFF;
+        fix_csums;
+        feed_frame;
+        check_int("T19 eth bcast, UDP to IP bcast: udp_byte_cnt = 5", udp_byte_cnt, 5);
+        check_int("T19 eth bcast, UDP to IP bcast: udp_err = 0", udp_err_seen, 0);
+
+        // A unicast frame right after: delivered
+        reset_counters;
+        load_icmp(OUR_IP);
+        feed_frame;
+        check_int("T19 then unicast: icmp_byte_cnt = 8", icmp_byte_cnt, 8);
 
         // =================================================================
         // Summary

@@ -200,14 +200,22 @@ This project does not yet maintain long-lived release branches.
   - The Arty `test_sequencer` (Verilog and VHDL) enabled the MAC with CTRL
     `0x07`, so the demo ran in promiscuous mode and answered frames sent to
     other unicast MACs. It now writes `0x03`, and the MAC's address filter
-    passes only our unicast, broadcast and multicast.
+    passes only our unicast and broadcast (the Arty build has no multicast
+    hash filter). Before that it writes the MAC address registers from a new
+    `OUR_MAC` parameter, set from the address the demo responders use, so
+    the filter no longer depends on the CSR reset value matching it; the
+    gratuitous ARP uses the same parameter.
+  - The Arty `test_sequencer` (Verilog and VHDL) held `tvalid` through the
+    cycle after each gratuitous-ARP byte was accepted, so with `tready` high
+    every byte went out twice (an 83-byte frame with a broadcast source
+    MAC). It now drops `tvalid` for that cycle.
   - `net_rx` passed IPv4 fragments on as whole datagrams, so a lone fragment
     (e.g. offset 65520) carrying an ICMP echo header was answered. Nothing
     reassembles, and `icmp_echo` never used the offset, so no buffer was at
     risk. Fragments (MF set or a non-zero offset) are now dropped.
   - `net_rx` now drops frames from an invalid source: a group or all-zero
     source MAC (ARP included), or a source IP in 0.0.0.0/8, 127.0.0.0/8 or
-    224.0.0.0 and above (RFC 1122 3.2.1.3). Replies to such a request went
+    224.0.0.0 and above (RFC 1122 3.2.1.3), or our own IP. Replies to such a request went
     to a group address or to an address that cannot send. The Arty
     `arp_responder` (Verilog and VHDL), which reads the MAC directly rather
     than through `net_rx`, likewise ignores a request whose Ethernet source
@@ -226,7 +234,9 @@ This project does not yet maintain long-lived release branches.
     one when the header has options.
   - ICMP to the IPv4 broadcast address is dropped, so the demo no longer
     answers broadcast pings (RFC 1122 3.2.2.6). UDP to broadcast is still
-    passed on.
+    passed on. A unicast IP destination in an Ethernet broadcast or
+    multicast frame is dropped too (RFC 1122 3.3.6), so a ping to our IP
+    sent to the broadcast MAC is not answered either.
 
 - **A PAUSE frame received while one of our frames was on the wire was cut
   short.** Its countdown started when it was recognized, so the rest of our
