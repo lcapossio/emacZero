@@ -220,6 +220,10 @@ This project does not yet maintain long-lived release branches.
     `arp_responder` (Verilog and VHDL), which reads the MAC directly rather
     than through `net_rx`, likewise ignores a request whose Ethernet source
     or ARP sender hardware address is a group address or all zeros.
+  - `arp_responder`'s 6-bit capture index wrapped at 64, so bytes 64 and up
+    of a long frame overwrote the captured header: a frame of any EtherType
+    with an ARP request for our IP at bytes 64..105 drew a reply, and a real
+    request followed by a long trailer was lost. The index now saturates.
   - `arty_tx_arbiter` released a source when its last byte left the output
     register, so in that cycle it also took the first byte of the same
     source's next frame. If another source won the next arbitration, that

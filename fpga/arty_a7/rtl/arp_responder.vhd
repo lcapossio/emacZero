@@ -153,7 +153,11 @@ begin
                         if cap_idx < 42 then
                             cap(to_integer(cap_idx)) <= rx_tdata;
                         end if;
-                        cap_idx <= cap_idx + 1;
+                        -- saturate: a wrap at 64 would let bytes 64.. of a
+                        -- long frame overwrite the captured header
+                        if cap_idx /= 63 then
+                            cap_idx <= cap_idx + 1;
+                        end if;
 
                         if rx_tlast = '1' then
                             if rx_terror = '0' and cap_idx >= 41 then

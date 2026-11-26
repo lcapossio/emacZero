@@ -13,6 +13,9 @@
 //       no reply (the reply would go there)
 //   T5: a valid request after the dropped ones -> answered
 //   T6: ARP probe (sender IP 0.0.0.0, RFC 5227) -> still answered
+//   T7: a 106-byte IPv4 frame with an ARP request for our IP at bytes
+//       64..105 -> no reply (the capture index must not wrap at 64)
+//   T8: an ARP request followed by a trailer, 106 bytes in all -> answered
 // Verilog 2001
 // =============================================================================
 `timescale 1ns / 1ps
@@ -87,7 +90,8 @@ module tb_arp_responder;
     end
 
     // ---- Request frame ----
-    reg [7:0] frame [0:59];
+    reg [7:0] frame [0:127];
+    integer   frame_len = 60;
 
     task load_request;
         input [31:0] target_ip;
@@ -108,7 +112,8 @@ module tb_arp_responder;
             for (i = 32; i < 38; i = i + 1) frame[i] = 8'h00;   // THA
             frame[38] = target_ip[31:24]; frame[39] = target_ip[23:16];
             frame[40] = target_ip[15:8];  frame[41] = target_ip[7:0];
-            for (i = 42; i < 60; i = i + 1) frame[i] = 8'h00;   // padding
+            for (i = 42; i < 128; i = i + 1) frame[i] = 8'h00;  // padding
+            frame_len = 60;
         end
     endtask
 
@@ -116,11 +121,11 @@ module tb_arp_responder;
         integer k;
         begin
             @(negedge clk);
-            for (k = 0; k < 60; k = k + 1) begin
+            for (k = 0; k < frame_len; k = k + 1) begin
                 rx_tdata  = frame[k];
                 rx_tvalid = 1'b1;
                 rx_tsof   = (k == 0);
-                rx_tlast  = (k == 59);
+                rx_tlast  = (k == frame_len - 1);
                 @(negedge clk);
             end
             rx_tvalid = 1'b0; rx_tlast = 1'b0; rx_tsof = 1'b0;
@@ -209,6 +214,24 @@ module tb_arp_responder;
         before = n_replies;
         send_frame;
         check("T6 ARP probe answered", n_replies == before + 1);
+
+        // T7: ARP request planted at bytes 64..105 of an IPv4 frame
+        load_request(OUR_IP);
+        for (i = 0; i < 42; i = i + 1) frame[64 + i] = frame[i];
+        frame[12] = 8'h08; frame[13] = 8'h00;               // IPv4
+        for (i = 14; i < 64; i = i + 1) frame[i] = 8'h45;
+        frame_len = 106;
+        before = n_replies;
+        send_frame;
+        check("T7 ARP at byte 64+: no reply", n_replies == before);
+
+        // T8: real request with a trailer, 106 bytes in all
+        load_request(OUR_IP);
+        for (i = 42; i < 106; i = i + 1) frame[i] = i[7:0];
+        frame_len = 106;
+        before = n_replies;
+        send_frame;
+        check("T8 request with trailer answered", n_replies == before + 1);
 
         if (fail_cnt == 0) begin
             $display("PASS: %0d tests passed", pass_cnt);

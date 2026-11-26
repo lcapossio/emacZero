@@ -149,8 +149,10 @@ accept these gaps:
   Ethernet broadcast or multicast frame, and frames from an invalid source
   MAC or IP (including our own IP), and the Arty ARP responder ignores
   requests from a group or all-zero MAC. Nothing reassembles. The echo, ARP
-  and stats responders send one reply per request to the request's source
-  MAC without an ARP lookup, so a spoofed source still draws a reply. The
+  and stats responders send one reply per request without an ARP lookup: the
+  echo and stats replies go to the request's Ethernet source MAC, the ARP
+  reply to the sender hardware address inside the ARP request (the two need
+  not match). A spoofed source still draws a reply. The
   UDP blast trigger is not a responder in that sense: one trigger packet,
   unicast or to IP broadcast, starts a burst of up to 2^32 - 1 frames
   (default 1,000,000) at line rate toward the trigger's source. It is a

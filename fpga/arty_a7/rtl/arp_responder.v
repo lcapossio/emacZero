@@ -110,7 +110,10 @@ module arp_responder (
                     if (rx_tvalid) begin
                         if (cap_idx < 6'd42)
                             cap[cap_idx] <= rx_tdata;
-                        cap_idx <= cap_idx + 6'd1;
+                        // saturate: a wrap at 64 would let bytes 64.. of a
+                        // long frame overwrite the captured header
+                        if (cap_idx != 6'd63)
+                            cap_idx <= cap_idx + 6'd1;
 
                         if (rx_tlast) begin
                             if (!rx_terror && cap_idx >= 6'd41) begin

@@ -87,7 +87,7 @@ cocotb suites are listed in [cocotb/README.md](cocotb/README.md).
 | UDP-IPERF-SINK | iperf2 UDP header parsing, counters, gap tracking | 16 |
 | UDP-BLAST-TRIGGER | trigger payload parsing and busy/port filtering | 13 |
 | UDP-BLAST-START-DELAY | First-packet delay after UDP blast trigger | 7 |
-| ARP-RESPONDER | Arty ARP responder: reply fields, other-IP requests and group / zero source or sender hardware addresses ignored, ARP probe answered | 14 |
+| ARP-RESPONDER | Arty ARP responder: reply fields, other-IP requests and group / zero source or sender hardware addresses ignored, ARP probe answered, no capture wrap in frames over 64 bytes | 16 |
 | TEST-SEQUENCER-MAC | Arty `test_sequencer` enable step: MAC_LO / MAC_HI written from `OUR_MAC` before CTRL, slow AXI-Lite slave; gratuitous ARP 42 bytes with `OUR_MAC` | 12 |
 | ARTY-TX-ARBITER | Arty six-source TX arbitration and blast holdoff; no frame mixing at handover, with and without backpressure | 17 |
 | AXIL-ARB2 | 2:1 AXI4-Lite arbiter: independent RW channels, concurrency, hammer | 24 |
