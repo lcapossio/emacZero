@@ -11,11 +11,13 @@
                        length class arrives good and in sequence; injected
                        payload and line errors are counted
   xgmii_test_loop_o63  the same at the largest bit offset
-  mac10g_test_loop     axis_test_gen64 -> the 10G TX MAC -> pcs10gbr -> line
-                       loopback -> pcs10gbr -> the 10G RX MAC ->
-                       axis_test_chk64: minimum frames at line rate, a
-                       length sweep, jumbo frames, an injected payload error
-                       counted once
+  mac10g_test_loop     axis_test_gen64 (200 MHz app clock) -> eth_mac_sys_10g
+                       -> pcs10gbr -> line loopback -> pcs10gbr ->
+                       eth_mac_sys_10g -> axis_test_chk64, with the board's
+                       settings: minimum frames at line rate through both
+                       clock crossings, a length sweep, jumbo frames, an
+                       injected payload error counted once, and the MAC's
+                       counters read through axil_cmd_master
 """
 import random
 
@@ -45,14 +47,17 @@ SUITES = {
     },
     "mac10g_test_loop": {
         "toplevel": "h_mac10g_test_loop",
-        "sources": ["rtl/crc32_d64.v", "rtl/eth_mac_10g_tx.v",
-                    "rtl/eth_mac_10g_rx.v",
+        "sources": ["rtl/crc32_d64.v", "rtl/async_fifo.v",
+                    "rtl/axis_async_frame_fifo.v", "rtl/cdc_event_count.v",
+                    "rtl/eth_mac_10g_tx.v", "rtl/eth_mac_10g_rx.v",
+                    "rtl/eth_mac_sys_10g.v",
                     "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
                     "rtl/pcs10gbr_scrambler.v", "rtl/pcs10gbr_gearbox_tx.v",
                     "rtl/pcs10gbr_gearbox_rx.v", "rtl/pcs10gbr_block_lock.v",
                     "rtl/pcs10gbr_ber_mon.v", "rtl/pcs10gbr.v",
                     "fpga/zcu106/rtl/axis_test_gen64.v",
                     "fpga/zcu106/rtl/axis_test_chk64.v",
+                    "fpga/zcu106/rtl/axil_cmd_master.v",
                     "sim/cocotb/hdl/h_mac10g_test_loop.v"],
         "params": {"OFFSET": 23, "BER_TIMER_CYCLES": 4000},
         "skip_vhdl": "ZCU106 10G bring-up logic is Verilog only",
@@ -384,17 +389,49 @@ def mac_counts(dut):
 
 async def mac_setup(dut):
     cocotb.start_soon(Clock(dut.clk, 6.2, unit="ns").start())
+    cocotb.start_soon(Clock(dut.app_clk, 5.0, unit="ns").start())
     dut.rst_n.value = 0
+    dut.app_rst_n.value = 0
     dut.enable.value = 0
     dut.len.value = 60
     dut.sweep.value = 0
     dut.ipg.value = 0
     dut.inj_err.value = 0
     dut.clear.value = 0
+    dut.csr_go.value = 0
+    dut.csr_write.value = 0
+    dut.csr_addr.value = 0
+    dut.csr_wdata.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    dut.app_rst_n.value = 1
     await wait_for(dut, lambda: int(dut.block_lock.value), 3000, "block lock")
     await ClockCycles(dut.clk, 20)
+
+
+async def app_pulse(dut, sig):
+    """One app_clk cycle high, as the board's edge detectors make it."""
+    await FallingEdge(dut.app_clk)
+    sig.value = 1
+    await FallingEdge(dut.app_clk)
+    sig.value = 0
+
+
+async def csr(dut, addr, data=None):
+    """One CSR access through axil_cmd_master; returns the read value."""
+    await FallingEdge(dut.app_clk)
+    dut.csr_addr.value = addr
+    dut.csr_write.value = int(data is not None)
+    dut.csr_wdata.value = data or 0
+    await FallingEdge(dut.app_clk)
+    go = 1 - int(dut.csr_go.value)
+    dut.csr_go.value = go
+    for _ in range(200):
+        await RisingEdge(dut.app_clk)
+        if int(dut.csr_ack.value) == go:
+            break
+    assert int(dut.csr_ack.value) == go, "CSR access never finished"
+    return int(dut.csr_rdata.value)
 
 
 async def mac_run(dut, n_frames, limit):
@@ -408,8 +445,19 @@ async def mac_run(dut, n_frames, limit):
         if int(dut.good_frames.value) - start >= n_frames:
             break
     dut.enable.value = 0
-    await ClockCycles(dut.clk, 400)   # drain
+    await mac_drain(dut)
     return cycles
+
+
+async def mac_drain(dut, limit=200000):
+    """Wait until the checker has seen every generated frame (the TX FIFO
+    holds up to 32 KB of frames ahead of the line)."""
+    for _ in range(limit // 100):
+        await ClockCycles(dut.clk, 100)
+        c = mac_counts(dut)
+        if c["good_frames"] + c["bad_frames"] + c["seq_gaps"] >= c["gen_frames"]:
+            break
+    await ClockCycles(dut.clk, 400)
 
 
 @cocotb.test(timeout_time=20, timeout_unit="ms")
@@ -419,15 +467,6 @@ async def mac_line_rate(dut):
     if dut._name != "h_mac10g_test_loop":
         return
     await mac_setup(dut)
-    underruns = 0
-
-    async def watch():
-        nonlocal underruns
-        while True:
-            await RisingEdge(dut.clk)
-            underruns += int(dut.underrun.value)
-    w = cocotb.start_soon(watch())
-    n0 = int(dut.good_frames.value)
     cycles = await mac_run(dut, 2000, 40000)
     rate = 2000 / cycles
     want = 8 * 32 / 33 / 84
@@ -435,8 +474,15 @@ async def mac_line_rate(dut):
     c = mac_counts(dut)
     assert c["bad_frames"] == 0 and c["seq_gaps"] == 0 and c["tuser_frames"] == 0, c
     assert c["good_frames"] == c["gen_frames"], c
-    w.cancel()
-    assert underruns == 0
+    # the MAC's own counters, through the CSR port
+    assert await csr(dut, 0xF0) == 0, "TX_UNDERRUN"
+    assert await csr(dut, 0xD0) == 0, "RX_ERR_FCS"
+    assert await csr(dut, 0xE8) == 0, "RX_DROP"
+    assert await csr(dut, 0xB0) == c["gen_frames"], "TX_FRAMES"
+    assert await csr(dut, 0xC0) == c["good_frames"], "RX_FRAMES"
+    assert await csr(dut, 0xC8) == c["good_frames"] * 64, "RX_BYTES"
+    await csr(dut, 0xC0, 0)
+    assert await csr(dut, 0xC0) == 0, "RX_FRAMES clear"
 
 
 @cocotb.test(timeout_time=40, timeout_unit="ms")
@@ -468,17 +514,13 @@ async def mac_inject(dut):
     dut.len.value = 200
     dut.enable.value = 1
     await ClockCycles(dut.clk, 500)
-    dut.inj_err.value = 1
-    await ClockCycles(dut.clk, 1)
-    dut.inj_err.value = 0
+    await app_pulse(dut, dut.inj_err)
     await ClockCycles(dut.clk, 1500)
     dut.enable.value = 0
-    await ClockCycles(dut.clk, 400)
+    await mac_drain(dut)
     c = mac_counts(dut)
     assert c["bad_frames"] == 1 and c["tuser_frames"] == 0 and c["seq_gaps"] == 0, c
     assert c["good_frames"] + 1 == c["gen_frames"], c
-    dut.clear.value = 1
-    await ClockCycles(dut.clk, 2)
-    dut.clear.value = 0
-    await ClockCycles(dut.clk, 2)
+    await app_pulse(dut, dut.clear)
+    await ClockCycles(dut.app_clk, 2)
     assert mac_counts(dut)["bad_frames"] == 0

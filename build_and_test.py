@@ -255,11 +255,15 @@ LINT_SOURCES = [
     "rtl/crc32_d64.v",
     "rtl/eth_mac_10g_tx.v",
     "rtl/eth_mac_10g_rx.v",
+    "rtl/axis_async_frame_fifo.v",
+    "rtl/cdc_event_count.v",
+    "rtl/eth_mac_sys_10g.v",
     "fpga/zcu106/rtl/gt10g_reset.v",
     "fpga/zcu106/rtl/xgmii_test_gen.v",
     "fpga/zcu106/rtl/xgmii_test_chk.v",
     "fpga/zcu106/rtl/axis_test_gen64.v",
     "fpga/zcu106/rtl/axis_test_chk64.v",
+    "fpga/zcu106/rtl/axil_cmd_master.v",
 ]
 
 LINT_SUPPRESS = [
@@ -283,6 +287,23 @@ VERILATOR_LINT_ARGS = [
     "-Wno-SYNCASYNCNET",
     "-f", "rtl/eth_mac_sys.f",
 ]
+
+# Further Verilator lint runs with the same flags: (top module, filelist)
+VERILATOR_LINT_EXTRA_TOPS = [
+    ("eth_mac_sys_10g", "rtl/eth_mac_sys_10g.f"),
+    ("pcs10gbr", "rtl/eth_mac_sys_10g.f"),
+]
+
+
+def _verilator_lint_cmds():
+    """The 1G top's lint command, then one per VERILATOR_LINT_EXTRA_TOPS."""
+    cmds = [" ".join([VERILATOR_BIN, *VERILATOR_LINT_ARGS])]
+    for top, flist in VERILATOR_LINT_EXTRA_TOPS:
+        args = list(VERILATOR_LINT_ARGS)
+        args[args.index("--top-module") + 1] = top
+        args[args.index("-f") + 1] = flist
+        cmds.append(" ".join([VERILATOR_BIN, *args]))
+    return cmds
 
 
 def _incdir_args():
@@ -314,7 +335,7 @@ def _find_wsl():
 
 def run_verilator_lint():
     header("PHASE 0b: Verilator lint")
-    cmd = " ".join([VERILATOR_BIN, *VERILATOR_LINT_ARGS])
+    cmd = " && ".join(_verilator_lint_cmds())
     wsl = _find_wsl()
 
     if shutil.which(VERILATOR_BIN):

@@ -341,15 +341,17 @@ SFP cage 0 with no AMD IP: the clean-room PCS in `rtl/pcs10gbr*.v` and the
 GTH transceiver primitives (`GTHE4_COMMON`, `GTHE4_CHANNEL`) instantiated
 directly, with their own reset sequencer. Two test paths share the PCS and
 the GT: raw XGMII test frames (`xgmii_test_gen.v`, `xgmii_test_chk.v`), and,
-in MAC mode, Ethernet frames through the 10G MAC (`rtl/eth_mac_10g_tx.v`,
-`rtl/eth_mac_10g_rx.v`) from a 64-bit AXIS generator and checker
-(`axis_test_gen64.v`, `axis_test_chk64.v`).
+in MAC mode, Ethernet frames through the 10G MAC system
+(`rtl/eth_mac_sys_10g.v`: TX and RX frame FIFOs across to the application
+clock, the 10G MACs, address filter, counters and CSRs) from a 64-bit AXIS
+generator and checker (`axis_test_gen64.v`, `axis_test_chk64.v`) on a
+200 MHz application clock.
 
 ```
-xgmii_test_gen  -------------------> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFP0
-axis_test_gen64 -> eth_mac_10g_tx -^
+xgmii_test_gen  ------------------------------> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFP0
+axis_test_gen64 (clk_app) -> eth_mac_sys_10g -^
 SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
-                             -> eth_mac_10g_rx -> axis_test_chk64
+                             -> eth_mac_sys_10g -> axis_test_chk64 (clk_app)
 ```
 
 - QPLL0 of Quad 225 makes 10.3125 GHz from the USER_MGT_SI570 156.25 MHz
@@ -372,13 +374,16 @@ SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
   power good, QPLL0 reset and lock, then TX and RX each: GT and PROGDIV
   reset release, user clock running, USERRDY, reset done. It does not wait
   for RXCDRLOCK (UG576 reserves it). Each step times out and retries.
+- The application clock `clk_app` (200 MHz) comes from the 300 MHz system
+  clock through an `MMCME4_BASE`, unrelated to the transceiver clocks, so
+  both of `eth_mac_sys_10g`'s FIFOs really cross clock domains.
 - An fcapz EIO on USER3 sets the loopback (none, near-end PCS, near-end PMA),
   polarities, DFE or LPM receiver, TX swing and emphasis, the test path (raw
   XGMII or MAC mode), the generators and their frame length / gap, and
   resets; it reads the GT and PCS state, block lock, BER counter, lock
-  losses, both checkers' counters, the RX MAC's FCS errors, the TX MAC's
-  underruns and frequency meters for TXUSRCLK2, RXUSRCLK2 and the reference
-  clock.
+  losses, both checkers' counters and frequency meters for TXUSRCLK2,
+  RXUSRCLK2 and the reference clock. It also reaches `eth_mac_sys_10g`'s
+  AXI4-Lite CSRs, one access at a time, through `axil_cmd_master.v`.
 
 Build, program and test (from the repository root):
 
@@ -389,17 +394,21 @@ vivado -mode batch -source fpga/zcu106/scripts/program_zcu106.tcl \
 python fpga/zcu106/scripts/sfp10g_test.py status
 python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py mac --loopback pma --len 60 --seconds 10
+python fpga/zcu106/scripts/sfp10g_test.py csr 0xC0      # read a MAC CSR
 ```
 
 `loop` restarts the RX path, waits for block lock, runs back-to-back test
 frames and passes when every frame comes back good and in sequence with no
 lock loss (`--inject` adds one bit error, which must show up as exactly one
-bad frame). `mac` does the same through the MAC: frames of `--len` bytes
-before the FCS (`--sweep` steps the length from 60 up to it frame by
-frame), every byte checked after the RX MAC, and prints the frame rate
-against the line rate for that length. Frames longer than the RX MAC's
-9018-byte jumbo limit must all come back flagged (so `--sweep` and
-`--inject` take `--len` up to 9014). Neither generator's
+bad frame). `mac` does the same through `eth_mac_sys_10g`: frames of
+`--len` bytes before the FCS (`--sweep` steps the length from 60 up to it
+frame by frame, `--ipg` idles that many 200 MHz cycles between frames),
+every byte checked after the RX FIFO. It prints the frame rate against the
+line rate for that length and the MAC's own counters, read over the CSR
+port, which must agree with the generator and checker. Frames longer than
+the RX MAC's 9018-byte jumbo limit must all be counted oversize and
+dropped (so `--sweep` and `--inject` take `--len` up to 9014). `csr` reads
+or writes one CSR (register map in `docs/registers.md`). Neither generator's
 traffic is meant for a switch (the raw frames have no FCS, the MAC frames
 go to a made-up address at line rate): use a loopback, or a fibre between
 two cages.
@@ -408,7 +417,7 @@ Simulated: the reset sequencer against a model of the GT reset handshakes,
 and both test paths through PCS -> serial loopback -> PCS (the
 `gt10g_reset`, `xgmii_test_loop*` and `mac10g_test_loop` cocotb suites).
 The GT itself is only tested on the board. The design meets timing (WNS
-+1.07 ns).
++0.793 ns).
 
 Tested on the board (2026-11-26, 10GBASE-SR SFP+ in cage 0, fibre to a
 switch):
@@ -433,6 +442,15 @@ switch):
   come back flagged oversize, as they must. An injected payload error is
   exactly one bad frame. LPM receiver: all good. Toward the switch, the
   switch's own frames pass the RX MAC's FCS check.
+- MAC mode through `eth_mac_sys_10g` (both FIFOs crossing to the 200 MHz
+  application clock), near-end PMA loopback, each run checked against the
+  MAC's own counters as well (TX_FRAMES = RX_FRAMES = frames sent, byte
+  counts equal, every error and drop counter 0): 149,093,038 frames of 60
+  bytes in 10 s at line rate; 1514 bytes at 9.90 Gb/s; a 60..2000 byte
+  sweep; 9000 bytes at 10.0 Gb/s; 16000-byte frames all counted
+  RX_ERR_OVERSIZE and dropped; an injected payload error is exactly one bad
+  frame; LPM receiver all good. Every run starts with an RX reset, which
+  resets the RX FIFO on both sides: nothing stale comes out after it.
 
 ## Si5328 build
 
@@ -486,6 +504,7 @@ On the test board the loopback build's frequency meter read userclk2 at
 | `rtl/xgmii_test_chk.v` | Checker for those frames: good / bad / sequence gaps / bad words |
 | `rtl/axis_test_gen64.v` | 64-bit AXIS Ethernet test frame source for the 10G MAC (length sweep, error inject) |
 | `rtl/axis_test_chk64.v` | Checker for those frames after the RX MAC: every byte, length, sequence, tuser |
+| `rtl/axil_cmd_master.v` | One AXI4-Lite access per toggle of a request bit, for CSRs reached from the EIO |
 | `constraints/zcu106_10g.xdc` | Pins, GT placement and clocks of the 10G design |
 | `scripts/build_zcu106_10g.tcl` | Non-project Vivado build of the 10G design (no IP) |
 | `scripts/sfp10g_test.py` | Status and loopback test of the 10G design over the fcapz EIO |

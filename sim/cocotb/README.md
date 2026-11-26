@@ -337,10 +337,39 @@ Verilog only for now (the suites skip the VHDL run).
   every short length, random up to 1500, a 9000-byte jumbo) comes back in
   order, padded, clean, and the tuser frames flagged, including tuser on the
   last beat of a short frame followed by a minimum frame at every end lane.
-- `mac10g_test_loop`: the ZCU106 MAC-mode test path, `axis_test_gen64` ->
-  TX MAC -> PCS -> line loopback -> PCS -> RX MAC -> `axis_test_chk64`:
-  minimum frames at line rate, a 60..400 length sweep, 9000-byte frames,
-  and an injected payload error counted once.
+- `axis_async_frame_fifo`, `axis_async_frame_fifo_bp`: the store-and-forward
+  frame FIFO behind and ahead of the 10G MACs (`rtl/axis_async_frame_fifo.v`),
+  32 words, in drop mode and in backpressure mode: random frames, s_drop and
+  reader stalls with the write clock faster, slower and nearly equal. Every
+  frame is reported once (ok, drop or overflow), exactly the ok frames come
+  out, whole, in order, and none before its last word was written; a stalled
+  reader overflows the drop-mode FIFO at exactly the expected frame and holds
+  off the writer in backpressure mode, where only frames longer than the
+  FIFO are dropped. Letting the read side see uncommitted words fails it.
+- `eth_mac_sys_10g_loop`: the 10G MAC system (`rtl/eth_mac_sys_10g.v`) with
+  the PCS and a line loopback, the application clock (200 MHz) unrelated to
+  the transceiver clock (161.13 MHz): the CSRs; 500 back-to-back 64-byte
+  frames through both clock crossings at line rate (within 0.5%); every
+  length 14..160, random ones to 1514 and jumbo frames, padded and counted;
+  tuser frames dropped as bad, then delivered flagged with passthrough;
+  oversize frames dropped; the address filter (station address, other
+  unicast, broadcast, multicast in and out of the hash table), promisc and
+  rx_en; RX FIFO overflow under m_axis backpressure, where what is delivered
+  is whole and in order and every frame is either delivered or counted
+  dropped; a TX frame too long for its FIFO dropped without blocking the
+  next ones; a 111 MHz application clock, where the TX MAC must still never
+  run dry; 64-bit counter reads and clears; a transceiver TX or RX reset
+  alone, idle and in the middle of traffic, after which exactly the frames
+  sent come out (none stale from the FIFO memory), nothing corrupt is
+  delivered unflagged, and no counter jumps. An always-open filter, a TX
+  FIFO that publishes words before their frame is whole, or an RX FIFO
+  reset on one side only, each fails it.
+- `mac10g_test_loop`: the ZCU106 MAC-mode test path, `axis_test_gen64` (200
+  MHz) -> `eth_mac_sys_10g` -> PCS -> line loopback -> PCS ->
+  `eth_mac_sys_10g` -> `axis_test_chk64`, with the board's settings:
+  minimum frames at line rate, a 60..400 length sweep, 9000-byte frames, an
+  injected payload error counted once, and the MAC's counters read and
+  cleared through `axil_cmd_master` as the board's EIO does.
 
 ## Reset defaults
 

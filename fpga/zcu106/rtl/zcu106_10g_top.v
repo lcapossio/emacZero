@@ -6,9 +6,10 @@
 //   xgmii_test_gen -> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFP0
 //   SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
 //
-// or, in MAC mode, Ethernet frames through the 10G MAC:
-//   axis_test_gen64 -> eth_mac_10g_tx -> pcs10gbr TX -> ...
-//   ... -> pcs10gbr RX -> eth_mac_10g_rx -> axis_test_chk64
+// or, in MAC mode, Ethernet frames through the 10G MAC system:
+//   axis_test_gen64 (clk_app) -> eth_mac_sys_10g -> pcs10gbr TX -> ...
+//   ... -> pcs10gbr RX -> eth_mac_sys_10g -> axis_test_chk64 (clk_app)
+// eth_mac_sys_10g's CSRs are reached from the EIO through axil_cmd_master.
 //
 // No AMD IP: the GTHE4_COMMON / GTHE4_CHANNEL primitives are instantiated
 // directly (gthe4_common_10g.v, gthe4_channel_10g.v), reset by gt10g_reset.v,
@@ -16,13 +17,15 @@
 //
 // Clocks:
 //   clk_50     300 MHz USER_SI570 / 6, free-running: GT DRP / reset clock
+//   clk_app    200 MHz, MMCM from the same 300 MHz: eth_mac_sys_10g's
+//              application side, MAC mode generator and checker
 //   refclk     USER_MGT_SI570 156.25 MHz, Quad 226 MGTREFCLK1 -> QPLL0 of
 //              Quad 225 (GTREFCLK00; Vivado routes it over the south
 //              reference clock lines)
 //   txusrclk2  161.13 MHz, BUFG_GT /2 of TXOUTCLK (txusrclk is /1, 322 MHz):
-//              PCS TX, TX MAC and the generators
+//              PCS TX, TX MAC and the raw XGMII generator
 //   rxusrclk2  161.13 MHz from RXOUTCLK (recovered clock): PCS RX, RX MAC,
-//              checkers
+//              raw XGMII checker
 //
 // Control and status over an fcapz EIO on USER3 (CHAIN 3); see the EIO block
 // for the bit map and scripts/sfp10g_test.py for the host side. Power-up
@@ -70,6 +73,34 @@ module zcu106_10g_top (
         .O   (clk_50)
     );
 
+    // 200 MHz application clock: VCO 1200 MHz = 300 * 4, / 6
+    wire clk_app_mmcm, app_fb, app_locked, clk_app;
+    MMCME4_BASE #(
+        .CLKIN1_PERIOD    (3.333),
+        .CLKFBOUT_MULT_F  (4.0),
+        .DIVCLK_DIVIDE    (1),
+        .CLKOUT0_DIVIDE_F (6.0)
+    ) u_app_mmcm (
+        .CLKIN1    (clk_300_ibuf),
+        .CLKFBIN   (app_fb),
+        .CLKFBOUT  (app_fb),
+        .CLKFBOUTB (),
+        .CLKOUT0   (clk_app_mmcm),
+        .CLKOUT0B  (), .CLKOUT1 (), .CLKOUT1B (), .CLKOUT2 (), .CLKOUT2B (),
+        .CLKOUT3   (), .CLKOUT3B (), .CLKOUT4 (), .CLKOUT5 (), .CLKOUT6 (),
+        .LOCKED    (app_locked),
+        .PWRDWN    (1'b0),
+        .RST       (CPU_RESET)
+    );
+    BUFG u_clk_app_buf (.I (clk_app_mmcm), .O (clk_app));
+
+    (* ASYNC_REG = "TRUE" *) reg [2:0] app_rst_sync;
+    always @(posedge clk_app or negedge app_locked) begin
+        if (!app_locked) app_rst_sync <= 3'b000;
+        else             app_rst_sync <= {app_rst_sync[1:0], 1'b1};
+    end
+    wire app_rst_n = app_rst_sync[2];
+
     (* ASYNC_REG = "TRUE" *) reg [2:0] rst50_sync;
     always @(posedge clk_50 or posedge CPU_RESET) begin
         if (CPU_RESET) rst50_sync <= 3'b000;
@@ -77,7 +108,7 @@ module zcu106_10g_top (
     end
 
     // EIO controls (defined in the EIO block)
-    wire [79:0] ctrl;
+    wire [127:0] ctrl;
     wire [2:0]  ctl_loopback   = ctrl[2:0];
     wire        ctl_txpol      = ctrl[3];
     wire        ctl_rxpol      = ctrl[4];
@@ -97,6 +128,10 @@ module zcu106_10g_top (
     wire [4:0]  ctl_txpost     = ctrl[44:40];
     wire [4:0]  ctl_txpre      = ctrl[52:48];
     wire [15:0] ctl_mac_len    = ctrl[79:64];
+    wire [7:0]  ctl_csr_addr   = ctrl[87:80];
+    wire [31:0] ctl_csr_wdata  = ctrl[119:88];
+    wire        ctl_csr_go     = ctrl[120];
+    wire        ctl_csr_write  = ctrl[121];
 
     // EIO outputs come from the TCK domain: synchronize the reset controls
     (* ASYNC_REG = "TRUE" *) reg [5:0] s50_gtr, s50_txr, s50_rxr;
@@ -322,51 +357,6 @@ module zcu106_10g_top (
         .frames         (gen_frames)
     );
 
-    // MAC mode: test frames through the 10G MAC
-    wire [63:0] mg_tdata;
-    wire [7:0]  mg_tkeep;
-    wire        mg_tvalid, mg_tlast, mg_tready;
-    wire [31:0] mac_gen_frames;
-    wire        mac_underrun;
-    axis_test_gen64 u_mgen (
-        .clk           (txusrclk2),
-        .rst_n         (tx_rst_n),
-        .enable        (s_gen_en[2] && mac_tx),
-        .len           (ctl_mac_len),
-        .sweep         (ctl_sweep),
-        .ipg           (ctl_ipg),
-        .inj_err       (inj_p && mac_tx),
-        .m_axis_tdata  (mg_tdata),
-        .m_axis_tkeep  (mg_tkeep),
-        .m_axis_tvalid (mg_tvalid),
-        .m_axis_tlast  (mg_tlast),
-        .m_axis_tready (mg_tready),
-        .frames        (mac_gen_frames)
-    );
-    eth_mac_10g_tx u_mac_tx (
-        .clk           (txusrclk2),
-        .rst_n         (tx_rst_n),
-        .ce            (xgmii_tx_ready),
-        .s_axis_tdata  (mg_tdata),
-        .s_axis_tkeep  (mg_tkeep),
-        .s_axis_tvalid (mg_tvalid),
-        .s_axis_tlast  (mg_tlast),
-        .s_axis_tuser  (1'b0),
-        .s_axis_tready (mg_tready),
-        .xgmii_txd     (mac_txd),
-        .xgmii_txc     (mac_txc),
-        .stat_tx_frame (),
-        .stat_underrun (mac_underrun)
-    );
-    reg [31:0] tx_underruns;
-    (* ASYNC_REG = "TRUE" *) reg [2:0] s_clr_tx;
-    always @(posedge txusrclk2) s_clr_tx <= {s_clr_tx[1:0], ctl_clear};
-    always @(posedge txusrclk2 or negedge tx_rst_n) begin
-        if (!tx_rst_n)         tx_underruns <= 32'd0;
-        else if (s_clr_tx[2])  tx_underruns <= 32'd0;
-        else if (mac_underrun) tx_underruns <= tx_underruns + 32'd1;
-    end
-
     (* ASYNC_REG = "TRUE" *) reg [2:0] s_clr;
     always @(posedge rxusrclk2) s_clr <= {s_clr[1:0], ctl_clear};
 
@@ -389,37 +379,134 @@ module zcu106_10g_top (
         .bad_pulse      (bad_pulse)
     );
 
-    wire [63:0] mr_tdata;
-    wire [7:0]  mr_tkeep;
+    // =========================================================================
+    // MAC mode: test frames through eth_mac_sys_10g; generator, checker and
+    // CSRs on clk_app
+    // =========================================================================
+    (* ASYNC_REG = "TRUE" *) reg [2:0] a_gen_en, a_inj, a_mac, a_clr;
+    always @(posedge clk_app) begin
+        a_gen_en <= {a_gen_en[1:0], ctl_gen_en};
+        a_inj    <= {a_inj[1:0], ctl_inj};
+        a_mac    <= {a_mac[1:0], ctl_mac_mode};
+        a_clr    <= {a_clr[1:0], ctl_clear};
+    end
+    wire mac_app = a_mac[2];
+
+    wire [63:0] mg_tdata, mr_tdata;
+    wire [7:0]  mg_tkeep, mr_tkeep;
+    wire        mg_tvalid, mg_tlast, mg_tready;
     wire        mr_tvalid, mr_tlast, mr_tuser;
-    wire        mr_done, mr_err_fcs;
-    eth_mac_10g_rx u_mac_rx (
-        .clk                (rxusrclk2),
-        .rst_n              (rx_rst_n),
-        .xgmii_rxd          (xgmii_rxd),
-        .xgmii_rxc          (xgmii_rxc),
-        .xgmii_rx_valid     (xgmii_rx_valid),
-        .jumbo_en           (1'b1),
-        .m_axis_tdata       (mr_tdata),
-        .m_axis_tkeep       (mr_tkeep),
-        .m_axis_tvalid      (mr_tvalid),
-        .m_axis_tlast       (mr_tlast),
-        .m_axis_tuser       (mr_tuser),
-        .stat_done          (mr_done),
-        .stat_len           (),
-        .stat_err_fcs       (mr_err_fcs),
-        .stat_err_ctl       (),
-        .stat_err_oversize  (),
-        .stat_err_undersize (),
-        .stat_is_bcast      (),
-        .stat_is_mcast      ()
+    wire [31:0] mac_gen_frames;
+    axis_test_gen64 u_mgen (
+        .clk           (clk_app),
+        .rst_n         (app_rst_n),
+        .enable        (a_gen_en[2] && mac_app),
+        .len           (ctl_mac_len),
+        .sweep         (ctl_sweep),
+        .ipg           (ctl_ipg),
+        .inj_err       (a_inj[1] && !a_inj[2] && mac_app),
+        .m_axis_tdata  (mg_tdata),
+        .m_axis_tkeep  (mg_tkeep),
+        .m_axis_tvalid (mg_tvalid),
+        .m_axis_tlast  (mg_tlast),
+        .m_axis_tready (mg_tready),
+        .frames        (mac_gen_frames)
     );
+
+    wire [7:0]  csr_awaddr, csr_araddr;
+    wire [31:0] csr_wdata, csr_rdata_bus, csr_rdata;
+    wire [3:0]  csr_wstrb;
+    wire [1:0]  csr_bresp, csr_rresp;
+    wire        csr_awvalid, csr_awready, csr_wvalid, csr_wready;
+    wire        csr_bvalid, csr_bready, csr_arvalid, csr_arready;
+    wire        csr_rvalid, csr_rready, csr_ack;
+
+    axil_cmd_master u_csr_cmd (
+        .clk           (clk_app),
+        .rst_n         (app_rst_n),
+        .go            (ctl_csr_go),
+        .write         (ctl_csr_write),
+        .addr          (ctl_csr_addr),
+        .wdata         (ctl_csr_wdata),
+        .ack           (csr_ack),
+        .rdata         (csr_rdata),
+        .m_axi_awaddr  (csr_awaddr),
+        .m_axi_awvalid (csr_awvalid),
+        .m_axi_awready (csr_awready),
+        .m_axi_wdata   (csr_wdata),
+        .m_axi_wstrb   (csr_wstrb),
+        .m_axi_wvalid  (csr_wvalid),
+        .m_axi_wready  (csr_wready),
+        .m_axi_bvalid  (csr_bvalid),
+        .m_axi_bready  (csr_bready),
+        .m_axi_araddr  (csr_araddr),
+        .m_axi_arvalid (csr_arvalid),
+        .m_axi_arready (csr_arready),
+        .m_axi_rdata   (csr_rdata_bus),
+        .m_axi_rvalid  (csr_rvalid),
+        .m_axi_rready  (csr_rready)
+    );
+
+    // No CPU on this board design: TX/RX and jumbo frames are on from reset
+    // and the station address is the test frames' destination.
+    eth_mac_sys_10g #(
+        .TX_FIFO_ADDR_WIDTH (12),
+        .RX_FIFO_ADDR_WIDTH (12),
+        .TXRX_EN_AT_RESET   (1),
+        .JUMBO_AT_RESET     (1),
+        .MAC_ADDR_AT_RESET  (48'h020000000001)
+    ) u_sys (
+        .clk            (clk_app),
+        .rst_n          (app_rst_n),
+        .s_axi_awaddr   (csr_awaddr),
+        .s_axi_awvalid  (csr_awvalid),
+        .s_axi_awready  (csr_awready),
+        .s_axi_wdata    (csr_wdata),
+        .s_axi_wstrb    (csr_wstrb),
+        .s_axi_wvalid   (csr_wvalid),
+        .s_axi_wready   (csr_wready),
+        .s_axi_bresp    (csr_bresp),
+        .s_axi_bvalid   (csr_bvalid),
+        .s_axi_bready   (csr_bready),
+        .s_axi_araddr   (csr_araddr),
+        .s_axi_arvalid  (csr_arvalid),
+        .s_axi_arready  (csr_arready),
+        .s_axi_rdata    (csr_rdata_bus),
+        .s_axi_rresp    (csr_rresp),
+        .s_axi_rvalid   (csr_rvalid),
+        .s_axi_rready   (csr_rready),
+        .s_axis_tdata   (mg_tdata),
+        .s_axis_tkeep   (mg_tkeep),
+        .s_axis_tvalid  (mg_tvalid),
+        .s_axis_tready  (mg_tready),
+        .s_axis_tlast   (mg_tlast),
+        .s_axis_tuser   (1'b0),
+        .m_axis_tdata   (mr_tdata),
+        .m_axis_tkeep   (mr_tkeep),
+        .m_axis_tvalid  (mr_tvalid),
+        .m_axis_tready  (1'b1),
+        .m_axis_tlast   (mr_tlast),
+        .m_axis_tuser   (mr_tuser),
+        .xgmii_tx_clk   (txusrclk2),
+        .xgmii_tx_rst_n (tx_rst_n),
+        .xgmii_txd      (mac_txd),
+        .xgmii_txc      (mac_txc),
+        .xgmii_tx_ready (xgmii_tx_ready),
+        .xgmii_rx_clk   (rxusrclk2),
+        .xgmii_rx_rst_n (rx_rst_n),
+        .xgmii_rxd      (xgmii_rxd),
+        .xgmii_rxc      (xgmii_rxc),
+        .xgmii_rx_valid (xgmii_rx_valid),
+        .pcs_block_lock (block_lock),
+        .pcs_hi_ber     (hi_ber)
+    );
+
     wire [31:0] mac_good, mac_bad, mac_tuser, mac_seq_gaps;
     wire        mac_good_pulse, mac_bad_pulse;
     axis_test_chk64 u_mchk (
-        .clk           (rxusrclk2),
-        .rst_n         (rx_rst_n),
-        .clear         (s_clr[2]),
+        .clk           (clk_app),
+        .rst_n         (app_rst_n),
+        .clear         (a_clr[2]),
         .s_axis_tdata  (mr_tdata),
         .s_axis_tkeep  (mr_tkeep),
         .s_axis_tvalid (mr_tvalid),
@@ -432,17 +519,6 @@ module zcu106_10g_top (
         .good_pulse    (mac_good_pulse),
         .bad_pulse     (mac_bad_pulse)
     );
-    reg [31:0] rx_fcs_errs;
-    always @(posedge rxusrclk2 or negedge rx_rst_n) begin
-        if (!rx_rst_n)                  rx_fcs_errs <= 32'd0;
-        else if (s_clr[2])              rx_fcs_errs <= 32'd0;
-        else if (mr_done && mr_err_fcs) rx_fcs_errs <= rx_fcs_errs + 32'd1;
-    end
-    (* ASYNC_REG = "TRUE" *) reg [2:0] s_mac_rx;
-    always @(posedge rxusrclk2) s_mac_rx <= {s_mac_rx[1:0], ctl_mac_mode};
-    wire mac_rx = s_mac_rx[2];
-    wire sel_good_pulse = mac_rx ? mac_good_pulse : good_pulse;
-    wire sel_bad_pulse  = mac_rx ? mac_bad_pulse  : bad_pulse;
 
     // Block lock losses (rxusrclk2)
     reg        lock_d;
@@ -487,21 +563,31 @@ module zcu106_10g_top (
     //   [36:32] TXDIFFCTRL ^ 0x18   [44:40] TXPOSTCURSOR   [52:48] TXPRECURSOR
     //   [79:64] MAC mode frame length in bytes, no FCS (60..16000; with the
     //   sweep, the top of the 60..len sweep). [31:24] is also the MAC mode
-    //   gap, in idle cycles.
+    //   gap, in clk_app cycles.
+    //   [87:80] CSR address  [119:88] CSR write data  [120] CSR go (toggle:
+    //   set the other fields first)  [121] CSR write (0 = read)
     // eio-read [639:0]: see the probe_in concatenation; the low 32 bits are
     //   the status bits, the top 16 bits a layout marker (0x10F0). Counters
-    //   cross from the GT clock domains unsynchronized: read twice if a value
-    //   must be exact.
+    //   cross from their clock domains unsynchronized: read twice if a value
+    //   must be exact. [544] equals CSR go once the access is done, and
+    //   [607:576] then holds the read data.
     // =========================================================================
     reg [3:0] bad_seen;
     always @(posedge rxusrclk2 or negedge rx_rst_n)
         if (!rx_rst_n)       bad_seen <= 4'd0;
         else if (s_clr[2])   bad_seen <= 4'd0;
-        else if (sel_bad_pulse) bad_seen <= 4'hF;
+        else if (bad_pulse)  bad_seen <= 4'hF;
+    reg mac_bad_seen;
+    always @(posedge clk_app or negedge app_rst_n)
+        if (!app_rst_n)         mac_bad_seen <= 1'b0;
+        else if (a_clr[2])      mac_bad_seen <= 1'b0;
+        else if (mac_bad_pulse) mac_bad_seen <= 1'b1;
+    // the mode bit picks which checker the LEDs and status follow (static)
+    wire sel_bad_seen = ctl_mac_mode ? mac_bad_seen : bad_seen[0];
 
     wire [31:0] status = {
         8'd0,
-        bad_seen[0], (mac_rx ? mac_good : good_frames) != 32'd0,    // [23:22]
+        sel_bad_seen, (ctl_mac_mode ? mac_good : good_frames) != 32'd0, // [23:22]
         rxcdrlock, hi_ber,                                          // [21:20]
         block_lock, qpll0refclklost, txbufstatus,                   // [19:16]
         1'b0, rxbufstatus, txprgdivresetdone, rxprgdivresetdone,    // [15:10]
@@ -512,17 +598,17 @@ module zcu106_10g_top (
 
     fcapz_eio_xilinxus #(
         .IN_W  (640),
-        .OUT_W (80),
+        .OUT_W (128),
         .CHAIN (3)
     ) u_eio (
-        .probe_in  ({16'h10F0, 8'd2, 8'd0,                // [639:608] marker, layout
-                     rx_fcs_errs,                         // [607:576]
-                     tx_underruns,                        // [575:544] (TX domain)
+        .probe_in  ({16'h10F0, 8'd3, 8'd0,                // [639:608] marker, layout
+                     csr_rdata,                           // [607:576] (clk_app)
+                     31'd0, csr_ack,                      // [575:544] (clk_app)
                      mac_seq_gaps,                        // [543:512]
                      mac_tuser,                           // [511:480]
                      mac_bad,                             // [479:448]
                      mac_good,                            // [447:416]
-                     mac_gen_frames,                      // [415:384] (TX domain)
+                     mac_gen_frames,                      // [415:384] (clk_app)
                      gen_frames,                          // [383:352] (TX domain)
                      fm_ref, 8'd0,                        // [351:320]
                      fm_rx, 8'd0,                         // [319:288]
@@ -546,10 +632,15 @@ module zcu106_10g_top (
 
     reg [23:0] good_led = 24'd0;
     always @(posedge rxusrclk2)
-        if (sel_good_pulse)        good_led <= 24'hFFFFFF;
+        if (good_pulse)            good_led <= 24'hFFFFFF;
         else if (good_led != 0)    good_led <= good_led - 24'd1;
+    reg [23:0] mac_good_led = 24'd0;
+    always @(posedge clk_app)
+        if (mac_good_pulse)        mac_good_led <= 24'hFFFFFF;
+        else if (mac_good_led != 0) mac_good_led <= mac_good_led - 24'd1;
+    wire sel_good_led = ctl_mac_mode ? (mac_good_led != 24'd0) : (good_led != 24'd0);
 
-    assign LED = {hb[27], bad_seen[0], good_led != 24'd0, !hi_ber,
+    assign LED = {hb[27], sel_bad_seen, sel_good_led, !hi_ber,
                   block_lock, rx_done, tx_done, qpll0lock};
 
     assign SFP0_TX_DISABLE_B = !ctl_laser_off;

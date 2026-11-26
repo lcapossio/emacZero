@@ -3,7 +3,7 @@
 #
 # =============================================================================
 # build_zcu106_10g.tcl - Vivado non-project build of the 10GBASE-R bring-up
-# design (zcu106_10g_top, with the 10G MAC test path) for the AMD ZCU106, SFP
+# design (zcu106_10g_top, with the eth_mac_sys_10g test path) for the AMD ZCU106, SFP
 # cage 0. No IP is generated: the GTH transceiver primitives are instantiated
 # directly.
 # Usage: vivado -mode batch -source fpga/zcu106/scripts/build_zcu106_10g.tcl
@@ -34,6 +34,10 @@ read_verilog [list \
     rtl/crc32_d64.v \
     rtl/eth_mac_10g_tx.v \
     rtl/eth_mac_10g_rx.v \
+    rtl/async_fifo.v \
+    rtl/axis_async_frame_fifo.v \
+    rtl/cdc_event_count.v \
+    rtl/eth_mac_sys_10g.v \
     fpga/zcu106/rtl/gthe4_common_10g.v \
     fpga/zcu106/rtl/gthe4_channel_10g.v \
     fpga/zcu106/rtl/gt10g_reset.v \
@@ -41,6 +45,7 @@ read_verilog [list \
     fpga/zcu106/rtl/xgmii_test_chk.v \
     fpga/zcu106/rtl/axis_test_gen64.v \
     fpga/zcu106/rtl/axis_test_chk64.v \
+    fpga/zcu106/rtl/axil_cmd_master.v \
     fpga/zcu106/rtl/zcu106_10g_top.v \
     fcapz/rtl/jtag_tap/jtag_tap_xilinx7.v \
     fcapz/rtl/jtag_reg_iface.v \

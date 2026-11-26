@@ -24,6 +24,19 @@ This project does not yet maintain long-lived release branches.
   the ZCU106 (MAC mode of the bring-up design, near-end PMA loopback) they
   carry 64-byte frames at the full 14.88 Mpps and 1514 to 9000-byte frames
   at line rate with every frame checked. Verilog only.
+- 10G MAC system `rtl/eth_mac_sys_10g.v` (filelist `rtl/eth_mac_sys_10g.f`):
+  64-bit AXI4-Stream in an application clock domain (200 MHz for line rate)
+  to and from the PCS's XGMII, through store-and-forward frame FIFOs
+  (`rtl/axis_async_frame_fifo.v`; the TX MAC only starts whole frames, so it
+  never underruns; the RX side drops whole frames that fail the address
+  filter, arrive while RX is disabled, are bad, or find the FIFO full), and
+  AXI4-Lite CSRs that keep the 1G core's offsets where they overlap (CTRL,
+  station address, multicast hash, SCRATCH, CAPS with a 10G bit) plus TX/RX
+  frame and byte counters (64-bit) and error, drop and lock-loss counters.
+  A transceiver TX or RX reset resets that direction's FIFO on both sides,
+  so no stale FIFO memory is read after it; the AXIS ports stay well formed
+  through it. The ZCU106 10G design's MAC mode now runs through it, with
+  its CSRs reached over the fcapz EIO. Verilog only.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
   with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while

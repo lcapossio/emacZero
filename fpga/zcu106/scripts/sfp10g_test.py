@@ -10,6 +10,8 @@ Needs the bitstream on the board and a hw_server on :3121.
     python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
     python fpga/zcu106/scripts/sfp10g_test.py loop --loopback none   # over the fibre
     python fpga/zcu106/scripts/sfp10g_test.py mac --loopback pma --len 60 --seconds 10
+    python fpga/zcu106/scripts/sfp10g_test.py csr 0xC0          # read a MAC CSR
+    python fpga/zcu106/scripts/sfp10g_test.py csr 0x04 0x43     # write one
 
 status   prints the GT / PCS state, clock meters and checker counters.
 loop     sets the loopback (none / pcs / pma), restarts the RX path, waits for
@@ -18,14 +20,17 @@ loop     sets the loopback (none / pcs / pma), restarts the RX path, waits for
          that every frame came back good, in sequence, with no lock loss.
          --inject adds one payload bit error, which must show up as exactly
          one bad frame. Exit status 0 on PASS.
-mac      the same through the 10G MAC (MAC mode): Ethernet frames of --len
-         bytes before the FCS (60..16000; --sweep steps 60..len frame by
-         frame), --ipg idle cycles between frames, every byte checked after
-         the RX MAC. Prints the frame rate against the line rate for that
-         length. --inject must give exactly one bad frame (sent with a good
-         FCS, caught by the payload compare). Above 9014 bytes every frame
-         must come back flagged oversize; --sweep and --inject need
-         --len <= 9014.
+mac      the same through the 10G MAC system eth_mac_sys_10g (MAC mode):
+         Ethernet frames of --len bytes before the FCS (60..16000; --sweep
+         steps 60..len frame by frame), --ipg idle 200 MHz cycles between
+         frames, every byte checked after the RX FIFO. Prints the frame rate
+         against the line rate for that length and the MAC's own counters
+         (read over the CSR port), which must agree. --inject must give
+         exactly one bad frame (sent with a good FCS, caught by the payload
+         compare). Above 9014 bytes every frame must be counted oversize and
+         dropped by the MAC; --sweep and --inject need --len <= 9014.
+csr      reads (one argument) or writes (two) an eth_mac_sys_10g CSR; see
+         the register map in rtl/eth_mac_sys_10g.v.
 
 The `loop` test frames are not Ethernet frames (no FCS); the `mac` frames
 are, but go to a made-up unicast address. Run traffic only in a loopback or
@@ -45,8 +50,8 @@ from fcapz.cli import _chain_shape_kwargs          # noqa: E402
 from fcapz.eio import EioController                 # noqa: E402
 from fcapz.transport import XilinxHwServerTransport  # noqa: E402
 
-MARKER, LAYOUT = 0x10F0, 2
-EIO_IN_W, EIO_OUT_W = 640, 80
+MARKER, LAYOUT = 0x10F0, 3
+EIO_IN_W, EIO_OUT_W = 640, 128
 
 # probe_in fields (name, lsb, width), see the EIO block in zcu106_10g_top.v
 FIELDS = [
@@ -67,8 +72,8 @@ FIELDS = [
     ("mac_bad", 448, 32),
     ("mac_tuser", 480, 32),
     ("mac_seq_gaps", 512, 32),
-    ("tx_underruns", 544, 32),
-    ("rx_fcs_errs", 576, 32),
+    ("csr_ack", 544, 1),
+    ("csr_rdata", 576, 32),
     ("layout", 616, 8),
     ("marker", 624, 16),
 ]
@@ -86,6 +91,19 @@ LOOPBACK = {"none": 0, "pcs": 1, "pma": 2}
 B_TXPOL, B_RXPOL, B_LPM, B_TXRST, B_RXRST = 3, 4, 5, 6, 7
 B_GEN, B_INJ, B_CLEAR, B_GTRST, B_LASER_OFF = 8, 9, 10, 11, 12
 B_MAC, B_SWEEP = 13, 14
+B_CSR_GO, B_CSR_WRITE = 120, 121
+
+# eth_mac_sys_10g CSRs (rtl/eth_mac_sys_10g.v)
+R_TX_FRAMES, R_TX_BYTES, R_RX_FRAMES, R_RX_BYTES = 0xB0, 0xB8, 0xC0, 0xC8
+MAC_COUNTERS = [  # (name, address, 64-bit)
+    ("TX_FRAMES", R_TX_FRAMES, True), ("TX_BYTES", R_TX_BYTES, True),
+    ("RX_FRAMES", R_RX_FRAMES, True), ("RX_BYTES", R_RX_BYTES, True),
+    ("RX_ERR_FCS", 0xD0, False), ("RX_ERR_CTL", 0xD4, False),
+    ("RX_ERR_OVERSIZE", 0xD8, False), ("RX_ERR_UNDERSIZE", 0xDC, False),
+    ("RX_DROP", 0xE8, False), ("RX_DISCARD", 0xEC, False),
+    ("TX_UNDERRUN", 0xF0, False), ("TX_DROP", 0xF4, False),
+    ("TX_ERR", 0xF8, False), ("LOCK_LOSS", 0xFC, False),
+]
 WINDOW_S = (1 << 22) / 50e6     # frequency meter window
 
 
@@ -149,6 +167,35 @@ class Board:
         m = ((1 << width) - 1) << lsb
         self.write((self.ctrl & ~m) | ((value << lsb) & m))
 
+    def csr(self, addr, data=None):
+        """One eth_mac_sys_10g CSR access; returns the value read."""
+        v = self.ctrl
+        v &= ~((0xFF << 80) | (0xFFFFFFFF << 88) | (1 << B_CSR_WRITE))
+        v |= (addr & 0xFF) << 80
+        if data is not None:
+            v |= ((data & 0xFFFFFFFF) << 88) | (1 << B_CSR_WRITE)
+        self.write(v)
+        go = ((self.ctrl >> B_CSR_GO) & 1) ^ 1
+        self.set_bit(B_CSR_GO, go)
+        for _ in range(50):
+            f = self.read()
+            if f["csr_ack"] == go:
+                return f["csr_rdata"]
+        raise RuntimeError("CSR access to 0x%02x did not finish" % addr)
+
+    def mac_counters(self):
+        c = {}
+        for name, addr, wide in MAC_COUNTERS:
+            v = self.csr(addr)
+            if wide:
+                v |= self.csr(addr + 4) << 32
+            c[name] = v
+        return c
+
+    def mac_clear(self):
+        for _, addr, _ in MAC_COUNTERS:
+            self.csr(addr, 0)
+
 
 def mhz(count):
     return count / WINDOW_S / 1e6
@@ -165,10 +212,9 @@ def show(f):
     print("  gen_frames %d good %d bad %d seq_gaps %d bad_words %d"
           % (f["gen_frames"], f["good_frames"], f["bad_frames"], f["seq_gaps"],
              f["bad_words"]))
-    print("  MAC: gen_frames %d good %d bad %d tuser %d seq_gaps %d "
-          "fcs_errs %d tx_underruns %d"
+    print("  MAC: gen_frames %d good %d bad %d tuser %d seq_gaps %d"
           % (f["mac_gen_frames"], f["mac_good"], f["mac_bad"], f["mac_tuser"],
-             f["mac_seq_gaps"], f["rx_fcs_errs"], f["tx_underruns"]))
+             f["mac_seq_gaps"]))
 
 
 def wait_lock(b, timeout=2.0):
@@ -250,6 +296,7 @@ def cmd_mac(b, args):
         return 1
     time.sleep(0.01)
     b.pulse(B_CLEAR)
+    b.mac_clear()
     g0 = b.read()["mac_gen_frames"]
     b.set_bit(B_GEN, True)
     if args.inject:
@@ -271,16 +318,21 @@ def cmd_mac(b, args):
           "line rate for %s bytes %.4f Mpps (%.2f%%)"
           % (sent, args.seconds, pps / 1e6, pps * (avg_len + 4) * 8 / 1e9,
              "%.0f" % avg_len, line / 1e6, 100 * pps / line))
+    c = b.mac_counters()
+    print("  MAC counters: " + " ".join("%s %d" % kv for kv in c.items()))
     want_bad = 1 if args.inject else 0
-    want_tuser = 0
-    if args.len > 9014:
+    over = args.len > 9014
+    if over:
         # above the RX MAC's jumbo limit (9018 bytes with the FCS): every
-        # frame must come back flagged oversize
-        want_bad = want_tuser = sent
-        print("  frames over 9018 bytes: expecting every one flagged (oversize)")
-    ok = (f["mac_good"] + f["mac_bad"] == sent and f["mac_bad"] == want_bad
-          and f["mac_tuser"] == want_tuser and f["mac_seq_gaps"] == 0
-          and f["rx_fcs_errs"] == 0 and f["tx_underruns"] == 0
+        # frame is counted oversize and dropped, none reaches the checker
+        print("  frames over 9018 bytes: expecting every one dropped (oversize)")
+    delivered = 0 if over else sent
+    ok = (f["mac_good"] + f["mac_bad"] == delivered and f["mac_bad"] == want_bad
+          and f["mac_tuser"] == 0 and f["mac_seq_gaps"] == 0
+          and c["TX_FRAMES"] == sent and c["TX_UNDERRUN"] == 0
+          and c["RX_ERR_FCS"] == 0 and c["RX_DROP"] == 0
+          and c["RX_FRAMES"] == delivered
+          and c["RX_ERR_OVERSIZE"] == (sent if over else 0)
           and f["lock_losses"] == 0 and f["block_lock"])
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
@@ -309,6 +361,9 @@ def main():
     mp.add_argument("--ipg", type=int, default=0)
     mp.add_argument("--lpm", action="store_true", help="LPM receiver instead of DFE")
     mp.add_argument("--inject", action="store_true")
+    cp = sub.add_parser("csr")
+    cp.add_argument("addr", type=lambda x: int(x, 0))
+    cp.add_argument("data", type=lambda x: int(x, 0), nargs="?")
     for name in ("restart-rx", "restart-tx", "gt-reset"):
         sub.add_parser(name)
     args = ap.parse_args()
@@ -322,6 +377,11 @@ def main():
             return cmd_loop(b, args)
         if args.cmd == "mac":
             return cmd_mac(b, args)
+        if args.cmd == "csr":
+            v = b.csr(args.addr, args.data)
+            if args.data is None:
+                print("0x%02x: 0x%08x (%d)" % (args.addr, v, v))
+            return 0
         bit = {"restart-rx": B_RXRST, "restart-tx": B_TXRST, "gt-reset": B_GTRST}[args.cmd]
         b.pulse(bit)
         time.sleep(0.2)
