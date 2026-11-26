@@ -43,7 +43,11 @@ This project does not yet maintain long-lived release branches.
   the cages and checks every frame and both MACs' counters. On the board
   both directions run at once at line rate, 64 to 9018 bytes with the FCS,
   with no error. cocotb suite `mac10g_dual` simulates the two ports' logic
-  crossed.
+  crossed. `--udp` makes the test traffic IPv4 / UDP datagrams (header
+  checksum, UDP checksum 0), every header field checked at the far end:
+  over the fibre, 8972-byte datagrams carry 9.93 Gb/s of UDP payload each
+  way, the most the link can carry. cocotb suite `axis_test64` checks the
+  generator and checker alone.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
   with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while

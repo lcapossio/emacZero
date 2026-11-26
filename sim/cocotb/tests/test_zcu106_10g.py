@@ -24,7 +24,8 @@
                        ways at once at line rate, every length 64..1518
                        with the FCS one way while jumbo frames go the other,
                        each port's checker and MAC counters against the
-                       other port's generator
+                       other port's generator; IPv4 / UDP datagrams both
+                       ways, 1472-byte ones at line rate
 """
 import random
 
@@ -561,6 +562,7 @@ async def mac_inject(dut):
 # ---------------------------------------------------------------------------
 # EIO control word bits (zcu106_10g_top.v)
 B_GEN, B_INJ, B_CLEAR, B_MAC, B_SWEEP, B_CSR_GO, B_CSR_WRITE = 8, 9, 10, 13, 14, 120, 121
+B_UDP = 15
 
 
 class DualPort:
@@ -727,6 +729,44 @@ async def dual_lengths(dut):
     for q in ports:
         q.set(B_GEN, False)
     await dual_drain(dut, ports)
+    await dual_check(ports)
+
+
+@cocotb.test(timeout_time=60, timeout_unit="ms")
+async def dual_udp(dut):
+    """IPv4 / UDP datagrams both ways: port 0 sends 1472-byte datagrams
+    (1514-byte frames) at line rate while port 1 sweeps 60..400-byte frames;
+    every header and payload byte checked, both MACs' counters agree."""
+    if dut._name != "h_mac10g_dual":
+        return
+    ports = await dual_setup(dut)
+    p0, p1 = ports
+    for q in ports:
+        q.set(B_UDP, True)
+    p0.field(64, 16, 1514)
+    p1.set(B_SWEEP, True)
+    p1.field(64, 16, 400)
+    for q in ports:
+        q.set(B_GEN, True)
+    await ClockCycles(dut.clk_a, 2000)      # past the first frames
+    g0, cycles = p1.counts()["good"], 0
+    for _ in range(60000):
+        await RisingEdge(dut.clk_a)
+        cycles += 1
+        if p1.counts()["good"] - g0 >= 150:
+            break
+    c1 = p1.counts()
+    assert c1["good"] - g0 >= 150 and c1["bad"] == 0, c1
+    rate = (c1["good"] - g0) / cycles
+    for q in ports:
+        q.set(B_GEN, False)
+    want = 8 * 32 / 33 / (1514 + 24)
+    dut._log.info("1514-byte UDP frames at %.6f frames/cycle, line rate %.6f",
+                  rate, want)
+    assert rate > want * 0.98, f"{rate:.6f} frames/cycle"
+    await dual_drain(dut, ports)
+    c0, c1 = p0.counts(), p1.counts()
+    assert c0["good"] > 0 and c1["good"] > 0
     await dual_check(ports)
 
 

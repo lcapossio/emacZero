@@ -177,6 +177,7 @@ module zcu106_10g_top (
     //   [10] clear checker counters
     //   [11] full GT reset (port 0: QPLL0 too, so both ports)   [12] laser off
     //   [13] MAC mode (frames through the 10G MAC)   [14] MAC length sweep
+    //   [15] MAC mode frames are IPv4 / UDP datagrams (set it before [8])
     //   [23:16] frame words - 8   [31:24] idle words between frames
     //   [36:32] TXDIFFCTRL ^ 0x18   [44:40] TXPOSTCURSOR   [52:48] TXPRECURSOR
     //   [79:64] MAC mode frame length in bytes, no FCS (60..16000; with the

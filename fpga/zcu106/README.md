@@ -407,6 +407,7 @@ python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py mac --loopback pma --len 60 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py --sfp 1 mac --loopback pma --len 1514
 python fpga/zcu106/scripts/sfp10g_test.py dual --len 60 --seconds 10
+python fpga/zcu106/scripts/sfp10g_test.py dual --udp --len 9014 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py csr 0xC0      # read a MAC CSR
 ```
 
@@ -432,13 +433,24 @@ error, drop or underrun). Neither generator's traffic is meant for a switch
 (the raw frames have no FCS, the MAC frames go to a made-up address at line
 rate): use a loopback, or a fibre between the two cages.
 
+`--udp` (with `mac` or `dual`) makes the MAC-mode frames IPv4 / UDP
+datagrams: 10.0.0.2 port 5001 to 10.0.0.1 port 5001, `--len` - 42 bytes of
+UDP payload, IPv4 header checksum filled in, UDP checksum 0 (none, as RFC
+768 allows over IPv4). The checker then checks every IPv4 and UDP header
+field, the header checksum and both length fields as well as the payload,
+and the script prints the UDP payload rate against the most a 10 Gb/s link
+can carry in datagrams of that size: payload / (payload + 66), the 66
+being the IPv4, UDP and Ethernet headers, the FCS, the preamble and the
+minimum gap. That is 9.571 Gb/s for 1472-byte datagrams (1514-byte frames)
+and 9.927 Gb/s for 8972-byte ones (9014-byte frames).
+
 Simulated: the reset sequencer against a model of the GT reset handshakes,
 both test paths through PCS -> serial loopback -> PCS, and both ports' lanes
 with a "fibre" between them, traffic both ways at once (the `gt10g_reset`,
 `xgmii_test_loop*`, `mac10g_test_loop` and `mac10g_dual` cocotb suites; the
 last two simulate `zcu106_10g_lane` itself).
 The GT itself is only tested on the board. The two-port design meets
-timing (WNS +0.676 ns, WHS +0.004 ns).
+timing (WNS +0.633 ns, WHS +0.004 ns).
 
 Tested on the board, two ports (2026-11-27, 10GBASE-SR SFP+ in cages 0
 and 1, one duplex fibre between them), every run checked frame by frame by
@@ -455,6 +467,14 @@ underrun counter 0, no lock loss):
 - `dual --len 1514 --inject`: the injected error is exactly one bad frame
   at SFP1, none at SFP0. `dual --len 60 --lpm` (LPM receivers): line rate
   both ways, all good.
+- `dual --udp`, IPv4 / UDP datagrams both ways, every header field, the
+  IPv4 checksum and every payload byte checked: 8972-byte datagrams carry
+  9.925 and 9.927 Gb/s of UDP payload (the most a 10 Gb/s link can carry at
+  that size is 9.927 Gb/s); 1472-byte datagrams 9.56-9.58 Gb/s (at most
+  9.571, within the host's timing); 18-byte datagrams at 14.88 Mpps each
+  way; sweeps 60..1514 against 60..9014, an injected error, and LPM
+  receivers all good. Through one port's PMA loopback: 9.916 Gb/s of UDP
+  payload in 8972-byte datagrams.
 - Each port alone, near-end PMA loopback: raw test frames at full rate and
   MAC mode at line rate, 64 to 9000 bytes.
 
@@ -543,8 +563,8 @@ On the test board the loopback build's frequency meter read userclk2 at
 | `rtl/gt10g_reset.v` | GT reset sequencer (QPLL0, TX, RX) |
 | `rtl/xgmii_test_gen.v` | 64-bit XGMII test frame generator |
 | `rtl/xgmii_test_chk.v` | Checker for those frames: good / bad / sequence gaps / bad words |
-| `rtl/axis_test_gen64.v` | 64-bit AXIS Ethernet test frame source for the 10G MAC (length sweep, error inject) |
-| `rtl/axis_test_chk64.v` | Checker for those frames after the RX MAC: every byte, length, sequence, tuser |
+| `rtl/axis_test_gen64.v` | 64-bit AXIS Ethernet test frame source for the 10G MAC: test frames or IPv4 / UDP datagrams (length sweep, error inject) |
+| `rtl/axis_test_chk64.v` | Checker for those frames after the RX MAC: every byte, length, sequence, tuser; IPv4 / UDP headers and checksum |
 | `rtl/axil_cmd_master.v` | One AXI4-Lite access per toggle of a request bit, for CSRs reached from the EIO |
 | `constraints/zcu106_10g.xdc` | Pins, GT placement (SFP0, SFP1) and clocks of the 10G design |
 | `scripts/build_zcu106_10g.tcl` | Non-project Vivado build of the 10G design (no IP) |

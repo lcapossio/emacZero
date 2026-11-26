@@ -377,9 +377,23 @@ Verilog only for now (the suites skip the VHDL run).
   minimum frames at line rate both ways at once; port 0 sweeping 60..1514
   while port 1 sends 9014-byte frames, then port 0 sending 9000-byte frames
   with 5 idle cycles between them while port 1 sweeps 60..300; and an
-  injected error counted only on the port that received it. Each direction
-  passes when every frame arrived good and in order and the sender's
-  TX_FRAMES / TX_BYTES equal the receiver's RX_FRAMES / RX_BYTES.
+  injected error counted only on the port that received it; IPv4 / UDP
+  datagrams both ways, 1472-byte datagrams at line rate against a
+  60..400-byte sweep. Each direction passes when every frame arrived good
+  and in order and the sender's TX_FRAMES / TX_BYTES equal the receiver's
+  RX_FRAMES / RX_BYTES.
+- `axis_test64`: the ZCU106 test traffic blocks alone, `axis_test_gen64`
+  and `axis_test_chk64`, in both formats (test frames and IPv4 / UDP
+  datagrams). The generator's frames, under random backpressure, against a
+  reference built in the test (IPv4 header checksum by RFC 1071 over the
+  header bytes); the checker takes reference frames as good and in order,
+  and counts as bad each frame with a bit flipped in any header byte or in
+  the payload, an IPv4 identification other than its seq (checksum still
+  right), a byte too few or too many, or tuser; a missing seq is one gap,
+  and a frame with a broken header or seq byte is not taken as the next
+  seq reference. A generator with a wrong checksum constant, or a checker
+  without the IPv4 checksum, UDP length, identification or seq-complement
+  check, or one that takes a broken-header frame's seq, each fails it.
 
 ## Reset defaults
 

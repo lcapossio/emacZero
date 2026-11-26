@@ -14,6 +14,7 @@ ports, SFP0 and SFP1; --sfp picks the one loop, mac, csr and the resets act on
     python fpga/zcu106/scripts/sfp10g_test.py --sfp 1 mac --loopback pma --len 1514
     python fpga/zcu106/scripts/sfp10g_test.py dual --len 60 --seconds 10
     python fpga/zcu106/scripts/sfp10g_test.py dual --sweep --len 1514 --len1 9000
+    python fpga/zcu106/scripts/sfp10g_test.py dual --udp --len 9014 --seconds 10
     python fpga/zcu106/scripts/sfp10g_test.py csr 0xC0          # read a MAC CSR
     python fpga/zcu106/scripts/sfp10g_test.py csr 0x04 0x43     # write one
 
@@ -41,6 +42,12 @@ dual     MAC mode on both ports at once over a fibre from SFP0 to SFP1 (no
          TX_BYTES of one = RX_FRAMES and RX_BYTES of the other, no error,
          drop or underrun). --inject puts one bad frame in port 0's stream,
          which port 1 must count once. Lengths up to 9014.
+--udp    (mac, dual) the frames are IPv4 / UDP datagrams instead (10.0.0.2
+         -> 10.0.0.1, port 5001 -> 5001, UDP payload --len - 42 bytes, UDP
+         checksum 0), and the checker checks every IPv4 / UDP header field
+         and the IPv4 header checksum too. Also prints the UDP payload rate
+         against the most a 10 Gb/s link carries in datagrams of that size:
+         payload / (payload + 66 bytes of headers, FCS, preamble and gap).
 csr      reads (one argument) or writes (two) an eth_mac_sys_10g CSR; see
          the register map in rtl/eth_mac_sys_10g.v.
 
@@ -114,7 +121,7 @@ STATUS_BITS = [
 LOOPBACK = {"none": 0, "pcs": 1, "pma": 2}
 B_TXPOL, B_RXPOL, B_LPM, B_TXRST, B_RXRST = 3, 4, 5, 6, 7
 B_GEN, B_INJ, B_CLEAR, B_GTRST, B_LASER_OFF = 8, 9, 10, 11, 12
-B_MAC, B_SWEEP = 13, 14
+B_MAC, B_SWEEP, B_UDP = 13, 14, 15
 B_CSR_GO, B_CSR_WRITE = 120, 121
 
 # eth_mac_sys_10g CSRs (rtl/eth_mac_sys_10g.v)
@@ -293,6 +300,17 @@ def wait_lock(b, timeout=2.0, sfps=None):
     return None
 
 
+def udp_line(pps, avg_len):
+    """UDP payload rate of pps frames of avg_len bytes (no FCS), against the
+    most a 10 Gb/s link carries at that size."""
+    payload = avg_len - 42
+    rate = pps * payload * 8
+    best = 10e9 * payload / (avg_len + 24)
+    return ("UDP payload %.3f Gb/s in %.0f-byte datagrams; the line carries at "
+            "most %.3f Gb/s at that size (%.2f%%)"
+            % (rate / 1e9, payload, best / 1e9, 100 * rate / best))
+
+
 def run_gen(b, seconds, inject=False, sfps=None, inject_sfps=None):
     """Run the generators of this port (or of every port in sfps) for about
     `seconds`, with one injected error halfway if asked; returns the time
@@ -361,6 +379,7 @@ def cmd_mac(b, args):
     time.sleep(0.01)
     b.set_bit(B_MAC, True)
     b.set_bit(B_SWEEP, args.sweep)
+    b.set_bit(B_UDP, args.udp)
     b.set_field(0, 3, LOOPBACK[args.loopback])
     b.set_bit(B_LPM, args.lpm)
     b.set_field(64, 16, args.len)
@@ -388,6 +407,8 @@ def cmd_mac(b, args):
           "line rate for %s bytes %.4f Mpps (%.2f%%)"
           % (sent, secs, pps / 1e6, pps * (avg_len + 4) * 8 / 1e9,
              "%.0f" % avg_len, line / 1e6, 100 * pps / line))
+    if args.udp and args.len <= 9014:     # above, the RX MAC drops them all
+        print("  " + udp_line(pps, avg_len))
     c = b.mac_counters()
     print("  MAC counters: " + " ".join("%s %d" % kv for kv in c.items()))
     want_bad = 1 if args.inject else 0
@@ -417,6 +438,7 @@ def cmd_dual(b, args):
     time.sleep(0.01)
     b.set_bit(B_MAC, True, both)
     b.set_bit(B_SWEEP, args.sweep, both)
+    b.set_bit(B_UDP, args.udp, both)
     b.set_field(0, 3, LOOPBACK["none"], both)
     b.set_bit(B_LPM, args.lpm, both)
     b.set_field(24, 8, args.ipg, both)
@@ -452,6 +474,8 @@ def cmd_dual(b, args):
               "of frames with FCS; line rate %.4f Mpps (%.2f%%)"
               % (tx, rx, sent, "%.0f" % avg_len, secs, pps / 1e6,
                  pps * (avg_len + 4) * 8 / 1e9, line / 1e6, 100 * pps / line))
+        if args.udp:
+            print("  " + udp_line(pps, avg_len))
         print("  checker at SFP%d: good %d bad %d tuser %d seq_gaps %d"
               % (rx, fr["mac_good"], fr["mac_bad"], fr["mac_tuser"], fr["mac_seq_gaps"]))
         print("  SFP%d TX_FRAMES %d TX_BYTES %d TX_UNDERRUN %d TX_DROP %d"
@@ -502,6 +526,7 @@ def main():
     mp.add_argument("--ipg", type=int, default=0)
     mp.add_argument("--lpm", action="store_true", help="LPM receiver instead of DFE")
     mp.add_argument("--inject", action="store_true")
+    mp.add_argument("--udp", action="store_true", help="IPv4 / UDP datagrams")
     dp = sub.add_parser("dual")
     dp.add_argument("--seconds", type=float, default=5.0)
     dp.add_argument("--len", type=int, default=60)
@@ -510,6 +535,7 @@ def main():
     dp.add_argument("--ipg", type=int, default=0)
     dp.add_argument("--lpm", action="store_true", help="LPM receivers instead of DFE")
     dp.add_argument("--inject", action="store_true")
+    dp.add_argument("--udp", action="store_true", help="IPv4 / UDP datagrams")
     cp = sub.add_parser("csr")
     cp.add_argument("addr", type=lambda x: int(x, 0))
     cp.add_argument("data", type=lambda x: int(x, 0), nargs="?")
