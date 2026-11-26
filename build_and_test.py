@@ -244,6 +244,14 @@ LINT_SOURCES = [
     "fpga/arty_a7/rtl/arty_tx_arbiter.v",
     "rtl/axil_arb2.v",
     "rtl/eth_mac_sys.v",
+    "rtl/pcs10gbr_enc.v",
+    "rtl/pcs10gbr_dec.v",
+    "rtl/pcs10gbr_scrambler.v",
+    "rtl/pcs10gbr_gearbox_tx.v",
+    "rtl/pcs10gbr_gearbox_rx.v",
+    "rtl/pcs10gbr_block_lock.v",
+    "rtl/pcs10gbr_ber_mon.v",
+    "rtl/pcs10gbr.v",
 ]
 
 LINT_SUPPRESS = [
