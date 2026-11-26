@@ -332,7 +332,7 @@ module arty_a7_top (
     // =========================================================================
     wire seq_link_up, seq_phy_id_ok, seq_tx_done, seq_rx_done;
 
-    test_sequencer u_seq (
+    test_sequencer #(.OUR_MAC(OUR_MAC)) u_seq (
         .clk           (sys_clk),
         .rst_n         (int_rst_n),
         .phy_rst_done  (phy_rst_done_r),

@@ -5,9 +5,21 @@
 // Parses Ethernet headers, routes by ethertype (ARP/IPv4)
 // Parses IP header, routes ICMP payload to icmp_echo
 //
+// Ethernet check: the source MAC must be a unicast address and not all zero
+// (a group or zero source is invalid, and a reply to it would go to a group
+// or to nobody). Frames that fail are dropped, ARP included.
+//
 // IPv4 checks: version 4, IHL >= 5, header checksum, total length covering
-// the header plus 8 bytes, destination = our IP or broadcast. Frames that
-// fail are dropped before any ICMP/UDP byte is passed on. The header
+// the header plus 8 bytes, destination = our IP or broadcast (broadcast for
+// UDP only: an ICMP message to broadcast is dropped, so the echo responder
+// does not answer broadcast pings, RFC 1122 3.2.2.6), a unicast destination
+// only in a unicast frame (a link-layer broadcast or multicast frame must
+// carry IP broadcast, RFC 1122 3.3.6), not a fragment (MF set or a non-zero
+// fragment offset: nothing here reassembles), and a source address that a
+// host may send from (not 0.0.0.0/8, 127.0.0.0/8 or 224.0.0.0 and above,
+// which covers multicast, class E and broadcast, RFC 1122 3.2.1.3) and that
+// is not our own address. Frames that fail are dropped before any ICMP/UDP byte
+// is passed on. The header
 // checksum is judged one cycle after the last header byte, from the
 // registered sum: nothing has been passed on by then (the first ICMP byte is
 // only held, UDP is still in its 8-byte header), and folding the running sum
@@ -83,6 +95,9 @@ module net_rx (
     reg [3:0]  ip_ihl;
     reg [13:0] ip_hdr_bytes;
     reg [15:0] ip_tot_len;
+    reg        ip_mf;                  // More Fragments flag (header byte 6)
+    reg        ip_off_hi;              // fragment offset[12:8] non-zero
+    reg        ip_frag;                // MF set or fragment offset non-zero
 
     // Stored addresses
     reg [47:0] dst_mac_buf;
@@ -121,6 +136,11 @@ module net_rx (
     wire [31:0] hdr_sum_now = hdr_sum + hdr_word;
     wire [31:0] pl_word   = pl_odd ? {24'd0, s_axis_tdata}
                                    : {16'd0, s_axis_tdata, 8'd0};
+    // Destination IP as of the last IPv4 header byte. With IHL=5 that byte is
+    // the destination's last octet and is still on the bus; with options it
+    // is an option byte and the destination is already fully registered.
+    wire [31:0] dst_ip_now = (byte_cnt == 14'd19) ? {dst_ip_buf[31:8], s_axis_tdata}
+                                                  : dst_ip_buf;
     wire        in_payload = (state == P_ICMP_DATA) || (state == P_UDP_HDR) ||
                              (state == P_UDP_DATA);
     wire [15:0] rem_next  = (rem != 16'd0) ? rem - 16'd1 : 16'd0;
@@ -137,6 +157,9 @@ module net_rx (
             ip_ihl       <= 4'd0;
             ip_hdr_bytes <= 14'd0;
             ip_tot_len   <= 16'd0;
+            ip_mf        <= 1'b0;
+            ip_off_hi    <= 1'b0;
+            ip_frag      <= 1'b0;
             dst_mac_buf  <= 48'd0;
             src_mac_buf  <= 48'd0;
             src_ip_buf   <= 32'd0;
@@ -223,9 +246,14 @@ module net_rx (
                         src_mac_buf <= {src_mac_buf[39:0], s_axis_tdata};
                         byte_cnt    <= byte_cnt + 14'd1;
                         if (byte_cnt == 14'd5) begin
-                            state    <= P_ETH_TYPE;
                             byte_cnt <= 14'd0;
                             rx_src_mac <= {src_mac_buf[39:0], s_axis_tdata};
+                            // Group bit of the first source byte, or all zero
+                            if (src_mac_buf[32] ||
+                                {src_mac_buf[39:0], s_axis_tdata} == 48'd0)
+                                state <= P_DROP;
+                            else
+                                state <= P_ETH_TYPE;
                         end
                     end
 
@@ -275,6 +303,12 @@ module net_rx (
                             end
                             14'd2:  ip_tot_len[15:8]  <= s_axis_tdata;
                             14'd3:  ip_tot_len[7:0]   <= s_axis_tdata;
+                            14'd6: begin
+                                ip_mf     <= s_axis_tdata[5];
+                                ip_off_hi <= (s_axis_tdata[4:0] != 5'd0);
+                            end
+                            14'd7:  ip_frag <= ip_mf || ip_off_hi ||
+                                               (s_axis_tdata != 8'd0);
                             14'd9:  ip_protocol <= s_axis_tdata;
                             14'd12: src_ip_buf[31:24] <= s_axis_tdata;
                             14'd13: src_ip_buf[23:16] <= s_axis_tdata;
@@ -292,21 +326,38 @@ module net_rx (
                             byte_cnt <= 14'd0;
                             rem      <= ip_tot_len - {2'd0, ip_hdr_bytes};
                             // Destination filter: our IP or broadcast
-                            if ({dst_ip_buf[31:8], s_axis_tdata} != our_ip &&
-                                {dst_ip_buf[31:8], s_axis_tdata} != 32'hFFFFFFFF)
+                            if (dst_ip_now != our_ip && dst_ip_now != 32'hFFFFFFFF)
+                                state <= P_DROP;
+                            // No ICMP to broadcast (no broadcast echo replies)
+                            else if (ip_protocol == 8'd1 && dst_ip_now == 32'hFFFFFFFF)
+                                state <= P_DROP;
+                            // Link-layer broadcast or multicast carrying a
+                            // unicast IP destination (RFC 1122 3.3.6)
+                            else if (dst_mac_buf[40] && dst_ip_now != 32'hFFFFFFFF)
+                                state <= P_DROP;
+                            else if (ip_frag)
+                                state <= P_DROP;           // fragment: no reassembly
+                            // Source must be a host address: not 0/8, 127/8,
+                            // or 224.0.0.0 and above (multicast, class E,
+                            // broadcast)
+                            else if (src_ip_buf[31:24] == 8'd0 ||
+                                     src_ip_buf[31:24] == 8'd127 ||
+                                     src_ip_buf[31:29] == 3'b111)
+                                state <= P_DROP;
+                            // Our own address as source: the reply would go
+                            // to ourselves
+                            else if (src_ip_buf == our_ip)
                                 state <= P_DROP;
                             else if (ip_tot_len < {2'd0, ip_hdr_bytes} + 16'd8)
                                 state <= P_DROP;           // no room for ICMP/UDP header
                             else if (ip_protocol == 8'd1) begin
                                 state       <= P_ICMP_DATA;
                                 hdr_chk     <= 1'b1;
-                                icmp_src_ip <= {src_ip_buf[31:8],
-                                    (byte_cnt == 14'd15) ? s_axis_tdata : src_ip_buf[7:0]};
+                                icmp_src_ip <= src_ip_buf;
                             end else if (ip_protocol == 8'd17) begin
                                 state      <= P_UDP_HDR;
                                 hdr_chk    <= 1'b1;
-                                udp_src_ip <= {src_ip_buf[31:8],
-                                    (byte_cnt == 14'd15) ? s_axis_tdata : src_ip_buf[7:0]};
+                                udp_src_ip <= src_ip_buf;
                             end else
                                 state <= P_DROP;
                         end

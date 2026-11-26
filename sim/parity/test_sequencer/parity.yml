@@ -48,12 +48,13 @@ formal:
         - {}
         - {CLK_FREQ: 125000000}
 
-# L4 tolerance is wider than the 10% default (+12.3% measured: 398 golden vs
-# 447 candidate cells). GHDL lowers the 63-way state `case` to a one-hot
-# decode of `state`, so the $eq count doubles (65 -> 127) while $ne/$mux/
-# $logic_and drop. Flip-flops match exactly: 258 bits on both sides after
-# `proc; flatten; memory; opt -full` (36 vs 34 $adff/$adffe cells, the same
-# bits sliced differently). L2 is the equivalence proof.
+# L4 tolerance is wider than the 10% default (+11.7% measured: 412 golden vs
+# 460 candidate cells). GHDL lowers the 63-way state `case` to a one-hot
+# decode of `state`, so the $eq count roughly doubles while $ne/$mux/
+# $logic_and drop; the flip-flop bits are the same on both sides, sliced
+# into cells differently. (Figures measured before the OUR_MAC / en_step
+# change: $eq 65 -> 127, 258 flip-flop bits each side.) L2 is the
+# equivalence proof.
 synth:
   enabled: true
   tolerance_pct: 15.0

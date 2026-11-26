@@ -4,6 +4,8 @@
 -- arp_responder.vhd - Minimal ARP reply engine
 -- Captures incoming Ethernet frames, detects ARP requests for our IP,
 -- and sends ARP replies. Makes the board pingable on the network.
+-- A request is not answered when its Ethernet source or ARP sender hardware
+-- address (where the reply is sent) is a group address or all zeros.
 -- VHDL port of fpga/arty_a7/rtl/arp_responder.v (formally proven equivalent;
 -- see sim/parity/).
 -- =============================================================================
@@ -81,6 +83,8 @@ architecture rtl of arp_responder is
     signal state : std_logic_vector(2 downto 0);
 
     signal is_arp_request : std_logic;
+    signal src_mac_ok     : std_logic;
+    signal sha_ok         : std_logic;
 
     -- tx_tvalid is read back by the TX state machine.
     signal tx_tvalid_i : std_logic;
@@ -102,12 +106,24 @@ begin
     capturing   <= '0';
     frame_valid <= '0';
 
+    -- Ethernet source and ARP sender hardware address must be unicast and
+    -- non-zero (the reply goes to the sender hardware address)
+    src_mac_ok <=
+        '1' when (cap(6)(0) = '0') and
+                 ((cap(6) or cap(7) or cap(8) or cap(9) or cap(10) or cap(11)) /= x"00")
+        else '0';
+    sha_ok <=
+        '1' when (cap(22)(0) = '0') and
+                 ((cap(22) or cap(23) or cap(24) or cap(25) or cap(26) or cap(27)) /= x"00")
+        else '0';
+
     -- Check if captured frame is an ARP request for our IP
     is_arp_request <=
         '1' when (cap(12) = x"08") and (cap(13) = x"06") and  -- EtherType = ARP
                  (cap(20) = x"00") and (cap(21) = x"01") and  -- Opcode = request
                  (cap(38) = our_ip(31 downto 24)) and (cap(39) = our_ip(23 downto 16)) and
-                 (cap(40) = our_ip(15 downto 8))  and (cap(41) = our_ip(7 downto 0))  -- Target IP = ours
+                 (cap(40) = our_ip(15 downto 8))  and (cap(41) = our_ip(7 downto 0)) and -- Target IP = ours
+                 (src_mac_ok = '1') and (sha_ok = '1')
         else '0';
 
     process (clk, rst_n)
@@ -137,7 +153,11 @@ begin
                         if cap_idx < 42 then
                             cap(to_integer(cap_idx)) <= rx_tdata;
                         end if;
-                        cap_idx <= cap_idx + 1;
+                        -- saturate: a wrap at 64 would let bytes 64.. of a
+                        -- long frame overwrite the captured header
+                        if cap_idx /= 63 then
+                            cap_idx <= cap_idx + 1;
+                        end if;
 
                         if rx_tlast = '1' then
                             if rx_terror = '0' and cap_idx >= 41 then

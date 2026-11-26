@@ -61,6 +61,84 @@ module tb_arty_tx_arbiter;
         .m_axis_tlast  (m_axis_tlast)
     );
 
+    // ---- Frame-integrity scenario (auto sources + scoreboard) ----
+    // Each auto source sends 4-byte frames tagged {tag, index}: blast 0x6_,
+    // ARP 0xA_, ICMP 0xC_. Every output frame must be 4 bytes from one
+    // source, in order.
+    reg        auto_mode = 1'b0;
+    reg        blast_en  = 1'b0;
+    reg        arp_go    = 1'b0;
+    reg        icmp_go   = 1'b0;
+    reg        bp_mode   = 1'b0;   // pseudo-random downstream backpressure
+    reg [1:0]  bidx, aidx, iidx;
+    reg [15:0] lfsr = 16'hACE1;
+    integer    sb_pos = 0;
+    reg [3:0]  sb_tag;
+    integer    sb_err = 0;
+    integer    n_blast = 0, n_arp = 0, n_icmp = 0;
+
+    always @(posedge clk) if (auto_mode) begin
+        // blast: back to back while enabled; a started frame is finished
+        if (!blast_tvalid) begin
+            if (blast_en) begin
+                blast_tvalid <= 1'b1; blast_tdata <= 8'h60; blast_tlast <= 1'b0; bidx <= 2'd0;
+            end
+        end else if (blast_tready) begin
+            if (bidx == 2'd3) begin
+                blast_tvalid <= blast_en; blast_tdata <= 8'h60; blast_tlast <= 1'b0; bidx <= 2'd0;
+            end else begin
+                bidx <= bidx + 2'd1; blast_tdata <= {4'h6, 2'b00, bidx + 2'd1};
+                blast_tlast <= (bidx == 2'd2);
+            end
+        end
+        // ARP: one frame per arp_go pulse
+        if (!arp_tvalid) begin
+            if (arp_go) begin
+                arp_tvalid <= 1'b1; arp_tdata <= 8'hA0; arp_tlast <= 1'b0; aidx <= 2'd0;
+            end
+        end else if (arp_tready) begin
+            if (aidx == 2'd3) begin
+                arp_tvalid <= 1'b0; arp_tlast <= 1'b0;
+            end else begin
+                aidx <= aidx + 2'd1; arp_tdata <= {4'hA, 2'b00, aidx + 2'd1};
+                arp_tlast <= (aidx == 2'd2);
+            end
+        end
+        // ICMP: one frame per icmp_go pulse
+        if (!icmp_tvalid) begin
+            if (icmp_go) begin
+                icmp_tvalid <= 1'b1; icmp_tdata <= 8'hC0; icmp_tlast <= 1'b0; iidx <= 2'd0;
+            end
+        end else if (icmp_tready) begin
+            if (iidx == 2'd3) begin
+                icmp_tvalid <= 1'b0; icmp_tlast <= 1'b0;
+            end else begin
+                iidx <= iidx + 2'd1; icmp_tdata <= {4'hC, 2'b00, iidx + 2'd1};
+                icmp_tlast <= (iidx == 2'd2);
+            end
+        end
+        lfsr <= {lfsr[14:0], lfsr[15] ^ lfsr[13] ^ lfsr[12] ^ lfsr[10]};
+        m_axis_tready <= bp_mode ? lfsr[0] : 1'b1;
+    end
+
+    always @(posedge clk) if (auto_mode && m_axis_tvalid && m_axis_tready) begin
+        if (sb_pos == 0) sb_tag = m_axis_tdata[7:4];
+        if (m_axis_tdata[7:4] != sb_tag || m_axis_tdata[3:0] != sb_pos[3:0] ||
+            m_axis_tlast != (sb_pos == 3)) begin
+            if (sb_err < 4)
+                $display("  mixed frame: byte %0d = %02h (frame tag %h, tlast %b)",
+                         sb_pos, m_axis_tdata, sb_tag, m_axis_tlast);
+            sb_err = sb_err + 1;
+        end
+        if (m_axis_tlast) begin
+            if (sb_tag == 4'h6) n_blast = n_blast + 1;
+            if (sb_tag == 4'hA) n_arp   = n_arp + 1;
+            if (sb_tag == 4'hC) n_icmp  = n_icmp + 1;
+            sb_pos = 0;
+        end else
+            sb_pos = sb_pos + 1;
+    end
+
     integer pass_cnt = 0;
     integer fail_cnt = 0;
 
@@ -153,9 +231,12 @@ module tb_arty_tx_arbiter;
         check("udp first byte accepted", udp_tready && m_axis_tdata == 8'h51);
         arp_tvalid = 1'b1; arp_tlast = 1'b1; arp_tdata = 8'ha3;
         udp_tdata = 8'h52; udp_tlast = 1'b1;
+        #1;
+        check("owner held until tlast", udp_tready && !arp_tready);
         @(posedge clk);
         #1;
-        check("owner held until tlast", udp_tready && !arp_tready && m_axis_tdata == 8'h52);
+        check("udp tlast byte out", m_axis_tdata == 8'h52 && m_axis_tlast);
+        check("arp next after udp tlast", arp_tready && !udp_tready);
         clear_inputs;
         @(posedge clk);
         #1;
@@ -175,20 +256,61 @@ module tb_arty_tx_arbiter;
         @(posedge clk);
         #1;
 
-        // After two blast frames with interval=1, blast is held off long enough
-        // for a lower traffic source slot to be visible.
-        drive_one(5, 8'h61);
-        drive_one(5, 8'h62);
-        blast_tvalid = 1'b1; blast_tlast = 1'b1; blast_tdata = 8'h63;
-        repeat (2) begin @(posedge clk); #1; end
-        check("blast service holdoff suppresses blast", !blast_tready);
+        // Two blast frames with interval=1 start the service holdoff: blast
+        // is refused for BLAST_SERVICE_IDLE_CYCLES (3) cycles so another
+        // source can get a slot, then it is taken again.
         clear_inputs;
-        repeat (4) begin @(posedge clk); #1; end
-        blast_tvalid = 1'b1; blast_tlast = 1'b1; blast_tdata = 8'h64;
-        @(posedge clk);
+        blast_tvalid = 1'b1; blast_tlast = 1'b1; blast_tdata = 8'h61;
         #1;
+        check("first blast frame taken", blast_tready);
+        @(posedge clk); #1;
+        blast_tdata = 8'h62;
+        check("second blast frame taken", blast_tready);
+        @(posedge clk); #1;
+        blast_tdata = 8'h63;
+        check("blast service holdoff suppresses blast", !blast_tready);
+        repeat (2) begin @(posedge clk); #1; end
+        check("holdoff still suppressing", !blast_tready);
+        @(posedge clk); #1;
         check("blast resumes after holdoff", blast_tready);
+        @(posedge clk); #1;
         clear_inputs;
+        @(posedge clk); #1;
+
+        // Frame integrity: a source's next frame must not lose its first
+        // byte at the handover, nor have it land in front of another
+        // source's frame (ARP / ICMP requested at every phase of back-to-back
+        // blast frames, without and with downstream backpressure).
+        repeat (8) begin @(posedge clk); #1; end
+        auto_mode = 1'b1;
+        repeat (2) begin : integ_pass
+            integer ph;
+            blast_en = 1'b1;
+            for (ph = 0; ph < 24; ph = ph + 1) begin
+                repeat (ph + 3) @(posedge clk);
+                #1;
+                if (ph[0]) icmp_go = 1'b1; else arp_go = 1'b1;
+                @(posedge clk); #1;
+                arp_go = 1'b0; icmp_go = 1'b0;
+                repeat (40) @(posedge clk);
+                #1;
+            end
+            blast_en = 1'b0;
+            repeat (60) @(posedge clk);
+            #1;
+            bp_mode = 1'b1;
+        end
+        bp_mode = 1'b0;
+        repeat (4) @(posedge clk);
+        #1;
+        auto_mode = 1'b0;
+        m_axis_tready = 1'b1;
+        $display("  integrity: %0d blast, %0d ARP, %0d ICMP frames, %0d bad bytes",
+                 n_blast, n_arp, n_icmp, sb_err);
+        check("no mixed or cut frames at handover", sb_err == 0);
+        check("all ARP frames sent", n_arp == 24);
+        check("all ICMP frames sent", n_icmp == 24);
+        check("blast frames flowed", n_blast > 50);
 
         if (fail_cnt == 0) begin
             $display("PASS: %0d tests passed", pass_cnt);
@@ -200,7 +322,7 @@ module tb_arty_tx_arbiter;
     end
 
     initial begin
-        #200_000;
+        #2_000_000;
         $display("FAIL: timeout");
         $finish;
     end

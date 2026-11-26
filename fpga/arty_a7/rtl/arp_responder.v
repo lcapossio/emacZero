@@ -4,6 +4,8 @@
 // arp_responder.v - Minimal ARP reply engine
 // Captures incoming Ethernet frames, detects ARP requests for our IP,
 // and sends ARP replies. Makes the board pingable on the network.
+// A request is not answered when its Ethernet source or ARP sender hardware
+// address (where the reply is sent) is a group address or all zeros.
 // Verilog 2001
 // =============================================================================
 
@@ -63,12 +65,20 @@ module arp_responder (
     assign tx_tdata = reply[tx_idx];
     assign tx_tlast = tx_tvalid && (tx_idx == 6'd41);
 
+    // Ethernet source and ARP sender hardware address must be unicast and
+    // non-zero (the reply goes to the sender hardware address)
+    wire src_mac_ok = !cap[6][0] &&
+        ((cap[6] | cap[7] | cap[8] | cap[9] | cap[10] | cap[11]) != 8'd0);
+    wire sha_ok     = !cap[22][0] &&
+        ((cap[22] | cap[23] | cap[24] | cap[25] | cap[26] | cap[27]) != 8'd0);
+
     // Check if captured frame is an ARP request for our IP
     wire is_arp_request =
         (cap[12] == 8'h08) && (cap[13] == 8'h06) &&  // EtherType = ARP
         (cap[20] == 8'h00) && (cap[21] == 8'h01) &&  // Opcode = request
         (cap[38] == our_ip[31:24]) && (cap[39] == our_ip[23:16]) &&
-        (cap[40] == our_ip[15:8])  && (cap[41] == our_ip[7:0]);   // Target IP = ours
+        (cap[40] == our_ip[15:8])  && (cap[41] == our_ip[7:0]) && // Target IP = ours
+        src_mac_ok && sha_ok;
 
     integer ri;
 
@@ -100,7 +110,10 @@ module arp_responder (
                     if (rx_tvalid) begin
                         if (cap_idx < 6'd42)
                             cap[cap_idx] <= rx_tdata;
-                        cap_idx <= cap_idx + 6'd1;
+                        // saturate: a wrap at 64 would let bytes 64.. of a
+                        // long frame overwrite the captured header
+                        if (cap_idx != 6'd63)
+                            cap_idx <= cap_idx + 6'd1;
 
                         if (rx_tlast) begin
                             if (!rx_terror && cap_idx >= 6'd41) begin

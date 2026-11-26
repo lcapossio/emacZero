@@ -810,6 +810,16 @@ TESTS = [
         "out": "sim/tb_udp_stats_reply_backpressure.vvp",
     },
     {
+        "name": "ARP-RESPONDER",
+        "srcs": ["fpga/arty_a7/rtl/arp_responder.v", "sim/tb/tb_arp_responder.v"],
+        "out": "sim/tb_arp_responder.vvp",
+    },
+    {
+        "name": "TEST-SEQUENCER-MAC",
+        "srcs": ["fpga/arty_a7/rtl/test_sequencer.v", "sim/tb/tb_test_sequencer_mac.v"],
+        "out": "sim/tb_test_sequencer_mac.vvp",
+    },
+    {
         "name": "ARTY-TX-ARBITER",
         "srcs": ["fpga/arty_a7/rtl/arty_tx_arbiter.v", "sim/tb/tb_arty_tx_arbiter.v"],
         "out": "sim/tb_arty_tx_arbiter.vvp",

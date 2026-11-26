@@ -4,6 +4,9 @@
 -- test_sequencer.vhd - Hardware test FSM for emacZero on Arty A7
 -- Drives AXI4-Lite CSR reads/writes, MDIO commands, sends a gratuitous ARP,
 -- and reports results over UART.
+-- OUR_MAC is written to the MAC address registers before RX is enabled, so the
+-- MAC's address filter (promiscuous mode off) matches the address the demo
+-- responders use; it is also the gratuitous ARP's sender address.
 -- VHDL port of fpga/arty_a7/rtl/test_sequencer.v (formally proven equivalent;
 -- see sim/parity/).
 -- =============================================================================
@@ -14,7 +17,8 @@ use ieee.numeric_std.all;
 
 entity test_sequencer is
     generic (
-        CLK_FREQ : integer := 100000000
+        CLK_FREQ : integer := 100000000;
+        OUR_MAC  : std_logic_vector(47 downto 0) := x"020000000001"
     );
     port (
         clk            : in  std_logic;
@@ -65,6 +69,8 @@ architecture rtl of test_sequencer is
     -- =========================================================================
     constant A_VERSION     : std_logic_vector(7 downto 0) := x"00";
     constant A_CTRL        : std_logic_vector(7 downto 0) := x"04";
+    constant A_MAC_LO      : std_logic_vector(7 downto 0) := x"0C";
+    constant A_MAC_HI      : std_logic_vector(7 downto 0) := x"10";
     constant A_STATUS      : std_logic_vector(7 downto 0) := x"08";
     constant A_MDIO_CMD    : std_logic_vector(7 downto 0) := x"14";
     constant A_MDIO_WDATA  : std_logic_vector(7 downto 0) := x"18";
@@ -163,6 +169,7 @@ architecture rtl of test_sequencer is
     signal phy1_id_r : std_logic_vector(15 downto 0);   -- explicit latch for PHY1 result used in phy_id_ok check
     signal wait_cnt  : unsigned(31 downto 0);
     signal arp_idx   : unsigned(7 downto 0);
+    signal en_step   : unsigned(1 downto 0);   -- S_EN_MAC writes: 0 MAC_LO, 1 MAC_HI, 2 CTRL
 
     -- ARP frame: 42 bytes (Ethernet header + ARP payload)
     -- Gratuitous ARP: sender = target, broadcast destination
@@ -173,8 +180,9 @@ architecture rtl of test_sequencer is
     constant arp_frame : arp_frame_t := (
         -- Dst MAC: FF:FF:FF:FF:FF:FF (broadcast)
         x"FF", x"FF", x"FF", x"FF", x"FF", x"FF",
-        -- Src MAC: 02:00:00:00:00:01
-        x"02", x"00", x"00", x"00", x"00", x"01",
+        -- Src MAC: OUR_MAC
+        OUR_MAC(47 downto 40), OUR_MAC(39 downto 32), OUR_MAC(31 downto 24),
+        OUR_MAC(23 downto 16), OUR_MAC(15 downto 8),  OUR_MAC(7 downto 0),
         -- EtherType: 0x0806 (ARP)
         x"08", x"06",
         -- ARP: HTYPE=1(Ethernet), PTYPE=0x0800(IPv4), HLEN=6, PLEN=4
@@ -183,8 +191,9 @@ architecture rtl of test_sequencer is
         x"06", x"04",
         -- ARP opcode: 1 (request) - gratuitous: sender=target
         x"00", x"01",
-        -- Sender MAC: 02:00:00:00:00:01
-        x"02", x"00", x"00", x"00", x"00", x"01",
+        -- Sender MAC: OUR_MAC
+        OUR_MAC(47 downto 40), OUR_MAC(39 downto 32), OUR_MAC(31 downto 24),
+        OUR_MAC(23 downto 16), OUR_MAC(15 downto 8),  OUR_MAC(7 downto 0),
         -- Sender IP: 192.168.137.200
         x"C0", x"A8", x"89", x"C8",
         -- Target MAC: 00:00:00:00:00:00
@@ -316,6 +325,7 @@ begin
             phy1_id_r      <= x"0000";
             wait_cnt       <= (others => '0');
             arp_idx        <= (others => '0');
+            en_step        <= "00";
             printing       <= '0';
             print_buf      <= (others => '0');
             print_len      <= (others => '0');
@@ -645,11 +655,23 @@ begin
                     printing  <= '1';
                     print_next_state <= S_EN_MAC;
 
-                -- --- Enable MAC (tx+rx+promisc) ---
+                -- --- Program OUR_MAC, then enable the MAC (tx+rx; promisc
+                -- off, so the address filter passes our unicast and broadcast;
+                -- multicast only with MCAST_HASH_FILTER, which the Arty build
+                -- leaves off) ---
                 when S_EN_MAC =>
-                    m_axi_awaddr  <= A_CTRL;
+                    case en_step is
+                        when "00" =>
+                            m_axi_awaddr <= A_MAC_LO;
+                            m_axi_wdata  <= OUR_MAC(31 downto 0);
+                        when "01" =>
+                            m_axi_awaddr <= A_MAC_HI;
+                            m_axi_wdata  <= x"0000" & OUR_MAC(47 downto 32);
+                        when others =>
+                            m_axi_awaddr <= A_CTRL;
+                            m_axi_wdata  <= x"00000003";
+                    end case;
                     m_axi_awvalid <= '1';
-                    m_axi_wdata   <= x"00000007";
                     m_axi_wstrb   <= x"F";
                     m_axi_wvalid  <= '1';
                     m_axi_bready  <= '1';
@@ -657,8 +679,13 @@ begin
                 when S_EN_MAC_W =>
                     if m_axi_awready = '1' then m_axi_awvalid <= '0'; end if;
                     if m_axi_wready = '1'  then m_axi_wvalid  <= '0'; end if;
-                    if wr_done = '1' then
+                    if wr_done = '1' and en_step /= "10" then
                         m_axi_bready <= '0';
+                        en_step      <= en_step + 1;
+                        state        <= S_EN_MAC;
+                    elsif wr_done = '1' then
+                        m_axi_bready <= '0';
+                        en_step      <= "00";
                         if link_up_i = '1' then
                             arp_idx <= (others => '0');
                             state   <= S_SEND_ARP;
@@ -686,8 +713,11 @@ begin
                             wait_cnt <= (others => '0');
                             state    <= S_CHK_TX;
                         else
-                            arp_idx <= arp_idx + 1;
-                            state   <= S_SEND_ARP;
+                            -- Byte accepted: drop tvalid for the cycle in
+                            -- S_SEND_ARP, or the same byte is taken twice
+                            tx_tvalid <= '0';
+                            arp_idx   <= arp_idx + 1;
+                            state     <= S_SEND_ARP;
                         end if;
                     end if;
 

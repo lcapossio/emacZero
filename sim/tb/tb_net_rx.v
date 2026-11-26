@@ -8,7 +8,8 @@
 // Tests:
 //   T1: ARP frame -> arp_valid pulses, arp_last fires
 //   T2: IPv4 ICMP frame to our IP -> icmp_data stream + icmp_src_ip captured
-//   T3: IPv4 ICMP frame to broadcast (255.255.255.255) -> accepted
+//   T3: IPv4 ICMP frame to broadcast (255.255.255.255) -> dropped (no
+//       broadcast echo replies); UDP to broadcast -> accepted
 //   T4: IPv4 ICMP frame to wrong IP -> dropped (no icmp_valid)
 //   T5: IPv4 UDP frame -> dropped (no icmp_valid)
 //   T6: bad IPv4 header checksum -> dropped
@@ -21,6 +22,21 @@
 //   T13: IP version 6 in an IPv4 ethertype frame -> dropped
 //   T14: frame ending on its last IPv4 header byte with a bad header
 //        checksum, then a valid ICMP frame -> the second one passed on
+//   T15: fragments -> dropped: MF set, offset 8 (MF clear), offset 65520
+//        (the lone last-fragment "ping of death" probe), offset 2048 (high
+//        offset bits only), a UDP fragment; DF set with offset 0 is still
+//        accepted
+//   T16: source MAC with the group bit set, or all zero -> dropped (ICMP and
+//        ARP)
+//   T17: source IP 0.0.0.0, 0.1.2.3, 127.0.0.1, 127.255.255.254, 224.0.0.1,
+//        240.0.0.1, our own IP or
+//        255.255.255.255 -> dropped (ICMP and UDP); 223.255.255.254 accepted
+//   T18: IHL=6 (one 4-byte option word): the destination filter uses the
+//        real destination, not the last option byte -> to our IP accepted
+//        whatever the option bytes; to .201 with an option byte equal to our
+//        last octet dropped
+//   T19: ICMP or UDP to our IP in an Ethernet broadcast or multicast frame ->
+//        dropped; UDP to IP broadcast in an Ethernet broadcast frame accepted
 // (rx_src_mac is checked in T1 and T2; frames carry valid checksums unless
 // a test corrupts one.)
 // Verilog 2001
@@ -323,6 +339,50 @@ module tb_net_rx;
         end
     endtask
 
+    // ICMP echo request with IHL=6: options NOP NOP NOP <opt_last>, total
+    // length 32, 8-byte ICMP at 38..45, padded to 60. Both checksums valid.
+    task load_icmp_opts;
+        input [31:0] dst_ip;
+        input [7:0]  opt_last;
+        integer i, sum;
+        begin
+            load_icmp(dst_ip);
+            frame[14] = 8'h46;                    // IHL=6
+            frame[17] = 8'h20;                    // total len = 32
+            frame[34] = 8'h01; frame[35] = 8'h01; // NOP NOP
+            frame[36] = 8'h01; frame[37] = opt_last;
+            frame[38] = 8'h08; frame[39] = 8'h00; // echo request
+            frame[40] = 8'h00; frame[41] = 8'h00; // csum (below)
+            frame[42] = 8'h00; frame[43] = 8'h07; // id
+            frame[44] = 8'h00; frame[45] = 8'h01; // seq
+            for (i = 46; i < 60; i = i + 1) frame[i] = 8'h00;
+            frame_len = 60;
+            frame[24] = 8'h00; frame[25] = 8'h00;
+            sum = 0;
+            for (i = 14; i < 38; i = i + 2) sum = sum + {frame[i], frame[i+1]};
+            sum = (sum & 32'hFFFF) + (sum >> 16);
+            sum = (sum & 32'hFFFF) + (sum >> 16);
+            frame[24] = ~sum[15:8]; frame[25] = ~sum[7:0];
+            sum = 0;
+            for (i = 38; i < 46; i = i + 2) sum = sum + {frame[i], frame[i+1]};
+            sum = (sum & 32'hFFFF) + (sum >> 16);
+            sum = (sum & 32'hFFFF) + (sum >> 16);
+            frame[40] = ~sum[15:8]; frame[41] = ~sum[7:0];
+        end
+    endtask
+
+    // 5 UDP payload bytes, frame padded to 60 (call fix_csums after)
+    task udp_payload5;
+        integer k;
+        begin
+            frame[17] = 8'h21;                    // total len = 33
+            frame[38] = 8'h00; frame[39] = 8'h0D; // UDP length = 13
+            for (k = 42; k < 47; k = k + 1) frame[k] = 8'h50 + k[7:0];
+            for (k = 47; k < 60; k = k + 1) frame[k] = 8'hAA;
+            frame_len = 60;
+        end
+    endtask
+
     integer i;
 
     initial begin
@@ -360,13 +420,22 @@ module tb_net_rx;
                    rx_src_mac, 48'h02_AA_BB_CC_DD_EE);
 
         // =================================================================
-        // T3: ICMP to broadcast IP
+        // T3: ICMP to broadcast IP -> dropped; UDP to broadcast -> accepted
         // =================================================================
         reset_counters;
         load_icmp(32'hFF_FF_FF_FF);
         feed_frame;
-        check_int("T3 icmp_byte_cnt = 8 (broadcast)", icmp_byte_cnt, 8);
-        check_int("T3 icmp_last_seen = 1", icmp_last_seen, 1);
+        check_int("T3 icmp_byte_cnt = 0 (ICMP to broadcast)", icmp_byte_cnt, 0);
+        check_int("T3 icmp_last_seen = 0 (ICMP to broadcast)", icmp_last_seen, 0);
+
+        reset_counters;
+        load_udp;
+        frame[30] = 8'hFF; frame[31] = 8'hFF; frame[32] = 8'hFF; frame[33] = 8'hFF;
+        udp_payload5;
+        fix_csums;
+        feed_frame;
+        check_int("T3 UDP bcast udp_byte_cnt = 5", udp_byte_cnt, 5);
+        check_int("T3 UDP bcast udp_err = 0", udp_err_seen, 0);
 
         // =================================================================
         // T4: ICMP to wrong IP -> dropped
@@ -506,6 +575,236 @@ module tb_net_rx;
         feed_frame;
         check_int("T14 b2b icmp_byte_cnt = 8", icmp_byte_cnt, 8);
         check_int("T14 b2b icmp_err = 0", icmp_err_seen, 0);
+
+        // =================================================================
+        // T15: IPv4 fragments -> dropped (nothing here reassembles)
+        // =================================================================
+        // MF set, offset 0 (first fragment)
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[20] = 8'h20; frame[21] = 8'h00;
+        fix_csums;
+        feed_frame;
+        check_int("T15 MF set: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        // MF clear, offset 1 (8 bytes): a last fragment
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[20] = 8'h00; frame[21] = 8'h01;
+        fix_csums;
+        feed_frame;
+        check_int("T15 offset 8: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        // MF clear, offset 8190 (65520 bytes): offset + 28 > 65535
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[20] = 8'h1F; frame[21] = 8'hFE;
+        fix_csums;
+        feed_frame;
+        check_int("T15 offset 65520: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        // MF clear, offset 256 (2048 bytes): only the high offset bits set
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[20] = 8'h01; frame[21] = 8'h00;
+        fix_csums;
+        feed_frame;
+        check_int("T15 offset 2048: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        // UDP first fragment
+        reset_counters;
+        load_udp;
+        udp_payload5;
+        frame[20] = 8'h20; frame[21] = 8'h00;
+        fix_csums;
+        feed_frame;
+        check_int("T15 UDP MF set: udp_last_seen = 0", udp_last_seen, 0);
+        check_int("T15 UDP MF set: udp_byte_cnt = 0", udp_byte_cnt, 0);
+
+        // DF set, offset 0: a whole datagram, still accepted
+        reset_counters;
+        load_icmp(OUR_IP);
+        feed_frame;
+        check_int("T15 DF only: icmp_last_seen = 1", icmp_last_seen, 1);
+        check_int("T15 DF only: icmp_err = 0", icmp_err_seen, 0);
+
+        // =================================================================
+        // T16: invalid source MAC -> dropped
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[6] = 8'h01;                         // group bit
+        feed_frame;
+        check_int("T16 group src MAC: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_icmp(OUR_IP);
+        for (i = 6; i < 12; i = i + 1) frame[i] = 8'hFF;
+        feed_frame;
+        check_int("T16 broadcast src MAC: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_icmp(OUR_IP);
+        for (i = 6; i < 12; i = i + 1) frame[i] = 8'h00;
+        feed_frame;
+        check_int("T16 zero src MAC: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_arp_request;
+        frame[6] = 8'h03;                         // group bit
+        feed_frame;
+        check_int("T16 group src MAC: arp_byte_cnt = 0", arp_byte_cnt, 0);
+
+        // A valid frame right after: the parser has recovered
+        reset_counters;
+        load_icmp(OUR_IP);
+        feed_frame;
+        check_int("T16 then valid: icmp_byte_cnt = 8", icmp_byte_cnt, 8);
+        check_int("T16 then valid: icmp_err = 0", icmp_err_seen, 0);
+
+        // =================================================================
+        // T17: invalid source IP -> dropped
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = 8'h00; frame[27] = 8'h00; frame[28] = 8'h00; frame[29] = 8'h00;
+        fix_csums;
+        feed_frame;
+        check_int("T17 src 0.0.0.0: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = 8'h7F; frame[27] = 8'h00; frame[28] = 8'h00; frame[29] = 8'h01;
+        fix_csums;
+        feed_frame;
+        check_int("T17 src 127.0.0.1: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        // The rest of 0/8 and 127/8, not just the single addresses above
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = 8'h00; frame[27] = 8'h01; frame[28] = 8'h02; frame[29] = 8'h03;
+        fix_csums;
+        feed_frame;
+        check_int("T17 src 0.1.2.3: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = 8'h7F; frame[27] = 8'hFF; frame[28] = 8'hFF; frame[29] = 8'hFE;
+        fix_csums;
+        feed_frame;
+        check_int("T17 src 127.255.255.254: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = 8'hE0; frame[27] = 8'h00; frame[28] = 8'h00; frame[29] = 8'h01;
+        fix_csums;
+        feed_frame;
+        check_int("T17 src 224.0.0.1: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = 8'hF0; frame[27] = 8'h00; frame[28] = 8'h00; frame[29] = 8'h01;
+        fix_csums;
+        feed_frame;
+        check_int("T17 src 240.0.0.1: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_udp;
+        udp_payload5;
+        frame[26] = 8'hFF; frame[27] = 8'hFF; frame[28] = 8'hFF; frame[29] = 8'hFF;
+        fix_csums;
+        feed_frame;
+        check_int("T17 UDP src 255.255.255.255: udp_last_seen = 0", udp_last_seen, 0);
+
+        // Control: the same UDP datagram from a valid source is delivered
+        reset_counters;
+        load_udp;
+        udp_payload5;
+        fix_csums;
+        feed_frame;
+        check_int("T17 UDP valid src: udp_byte_cnt = 5", udp_byte_cnt, 5);
+
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = 8'hDF; frame[27] = 8'hFF; frame[28] = 8'hFF; frame[29] = 8'hFE;
+        fix_csums;
+        feed_frame;
+        check_int("T17 src 223.255.255.254: icmp_last_seen = 1", icmp_last_seen, 1);
+
+        // Our own address as source
+        reset_counters;
+        load_icmp(OUR_IP);
+        frame[26] = OUR_IP[31:24]; frame[27] = OUR_IP[23:16];
+        frame[28] = OUR_IP[15:8];  frame[29] = OUR_IP[7:0];
+        fix_csums;
+        feed_frame;
+        check_int("T17 src = our IP: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_udp;
+        udp_payload5;
+        frame[26] = OUR_IP[31:24]; frame[27] = OUR_IP[23:16];
+        frame[28] = OUR_IP[15:8];  frame[29] = OUR_IP[7:0];
+        fix_csums;
+        feed_frame;
+        check_int("T17 UDP src = our IP: udp_last_seen = 0", udp_last_seen, 0);
+        check_int("T17 src 223.255.255.254: icmp_err = 0", icmp_err_seen, 0);
+
+        // =================================================================
+        // T18: IPv4 options: destination filter uses the real destination
+        // =================================================================
+        reset_counters;
+        load_icmp_opts(OUR_IP, 8'h00);
+        feed_frame;
+        check_int("T18 IHL=6 to us, opt byte 0x00: icmp_byte_cnt = 8", icmp_byte_cnt, 8);
+        check_int("T18 IHL=6 to us, opt byte 0x00: icmp_err = 0", icmp_err_seen, 0);
+        check_eq32("T18 IHL=6 to us: icmp_src_ip", icmp_src_ip, 32'hC0A80132);
+
+        reset_counters;
+        load_icmp_opts(OUR_IP, OUR_IP[7:0]);
+        feed_frame;
+        check_int("T18 IHL=6 to us, opt byte = our octet: icmp_byte_cnt = 8", icmp_byte_cnt, 8);
+
+        reset_counters;
+        load_icmp_opts(OUR_IP + 32'd1, OUR_IP[7:0]);
+        feed_frame;
+        check_int("T18 IHL=6 to .201, opt byte = our octet: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        // =================================================================
+        // T19: unicast IP destination in a link-layer broadcast or multicast
+        // frame -> dropped (RFC 1122 3.3.6); IP broadcast in an Ethernet
+        // broadcast frame is still delivered
+        // =================================================================
+        reset_counters;
+        load_icmp(OUR_IP);
+        for (i = 0; i < 6; i = i + 1) frame[i] = 8'hFF;
+        feed_frame;
+        check_int("T19 eth bcast, ICMP to our IP: icmp_last_seen = 0", icmp_last_seen, 0);
+
+        reset_counters;
+        load_udp;
+        udp_payload5;
+        frame[0] = 8'h01; frame[1] = 8'h00; frame[2] = 8'h5E;
+        frame[3] = 8'h00; frame[4] = 8'h00; frame[5] = 8'h01;
+        fix_csums;
+        feed_frame;
+        check_int("T19 eth mcast, UDP to our IP: udp_last_seen = 0", udp_last_seen, 0);
+
+        reset_counters;
+        load_udp;
+        udp_payload5;
+        for (i = 0; i < 6; i = i + 1) frame[i] = 8'hFF;
+        frame[30] = 8'hFF; frame[31] = 8'hFF; frame[32] = 8'hFF; frame[33] = 8'hFF;
+        fix_csums;
+        feed_frame;
+        check_int("T19 eth bcast, UDP to IP bcast: udp_byte_cnt = 5", udp_byte_cnt, 5);
+        check_int("T19 eth bcast, UDP to IP bcast: udp_err = 0", udp_err_seen, 0);
+
+        // A unicast frame right after: delivered
+        reset_counters;
+        load_icmp(OUR_IP);
+        feed_frame;
+        check_int("T19 then unicast: icmp_byte_cnt = 8", icmp_byte_cnt, 8);
 
         // =================================================================
         // Summary

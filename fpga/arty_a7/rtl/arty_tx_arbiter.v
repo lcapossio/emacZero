@@ -6,8 +6,14 @@
 // Priority while idle:
 //   seq > arp > icmp > stats > udp_echo > udp_blast
 //
-// The selected owner is held until the output frame's tlast handshake. A
-// one-byte register slice decouples the priority mux from the downstream MAC.
+// An owner is latched when its first byte is accepted and held until its
+// tlast byte is accepted into the one-byte register slice that decouples the
+// priority mux from the downstream MAC; the next arbitration happens on the
+// following cycle. Releasing on the slice's output tlast instead would leave
+// the old owner selected for the cycle in which that tlast leaves, so the old
+// owner's next frame would lose its first byte to the slice, in front of
+// whichever source wins next (e.g. a blast byte prefixed to an ARP or ICMP
+// reply).
 // Verilog 2001
 // =============================================================================
 
@@ -85,30 +91,6 @@ module arty_tx_arbiter #(
                                              : OWN_NONE)
                                : tx_owner;
 
-    wire output_frame_done = m_axis_tvalid && m_axis_tready && m_axis_tlast;
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            tx_owner <= OWN_NONE;
-            blast_service_frame_cnt <= 8'd0;
-            blast_service_holdoff <= 12'd0;
-        end else if (output_frame_done) begin
-            if (tx_owner_next == OWN_BLAST) begin
-                if (blast_service_frame_cnt == BLAST_SERVICE_INTERVAL) begin
-                    blast_service_frame_cnt <= 8'd0;
-                    blast_service_holdoff <= BLAST_SERVICE_IDLE_CYCLES;
-                end else begin
-                    blast_service_frame_cnt <= blast_service_frame_cnt + 8'd1;
-                end
-            end
-            tx_owner <= OWN_NONE;
-        end else begin
-            if (blast_service_holdoff != 12'd0)
-                blast_service_holdoff <= blast_service_holdoff - 12'd1;
-            tx_owner <= tx_owner_next;
-        end
-    end
-
     wire [7:0] mux_tdata  = (tx_owner_next == OWN_SEQ)   ? seq_tdata
                            : (tx_owner_next == OWN_ARP)   ? arp_tdata
                            : (tx_owner_next == OWN_ICMP)  ? icmp_tdata
@@ -132,6 +114,34 @@ module arty_tx_arbiter #(
                                                           : 1'b0;
 
     wire mux_tready = !m_axis_tvalid || m_axis_tready;
+
+    // The owner's tlast byte enters the slice this cycle
+    wire input_frame_done = mux_tvalid && mux_tready && mux_tlast;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            tx_owner <= OWN_NONE;
+            blast_service_frame_cnt <= 8'd0;
+            blast_service_holdoff <= 12'd0;
+        end else if (input_frame_done) begin
+            if (tx_owner_next == OWN_BLAST) begin
+                if (blast_service_frame_cnt == BLAST_SERVICE_INTERVAL) begin
+                    blast_service_frame_cnt <= 8'd0;
+                    blast_service_holdoff <= BLAST_SERVICE_IDLE_CYCLES;
+                end else begin
+                    blast_service_frame_cnt <= blast_service_frame_cnt + 8'd1;
+                end
+            end
+            tx_owner <= OWN_NONE;
+        end else begin
+            if (blast_service_holdoff != 12'd0)
+                blast_service_holdoff <= blast_service_holdoff - 12'd1;
+            // Latch the owner only once one of its bytes is taken; until then
+            // the choice is re-made every cycle
+            if (mux_tvalid && mux_tready)
+                tx_owner <= tx_owner_next;
+        end
+    end
 
     assign seq_tready   = (tx_owner_next == OWN_SEQ)   ? mux_tready : 1'b0;
     assign arp_tready   = (tx_owner_next == OWN_ARP)   ? mux_tready : 1'b0;
