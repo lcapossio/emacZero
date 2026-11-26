@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Leonardo Capossio - bard0 design
+"""sfp10g_test.py - Drive and read the ZCU106 10GBASE-R bring-up design
+(zcu106_10g_top, build_zcu106_10g.tcl) over its fcapz EIO on USER3.
+
+Needs the bitstream on the board and a hw_server on :3121.
+
+    python fpga/zcu106/scripts/sfp10g_test.py status
+    python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
+    python fpga/zcu106/scripts/sfp10g_test.py loop --loopback none   # over the fibre
+
+status   prints the GT / PCS state, clock meters and checker counters.
+loop     sets the loopback (none / pcs / pma), restarts the RX path, waits for
+         block lock, then runs the generator for --seconds with --words words
+         per frame (header + payload, 1..255) and --ipg idle words, and checks
+         that every frame came back good, in sequence, with no lock loss.
+         --inject adds one payload bit error, which must show up as exactly
+         one bad frame. Exit status 0 on PASS.
+
+The test frames are not Ethernet frames (no FCS): toward a switch they are
+dropped as CRC errors, so run `loop` with traffic only in a loopback or over
+a fibre between two cages / boards running this design.
+"""
+
+import argparse
+import os
+import sys
+import time
+
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+sys.path.insert(0, os.path.join(REPO, "fcapz", "host"))
+
+from fcapz.cli import _chain_shape_kwargs          # noqa: E402
+from fcapz.eio import EioController                 # noqa: E402
+from fcapz.transport import XilinxHwServerTransport  # noqa: E402
+
+MARKER, LAYOUT = 0x10F0, 1
+EIO_IN_W, EIO_OUT_W = 416, 64
+
+# probe_in fields (name, lsb, width), see the EIO block in zcu106_10g_top.v
+FIELDS = [
+    ("status", 0, 32),
+    ("good_frames", 32, 32),
+    ("bad_frames", 64, 32),
+    ("seq_gaps", 96, 32),
+    ("bad_words", 128, 32),
+    ("lf_words", 160, 32),
+    ("ber_cnt", 192, 16),
+    ("lock_losses", 224, 32),
+    ("fm_tx", 264, 24),
+    ("fm_rx", 296, 24),
+    ("fm_ref", 328, 24),
+    ("gen_frames", 352, 32),
+    ("layout", 392, 8),
+    ("marker", 400, 16),
+]
+STATUS_BITS = [
+    "qpll0lock", "gtpowergood", "txuserrdy", "rxuserrdy",
+    "rx_done", "tx_done", "rxresetdone", "txresetdone",
+    "rxpmaresetdone", "txpmaresetdone", "rxprgdivresetdone", "txprgdivresetdone",
+    None, None, None, None,     # [14:12] rxbufstatus, [15] 0
+    None, None, "qpll0refclklost", "block_lock",   # [17:16] txbufstatus
+    "hi_ber", "rxcdrlock", "good_seen", "bad_seen",
+]
+
+# probe_out bits
+LOOPBACK = {"none": 0, "pcs": 1, "pma": 2}
+B_TXPOL, B_RXPOL, B_LPM, B_TXRST, B_RXRST = 3, 4, 5, 6, 7
+B_GEN, B_INJ, B_CLEAR, B_GTRST, B_LASER_OFF = 8, 9, 10, 11, 12
+WINDOW_S = (1 << 22) / 50e6     # frequency meter window
+
+
+def transport(args):
+    fpga = args.tap.removesuffix(".tap")
+    return XilinxHwServerTransport(host=args.host, port=args.port, fpga_name=fpga,
+                                   **_chain_shape_kwargs(fpga))
+
+
+class Board:
+    def __init__(self, args):
+        self.eio = EioController(transport(args), chain=3)
+        self.eio.connect()
+        if (self.eio.in_w, self.eio.out_w) != (EIO_IN_W, EIO_OUT_W):
+            raise SystemExit("EIO on USER3 is %d in / %d out, expected %d / %d: "
+                             "not the 10G bring-up build"
+                             % (self.eio.in_w, self.eio.out_w, EIO_IN_W, EIO_OUT_W))
+        f = self.read()
+        if (f["marker"], f["layout"]) != (MARKER, LAYOUT):
+            raise SystemExit("EIO marker 0x%04x layout %d, expected 0x%04x layout %d"
+                             % (f["marker"], f["layout"], MARKER, LAYOUT))
+        self.ctrl = self.eio.read_outputs()
+
+    def close(self):
+        self.eio.close()
+
+    def read(self):
+        # counters cross into TCK unsynchronized: take two equal reads
+        prev = None
+        for _ in range(20):
+            raw = self.eio.read_inputs()
+            if raw == prev:
+                break
+            prev = raw
+        f = {n: (raw >> lsb) & ((1 << w) - 1) for n, lsb, w in FIELDS}
+        st = f["status"]
+        for i, name in enumerate(STATUS_BITS):
+            if name:
+                f[name] = (st >> i) & 1
+        f["rxbufstatus"] = (st >> 12) & 7
+        f["txbufstatus"] = (st >> 16) & 3
+        return f
+
+    def write(self, value):
+        self.eio.write_outputs(value)
+        got = self.eio.read_outputs()
+        if got != value:
+            raise RuntimeError("EIO output reads 0x%x after writing 0x%x" % (got, value))
+        self.ctrl = value
+
+    def set_bit(self, bit, on):
+        v = (self.ctrl | (1 << bit)) if on else (self.ctrl & ~(1 << bit))
+        self.write(v)
+
+    def pulse(self, bit, hold=0.01):
+        self.set_bit(bit, True)
+        time.sleep(hold)
+        self.set_bit(bit, False)
+
+    def set_field(self, lsb, width, value):
+        m = ((1 << width) - 1) << lsb
+        self.write((self.ctrl & ~m) | ((value << lsb) & m))
+
+
+def mhz(count):
+    return count / WINDOW_S / 1e6
+
+
+def show(f):
+    flags = " ".join(n for n in STATUS_BITS if n and f.get(n))
+    print("status 0x%08x: %s" % (f["status"], flags))
+    print("  rxbufstatus %d  txbufstatus %d" % (f["rxbufstatus"], f["txbufstatus"]))
+    print("  clocks: txusrclk2 %.4f MHz  rxusrclk2 %.4f MHz  refclk %.4f MHz"
+          % (mhz(f["fm_tx"]), mhz(f["fm_rx"]), mhz(f["fm_ref"])))
+    print("  block_lock %d hi_ber %d ber_cnt %d lock_losses %d lf_words %d"
+          % (f["block_lock"], f["hi_ber"], f["ber_cnt"], f["lock_losses"], f["lf_words"]))
+    print("  gen_frames %d good %d bad %d seq_gaps %d bad_words %d"
+          % (f["gen_frames"], f["good_frames"], f["bad_frames"], f["seq_gaps"],
+             f["bad_words"]))
+
+
+def wait_lock(b, timeout=2.0):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        f = b.read()
+        if f["rx_done"] and f["block_lock"] and not f["hi_ber"]:
+            return f
+        time.sleep(0.05)
+    return None
+
+
+def cmd_loop(b, args):
+    words = args.words
+    if not 1 <= words <= 255:
+        raise SystemExit("--words must be 1..255")
+    b.set_bit(B_GEN, False)
+    time.sleep(0.01)
+    b.set_field(0, 3, LOOPBACK[args.loopback])
+    b.set_bit(B_LPM, args.lpm)
+    b.set_field(16, 8, (words - 8) & 0xFF)
+    b.set_field(24, 8, args.ipg)
+    b.pulse(B_RXRST)
+    f = wait_lock(b)
+    if f is None:
+        show(b.read())
+        print("FAIL: no block lock")
+        return 1
+    b.pulse(B_CLEAR)
+    g0 = b.read()["gen_frames"]
+    b.set_bit(B_GEN, True)
+    if args.inject:
+        time.sleep(args.seconds / 2)
+        b.pulse(B_INJ)
+        time.sleep(args.seconds / 2)
+    else:
+        time.sleep(args.seconds)
+    b.set_bit(B_GEN, False)
+    time.sleep(0.05)
+    f = b.read()
+    show(f)
+    sent = (f["gen_frames"] - g0) & 0xFFFFFFFF
+    # line rate: (words + 2) words per frame plus ipg, 32 of 33 cycles carry a
+    # word at 161.13 MHz -> payload Gb/s of the test frames
+    rate = sent * (words + 2 + args.ipg) * 64 / args.seconds / 1e9
+    print("  sent %d frames in %.1f s: %.3f Gb/s of XGMII words (10.000 max)"
+          % (sent, args.seconds, rate))
+    want_bad = 1 if args.inject else 0
+    ok = (f["good_frames"] + f["bad_frames"] == sent and f["bad_frames"] == want_bad
+          and f["seq_gaps"] == 0 and f["lock_losses"] == 0
+          and f["bad_words"] == want_bad and f["block_lock"])
+    print("PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=3121)
+    ap.add_argument("--tap", default="xczu7.tap")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("status")
+    lp = sub.add_parser("loop")
+    lp.add_argument("--loopback", choices=sorted(LOOPBACK), default="pma")
+    lp.add_argument("--seconds", type=float, default=5.0)
+    lp.add_argument("--words", type=int, default=8)
+    lp.add_argument("--ipg", type=int, default=0)
+    lp.add_argument("--lpm", action="store_true", help="LPM receiver instead of DFE")
+    lp.add_argument("--inject", action="store_true")
+    for name in ("restart-rx", "restart-tx", "gt-reset"):
+        sub.add_parser(name)
+    args = ap.parse_args()
+
+    b = Board(args)
+    try:
+        if args.cmd == "status":
+            show(b.read())
+            return 0
+        if args.cmd == "loop":
+            return cmd_loop(b, args)
+        bit = {"restart-rx": B_RXRST, "restart-tx": B_TXRST, "gt-reset": B_GTRST}[args.cmd]
+        b.pulse(bit)
+        time.sleep(0.2)
+        show(b.read())
+        return 0
+    finally:
+        b.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

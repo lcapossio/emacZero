@@ -252,6 +252,9 @@ LINT_SOURCES = [
     "rtl/pcs10gbr_block_lock.v",
     "rtl/pcs10gbr_ber_mon.v",
     "rtl/pcs10gbr.v",
+    "fpga/zcu106/rtl/gt10g_reset.v",
+    "fpga/zcu106/rtl/xgmii_test_gen.v",
+    "fpga/zcu106/rtl/xgmii_test_chk.v",
 ]
 
 LINT_SUPPRESS = [

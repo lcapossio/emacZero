@@ -288,6 +288,29 @@ frame after the first; hard-wiring `gmii_tx_er_out` to 0 fails the error
 passthrough; closing out the paced frame one cycle early shortens the last
 byte's span from `len*period` to `(len-1)*period+1`.
 
+## 10GBASE-R
+
+Verilog only for now (the suites skip the VHDL run).
+
+- `pcs10gbr_enc`, `pcs10gbr_dec`, `pcs10gbr`: the PCS in `rtl/pcs10gbr*.v`
+  against a reference model written from the IEEE 802.3 clause 49 tables
+  (`lib/pcs10gbr_model.py`). The encoder and decoder are compared block by
+  block with the model on every block type, junk and broken sequences; the
+  whole PCS's TX stream is aligned and decoded by the model, and looped back
+  to RX at several bit offsets; sync header errors drop and regain block
+  lock and raise hi_ber.
+- `gt10g_reset`: the ZCU106 GT reset sequencer
+  (`fpga/zcu106/rtl/gt10g_reset.v`) against a model of the QPLL0 and channel
+  reset handshakes: bring-up order (USERRDY never before the user clock runs,
+  never while the path is in reset), an RX restart that leaves TX alone,
+  recovery from a QPLL0 lock loss and a retry after an RX reset done that
+  never comes.
+- `xgmii_test_loop`, `xgmii_test_loop_o63`: the ZCU106 10G test generator,
+  the PCS twice and the checker, the line looped back at bit offset 17 / 63:
+  frames of 1 to 255 words with and without gaps all good and in sequence,
+  back-to-back minimum frames at the full rate the PCS accepts, and injected
+  payload and line bit errors counted.
+
 ## Reset defaults
 
 `eth_mac_sys_reset_txrx_off` builds `eth_mac_sys` (MII, MII TX looped back to

@@ -334,6 +334,63 @@ Still open:
   it was loaded, while later builds of both clocks passed every time. It has
   not been explained.
 
+## 10GBASE-R bring-up (work in progress)
+
+A separate design, `zcu106_10g_top`, brings up 10GBASE-R (10.3125 Gb/s) on
+SFP cage 0 with no AMD IP: the clean-room PCS in `rtl/pcs10gbr*.v` and the
+GTH transceiver primitives (`GTHE4_COMMON`, `GTHE4_CHANNEL`) instantiated
+directly, with their own reset sequencer. There is no MAC yet; a test frame
+generator and checker (`xgmii_test_gen.v`, `xgmii_test_chk.v`) run XGMII
+frames through the PCS and the GT.
+
+```
+xgmii_test_gen -> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFP0
+SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
+```
+
+- QPLL0 of Quad 225 makes 10.3125 GHz from the USER_MGT_SI570 156.25 MHz
+  clock (Quad 226 MGTREFCLK1, over the south reference clock routing).
+- The GT runs in raw mode: 64-bit TXDATA / RXDATA, 32-bit internal, 8b10b
+  and the GT's own 64b66b gearbox off. TXUSRCLK / RXUSRCLK are 322.27 MHz and
+  TXUSRCLK2 / RXUSRCLK2 161.13 MHz, from BUFG_GTs. The PCS takes a block 32
+  cycles out of 33 (its 66:64 gearbox).
+- The GT attributes are the ones a 10.3125 Gb/s raw-mode Transceiver Wizard
+  configuration sets, cross-checked against a scratch Wizard project that is
+  not kept in the repository. Every attribute that differs from the
+  primitive's default is set, grouped by function, in
+  `gthe4_channel_10g.v` / `gthe4_common_10g.v`.
+- `gt10g_reset.v` sequences the resets on the free-running 50 MHz clock:
+  power good, QPLL0 reset and lock, then TX and RX each: GT and PROGDIV
+  reset release, user clock running, USERRDY, reset done. It does not wait
+  for RXCDRLOCK (UG576 reserves it). Each step times out and retries.
+- An fcapz EIO on USER3 sets the loopback (none, near-end PCS, near-end PMA),
+  polarities, DFE or LPM receiver, TX swing and emphasis, the generator and
+  its frame length / gap, and resets; it reads the GT and PCS state, block
+  lock, BER counter, lock losses, the checker counters and frequency meters
+  for TXUSRCLK2, RXUSRCLK2 and the reference clock.
+
+Build, program and test (from the repository root):
+
+```bash
+vivado -mode batch -source fpga/zcu106/scripts/build_zcu106_10g.tcl
+vivado -mode batch -source fpga/zcu106/scripts/program_zcu106.tcl \
+    -tclargs build_zcu106_10g/zcu106_10g_top.bit
+python fpga/zcu106/scripts/sfp10g_test.py status
+python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
+```
+
+`loop` restarts the RX path, waits for block lock, runs back-to-back test
+frames and passes when every frame comes back good and in sequence with no
+lock loss (`--inject` adds one bit error, which must show up as exactly one
+bad frame). The test frames have no FCS, so do not run the generator toward
+a switch: use a loopback, or a fibre between two cages.
+
+Simulated: the reset sequencer against a model of the GT reset handshakes,
+and generator -> PCS -> serial loopback at two bit offsets -> PCS -> checker
+(the `gt10g_reset` and `xgmii_test_loop*` cocotb suites). The GT itself is
+only tested on the board. The design meets timing (WNS +2.6 ns). It has not
+been run on the board yet.
+
 ## Si5328 build
 
 Only used with `-tclargs si5328`. The Si5328 (U20) drives Quad 225
@@ -378,6 +435,15 @@ On the test board the loopback build's frequency meter read userclk2 at
 | `scripts/sfp_lb_test.py` | Run the loopback tests through the fcapz EIO |
 | `scripts/sfp_perf_test.py` | Host throughput test against the demo's iperf2 sink and UDP blast |
 | `scripts/sfp_counters.py` | Read or clear the MAC statistics and PCS/PMA event counters over JTAG |
+| `rtl/zcu106_10g_top.v` | 10GBASE-R bring-up top: GT, reset, PCS, test traffic, fcapz EIO |
+| `rtl/gthe4_common_10g.v` | `GTHE4_COMMON` with QPLL0 at 10.3125 GHz from 156.25 MHz |
+| `rtl/gthe4_channel_10g.v` | `GTHE4_CHANNEL` in 10.3125 Gb/s raw mode, 64-bit data |
+| `rtl/gt10g_reset.v` | GT reset sequencer (QPLL0, TX, RX) |
+| `rtl/xgmii_test_gen.v` | 64-bit XGMII test frame generator |
+| `rtl/xgmii_test_chk.v` | Checker for those frames: good / bad / sequence gaps / bad words |
+| `constraints/zcu106_10g.xdc` | Pins, GT placement and clocks of the 10G design |
+| `scripts/build_zcu106_10g.tcl` | Non-project Vivado build of the 10G design (no IP) |
+| `scripts/sfp10g_test.py` | Status and loopback test of the 10G design over the fcapz EIO |
 
 The ARP responder and TX arbiter are reused from `fpga/arty_a7/rtl/`.
 The I2C sequence is simulated by `ZCU106-I2C-INIT` in `build_and_test.py`.
