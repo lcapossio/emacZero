@@ -13,7 +13,8 @@ This project does not yet maintain long-lived release branches.
   monitor) with cocotb suites against a reference model, and a ZCU106 SFP0
   bring-up design (`fpga/zcu106/`, `build_zcu106_10g.tcl`) that drives the
   GTH primitives directly with its own reset sequencer, no AMD IP, and runs
-  test frames through the PCS and the GT. Verilog only.
+  test frames through the PCS and the GT: block lock to a 10G switch and
+  error-free near-end PMA loopback at full rate on the board. Verilog only.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
   with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while

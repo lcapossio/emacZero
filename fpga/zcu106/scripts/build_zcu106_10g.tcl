@@ -62,6 +62,24 @@ opt_design
 place_design
 route_design
 write_checkpoint -force $outdir/post_route.dcp
+
+# The reference clock buffer must sit on the MGTREFCLK1 buffer of Quad 226
+# (the U10/U9 pins carry the Si570 clock; the placer can move the buffer to
+# the unconnected MGTREFCLK0 one while still reporting the ports on U10/U9).
+# Also print where the clock enters the COMMON, for the record.
+set ib [get_cells -hierarchical -filter {REF_NAME == IBUFDS_GTE4}]
+if {[get_property LOC $ib] ne "GTHE4_COMMON_X0Y3" ||
+    [get_property BEL $ib] ne "GTHE4_COMMON.IBUFDS1_GTHE4"} {
+    puts "ERROR: reference clock buffer on [get_property LOC $ib] [get_property BEL $ib]"
+    exit 1
+}
+set cm [get_cells -hierarchical -filter {REF_NAME == GTHE4_COMMON}]
+foreach p [get_pins -of $cm -filter {DIRECTION == IN && REF_PIN_NAME =~ GT*REFCLK*}] {
+    if {[get_property TYPE [get_nets -of $p]] eq "SIGNAL"} {
+        puts "Reference clock: [get_property REF_PIN_NAME $p] -> BEL pin [get_bel_pins -quiet -of $p]"
+    }
+}
+puts "QPLL0REFCLKSEL: [get_property TYPE [get_nets -of [get_pins $cm/QPLL0REFCLKSEL[2]]]] [get_property TYPE [get_nets -of [get_pins $cm/QPLL0REFCLKSEL[1]]]] [get_property TYPE [get_nets -of [get_pins $cm/QPLL0REFCLKSEL[0]]]]"
 report_utilization -file $outdir/utilization_route.rpt
 report_timing_summary -file $outdir/timing.rpt
 report_clocks -file $outdir/clocks.rpt

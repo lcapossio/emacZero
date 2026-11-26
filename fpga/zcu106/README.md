@@ -349,7 +349,12 @@ SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
 ```
 
 - QPLL0 of Quad 225 makes 10.3125 GHz from the USER_MGT_SI570 156.25 MHz
-  clock (Quad 226 MGTREFCLK1, over the south reference clock routing).
+  clock (Quad 226 MGTREFCLK1). The clock is connected to the COMMON's
+  GTREFCLK00 and Vivado routes it over the south reference clock lines; the
+  constraints hold the IBUFDS_GTE4 on the MGTREFCLK1 buffer, and the build
+  stops if it moves (see `gthe4_common_10g.v` for what went wrong when the
+  south input was chosen by hand). QPLL0REFCLKLOST reads 1 even with QPLL0
+  locked in this arrangement; use the lock.
 - The GT runs in raw mode: 64-bit TXDATA / RXDATA, 32-bit internal, 8b10b
   and the GT's own 64b66b gearbox off. TXUSRCLK / RXUSRCLK are 322.27 MHz and
   TXUSRCLK2 / RXUSRCLK2 161.13 MHz, from BUFG_GTs. The PCS takes a block 32
@@ -388,8 +393,22 @@ a switch: use a loopback, or a fibre between two cages.
 Simulated: the reset sequencer against a model of the GT reset handshakes,
 and generator -> PCS -> serial loopback at two bit offsets -> PCS -> checker
 (the `gt10g_reset` and `xgmii_test_loop*` cocotb suites). The GT itself is
-only tested on the board. The design meets timing (WNS +2.6 ns). It has not
-been run on the board yet.
+only tested on the board. The design meets timing (WNS +2.6 ns).
+
+Tested on the board (2026-11-26, 10GBASE-SR SFP+ in cage 0, fibre to a
+switch):
+
+- Normal mode: QPLL0 lock, both GT paths up, PCS block lock to the switch
+  with a BER count of 0 and no lock loss; RXUSRCLK2 reads 161.1363 MHz
+  against 161.1325 MHz for TXUSRCLK2 (the switch's clock is about 23 ppm
+  off ours). The switch's own frames arrive (counted as bad test frames).
+- Near-end PMA loopback, DFE receiver: 156,395,938 back-to-back minimum
+  test frames (10 words each) in 10 s, every frame good and in sequence,
+  BER count 0. Frame lengths 1, 2, 9, 63, 190 and 255 words, back to back
+  and with 5 idle words between frames: all good. An injected payload bit
+  error shows up as exactly one bad frame and one bad word. LPM receiver:
+  all good. Leaving the loopback, the link to the switch locks again after
+  an RX restart.
 
 ## Si5328 build
 

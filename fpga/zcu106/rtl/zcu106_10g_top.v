@@ -13,7 +13,8 @@
 // Clocks:
 //   clk_50     300 MHz USER_SI570 / 6, free-running: GT DRP / reset clock
 //   refclk     USER_MGT_SI570 156.25 MHz, Quad 226 MGTREFCLK1 -> QPLL0 of
-//              Quad 225 over the south reference clock routing
+//              Quad 225 (GTREFCLK00; Vivado routes it over the south
+//              reference clock lines)
 //   txusrclk2  161.13 MHz, BUFG_GT /2 of TXOUTCLK (txusrclk is /1, 322 MHz):
 //              PCS TX and the generator
 //   rxusrclk2  161.13 MHz from RXOUTCLK (recovered clock): PCS RX, checker
@@ -125,7 +126,7 @@ module zcu106_10g_top (
     // =========================================================================
     wire qpll0reset, qpll0lock, qpll0refclklost, qpll0outclk, qpll0outrefclk;
 
-    gthe4_common_10g #(.QPLL0_REFCLK_SEL(3'b110)) u_common (
+    gthe4_common_10g #(.QPLL0_REFCLK_SEL(3'b001)) u_common (
         .refclk          (refclk),
         .drpclk          (clk_50),
         .qpll0reset      (qpll0reset),

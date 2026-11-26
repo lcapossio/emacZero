@@ -21,6 +21,11 @@ set_property IOSTANDARD LVCMOS18 [get_ports CPU_RESET]
 set_property PACKAGE_PIN U10 [get_ports SFP_REFCLK_P]
 set_property PACKAGE_PIN U9  [get_ports SFP_REFCLK_N]
 create_clock -name sfp_refclk -period 6.400 [get_ports SFP_REFCLK_P]
+# Hold the buffer on the MGTREFCLK1 buffer of Quad 226 (the U10/U9 pins): the
+# placer can otherwise move it to the MGTREFCLK0 buffer, which has no clock,
+# while still reporting the ports on U10/U9.
+set_property LOC GTHE4_COMMON_X0Y3 [get_cells -hierarchical -filter {REF_NAME == IBUFDS_GTE4}]
+set_property BEL GTHE4_COMMON.IBUFDS1_GTHE4 [get_cells -hierarchical -filter {REF_NAME == IBUFDS_GTE4}]
 
 # ---- SFP cage 0 serial lanes: GTHE4_CHANNEL_X0Y10, Quad 225 ----
 set_property PACKAGE_PIN Y4  [get_ports SFP0_TX_P]

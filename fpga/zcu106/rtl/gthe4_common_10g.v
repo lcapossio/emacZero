@@ -11,18 +11,22 @@
 // is tied explicitly; outputs not used are left open.
 //
 // refclk is the IBUFDS_GTE4 output. QPLL0_REFCLK_SEL picks the QPLL0 input it
-// arrives on, which depends on where the reference pins are relative to this
-// quad (the refclk is connected to that input only):
-//   3'b001 GTREFCLK00 (this quad, MGTREFCLK0)  3'b010 GTREFCLK01 (MGTREFCLK1)
-//   3'b011 GTNORTHREFCLK00  3'b100 GTNORTHREFCLK01  (from the quad below)
-//   3'b101 GTSOUTHREFCLK00  3'b110 GTSOUTHREFCLK01  (from the quad above)
-// On the ZCU106 the SFP reference (USER_MGT_SI570) enters Quad 226 MGTREFCLK1
-// and the SFP channels are in Quad 225, below it: 3'b110.
+// is connected to (the refclk is connected to that input only):
+//   3'b001 GTREFCLK00  3'b010 GTREFCLK01
+//   3'b011 GTNORTHREFCLK00  3'b100 GTNORTHREFCLK01
+//   3'b101 GTSOUTHREFCLK00  3'b110 GTSOUTHREFCLK01
+// Keep the default, GTREFCLK00, even for a reference from another quad: as
+// with the Wizard, Vivado then routes it over the north / south reference
+// clock lines itself and sets the select to match. Choosing a north / south
+// input by hand fights the placer: on the ZCU106 (reference on Quad 226
+// MGTREFCLK1, SFP channels in Quad 225) GTSOUTHREFCLK01 / 3'b110 built and
+// routed but left QPLL0 with no clock, and driving more inputs made Vivado
+// move the IBUFDS_GTE4 onto the unconnected MGTREFCLK0 buffer.
 // Verilog 2001
 // =============================================================================
 
 module gthe4_common_10g #(
-    parameter [2:0] QPLL0_REFCLK_SEL = 3'b110
+    parameter [2:0] QPLL0_REFCLK_SEL = 3'b001
 ) (
     input  wire refclk,            // from IBUFDS_GTE4 .O
     input  wire drpclk,            // free-running
