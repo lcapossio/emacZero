@@ -339,13 +339,17 @@ Still open:
 A separate design, `zcu106_10g_top`, brings up 10GBASE-R (10.3125 Gb/s) on
 SFP cage 0 with no AMD IP: the clean-room PCS in `rtl/pcs10gbr*.v` and the
 GTH transceiver primitives (`GTHE4_COMMON`, `GTHE4_CHANNEL`) instantiated
-directly, with their own reset sequencer. There is no MAC yet; a test frame
-generator and checker (`xgmii_test_gen.v`, `xgmii_test_chk.v`) run XGMII
-frames through the PCS and the GT.
+directly, with their own reset sequencer. Two test paths share the PCS and
+the GT: raw XGMII test frames (`xgmii_test_gen.v`, `xgmii_test_chk.v`), and,
+in MAC mode, Ethernet frames through the 10G MAC (`rtl/eth_mac_10g_tx.v`,
+`rtl/eth_mac_10g_rx.v`) from a 64-bit AXIS generator and checker
+(`axis_test_gen64.v`, `axis_test_chk64.v`).
 
 ```
-xgmii_test_gen -> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFP0
+xgmii_test_gen  -------------------> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFP0
+axis_test_gen64 -> eth_mac_10g_tx -^
 SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
+                             -> eth_mac_10g_rx -> axis_test_chk64
 ```
 
 - QPLL0 of Quad 225 makes 10.3125 GHz from the USER_MGT_SI570 156.25 MHz
@@ -369,10 +373,12 @@ SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
   reset release, user clock running, USERRDY, reset done. It does not wait
   for RXCDRLOCK (UG576 reserves it). Each step times out and retries.
 - An fcapz EIO on USER3 sets the loopback (none, near-end PCS, near-end PMA),
-  polarities, DFE or LPM receiver, TX swing and emphasis, the generator and
-  its frame length / gap, and resets; it reads the GT and PCS state, block
-  lock, BER counter, lock losses, the checker counters and frequency meters
-  for TXUSRCLK2, RXUSRCLK2 and the reference clock.
+  polarities, DFE or LPM receiver, TX swing and emphasis, the test path (raw
+  XGMII or MAC mode), the generators and their frame length / gap, and
+  resets; it reads the GT and PCS state, block lock, BER counter, lock
+  losses, both checkers' counters, the RX MAC's FCS errors, the TX MAC's
+  underruns and frequency meters for TXUSRCLK2, RXUSRCLK2 and the reference
+  clock.
 
 Build, program and test (from the repository root):
 
@@ -382,18 +388,26 @@ vivado -mode batch -source fpga/zcu106/scripts/program_zcu106.tcl \
     -tclargs build_zcu106_10g/zcu106_10g_top.bit
 python fpga/zcu106/scripts/sfp10g_test.py status
 python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
+python fpga/zcu106/scripts/sfp10g_test.py mac --loopback pma --len 60 --seconds 10
 ```
 
 `loop` restarts the RX path, waits for block lock, runs back-to-back test
 frames and passes when every frame comes back good and in sequence with no
 lock loss (`--inject` adds one bit error, which must show up as exactly one
-bad frame). The test frames have no FCS, so do not run the generator toward
-a switch: use a loopback, or a fibre between two cages.
+bad frame). `mac` does the same through the MAC: frames of `--len` bytes
+before the FCS (`--sweep` steps the length from 60 up to it frame by
+frame), every byte checked after the RX MAC, and prints the frame rate
+against the line rate for that length. Frames longer than the RX MAC's
+9018-byte jumbo limit must all come back flagged. Neither generator's
+traffic is meant for a switch (the raw frames have no FCS, the MAC frames
+go to a made-up address at line rate): use a loopback, or a fibre between
+two cages.
 
 Simulated: the reset sequencer against a model of the GT reset handshakes,
-and generator -> PCS -> serial loopback at two bit offsets -> PCS -> checker
-(the `gt10g_reset` and `xgmii_test_loop*` cocotb suites). The GT itself is
-only tested on the board. The design meets timing (WNS +2.6 ns).
+and both test paths through PCS -> serial loopback -> PCS (the
+`gt10g_reset`, `xgmii_test_loop*` and `mac10g_test_loop` cocotb suites).
+The GT itself is only tested on the board. The design meets timing (WNS
++1.07 ns).
 
 Tested on the board (2026-11-26, 10GBASE-SR SFP+ in cage 0, fibre to a
 switch):
@@ -409,6 +423,15 @@ switch):
   error shows up as exactly one bad frame and one bad word. LPM receiver:
   all good. Leaving the loopback, the link to the switch locks again after
   an RX restart.
+- MAC mode, near-end PMA loopback, every frame checked byte by byte after
+  the RX MAC, no FCS error, TX underrun or sequence gap in any run:
+  148,982,816 frames of 60 bytes (64 with the FCS) in 10 s, 14.90 Mpps,
+  which is line rate (14.88 Mpps; the excess is the host's timing); 1514
+  bytes at 9.89 Gb/s of frames; a 60..2000 byte sweep (every tkeep
+  pattern) at line rate; 9000 bytes at 10.0 Gb/s. 16000-byte frames all
+  come back flagged oversize, as they must. An injected payload error is
+  exactly one bad frame. LPM receiver: all good. Toward the switch, the
+  switch's own frames pass the RX MAC's FCS check.
 
 ## Si5328 build
 
@@ -460,6 +483,8 @@ On the test board the loopback build's frequency meter read userclk2 at
 | `rtl/gt10g_reset.v` | GT reset sequencer (QPLL0, TX, RX) |
 | `rtl/xgmii_test_gen.v` | 64-bit XGMII test frame generator |
 | `rtl/xgmii_test_chk.v` | Checker for those frames: good / bad / sequence gaps / bad words |
+| `rtl/axis_test_gen64.v` | 64-bit AXIS Ethernet test frame source for the 10G MAC (length sweep, error inject) |
+| `rtl/axis_test_chk64.v` | Checker for those frames after the RX MAC: every byte, length, sequence, tuser |
 | `constraints/zcu106_10g.xdc` | Pins, GT placement and clocks of the 10G design |
 | `scripts/build_zcu106_10g.tcl` | Non-project Vivado build of the 10G design (no IP) |
 | `scripts/sfp10g_test.py` | Status and loopback test of the 10G design over the fcapz EIO |

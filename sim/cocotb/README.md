@@ -310,6 +310,37 @@ Verilog only for now (the suites skip the VHDL run).
   frames of 1 to 255 words with and without gaps all good and in sequence,
   back-to-back minimum frames at the full rate the PCS accepts, and injected
   payload and line bit errors counted.
+- `crc32_d64`: the 8-byte CRC step (`rtl/crc32_d64.v`) against zlib for
+  every byte count, and chained over random messages.
+- `eth_mac_10g_tx`: the 64-bit transmit MAC's XGMII output parsed by the
+  test (not by the RTL's rules): start lane, preamble, payload padded to 60
+  bytes, FCS by zlib, terminate, idles; back-to-back frames must start
+  exactly where the clause 46 deficit idle count puts them (84 line bytes
+  per 64-byte frame), with ce always on, in the PCS's 32-of-33 pattern and
+  random; a beat missing mid-frame corrupts only that frame with error
+  characters, and tuser sends the frame with its payload and a wrong FCS.
+  Removing the deficit idle count or the lane-4 start each fails it.
+- `eth_mac_10g_rx`: the receive MAC against XGMII streams built by the test,
+  starts in both lanes, gaps down to the 5-byte receive minimum, the
+  decoder's valid gaps and random ones: payload with preamble and FCS
+  removed, and tuser on a bad FCS, an error character, a bad SFD, a runt,
+  an oversize frame (1518, 1522 tagged, jumbo), a runaway frame cut at
+  16376 bytes, a frame cut short by idles, a fault ordered set or a new
+  start, a start not preceded by idles or a sequence ordered set; frames of
+  0 to 12 bytes in either lane never swallow the next frame; stats (length,
+  error kind, broadcast, multicast). Ending frames only at a terminate, or
+  accepting any start, each fails it.
+- `eth_mac_10g_tx_loop`, `eth_mac_10g_loop`: the transmit MAC through the PCS
+  and a line loopback at a bit offset, first checked on the received XGMII
+  (frames and deficit idle count gaps intact), then through the receive MAC
+  back to AXIS: every frame of a line-rate mix (minimum frames back to back,
+  every short length, random up to 1500, a 9000-byte jumbo) comes back in
+  order, padded, clean, and the tuser frames flagged, including tuser on the
+  last beat of a short frame followed by a minimum frame at every end lane.
+- `mac10g_test_loop`: the ZCU106 MAC-mode test path, `axis_test_gen64` ->
+  TX MAC -> PCS -> line loopback -> PCS -> RX MAC -> `axis_test_chk64`:
+  minimum frames at line rate, a 60..400 length sweep, 9000-byte frames,
+  and an injected payload error counted once.
 
 ## Reset defaults
 

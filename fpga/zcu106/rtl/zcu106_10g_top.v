@@ -6,6 +6,10 @@
 //   xgmii_test_gen -> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFP0
 //   SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
 //
+// or, in MAC mode, Ethernet frames through the 10G MAC:
+//   axis_test_gen64 -> eth_mac_10g_tx -> pcs10gbr TX -> ...
+//   ... -> pcs10gbr RX -> eth_mac_10g_rx -> axis_test_chk64
+//
 // No AMD IP: the GTHE4_COMMON / GTHE4_CHANNEL primitives are instantiated
 // directly (gthe4_common_10g.v, gthe4_channel_10g.v), reset by gt10g_reset.v,
 // with the clean-room PCS from rtl/pcs10gbr*.v.
@@ -16,8 +20,9 @@
 //              Quad 225 (GTREFCLK00; Vivado routes it over the south
 //              reference clock lines)
 //   txusrclk2  161.13 MHz, BUFG_GT /2 of TXOUTCLK (txusrclk is /1, 322 MHz):
-//              PCS TX and the generator
-//   rxusrclk2  161.13 MHz from RXOUTCLK (recovered clock): PCS RX, checker
+//              PCS TX, TX MAC and the generators
+//   rxusrclk2  161.13 MHz from RXOUTCLK (recovered clock): PCS RX, RX MAC,
+//              checkers
 //
 // Control and status over an fcapz EIO on USER3 (CHAIN 3); see the EIO block
 // for the bit map and scripts/sfp10g_test.py for the host side. Power-up
@@ -25,7 +30,8 @@
 //
 // LEDs: 0 QPLL0 lock      1 TX reset done    2 RX reset done
 //       3 PCS block lock  4 no high BER      5 good test frame seen
-//       6 bad test frame seen (sticky until the counters are cleared)
+//       6 bad test frame seen (sticky until the counters are cleared;
+//         LEDs 5 and 6 follow the checker of the selected mode)
 //       7 txusrclk2 heartbeat
 // Verilog 2001
 // =============================================================================
@@ -71,7 +77,7 @@ module zcu106_10g_top (
     end
 
     // EIO controls (defined in the EIO block)
-    wire [63:0] ctrl;
+    wire [79:0] ctrl;
     wire [2:0]  ctl_loopback   = ctrl[2:0];
     wire        ctl_txpol      = ctrl[3];
     wire        ctl_rxpol      = ctrl[4];
@@ -83,11 +89,14 @@ module zcu106_10g_top (
     wire        ctl_clear      = ctrl[10];
     wire        ctl_gt_reset   = ctrl[11];
     wire        ctl_laser_off  = ctrl[12];
+    wire        ctl_mac_mode   = ctrl[13];
+    wire        ctl_sweep      = ctrl[14];
     wire [7:0]  ctl_len        = ctrl[23:16];
     wire [7:0]  ctl_ipg        = ctrl[31:24];
     wire [4:0]  ctl_txdiff     = ctrl[36:32];
     wire [4:0]  ctl_txpost     = ctrl[44:40];
     wire [4:0]  ctl_txpre      = ctrl[52:48];
+    wire [15:0] ctl_mac_len    = ctrl[79:64];
 
     // EIO outputs come from the TCK domain: synchronize the reset controls
     (* ASYNC_REG = "TRUE" *) reg [5:0] s50_gtr, s50_txr, s50_rxr;
@@ -284,26 +293,79 @@ module zcu106_10g_top (
     );
 
     // Generator controls into txusrclk2 (static except the inject pulse)
-    (* ASYNC_REG = "TRUE" *) reg [2:0] s_gen_en, s_inj;
+    (* ASYNC_REG = "TRUE" *) reg [2:0] s_gen_en, s_inj, s_mac_tx;
     always @(posedge txusrclk2) begin
         s_gen_en <= {s_gen_en[1:0], ctl_gen_en};
         s_inj    <= {s_inj[1:0], ctl_inj};
+        s_mac_tx <= {s_mac_tx[1:0], ctl_mac_mode};
     end
+    wire mac_tx = s_mac_tx[2];
+    wire inj_p  = s_inj[1] && !s_inj[2];
+    wire [63:0] gen_txd, mac_txd;
+    wire [7:0]  gen_txc, mac_txc;
+    // switch modes with the generators off: a frame cut in half is lost
+    assign xgmii_txd = mac_tx ? mac_txd : gen_txd;
+    assign xgmii_txc = mac_tx ? mac_txc : gen_txc;
     wire [7:0] len_words = ctl_len + 8'd8;   // EIO 0 -> 8 words (64 bytes)
 
     wire [31:0] gen_frames;
     xgmii_test_gen u_gen (
         .clk            (txusrclk2),
         .rst_n          (tx_rst_n),
-        .enable         (s_gen_en[2]),
+        .enable         (s_gen_en[2] && !mac_tx),
         .len_words      (len_words),
         .ipg_words      (ctl_ipg),
-        .inj_err        (s_inj[1] && !s_inj[2]),
+        .inj_err        (inj_p && !mac_tx),
         .xgmii_tx_ready (xgmii_tx_ready),
-        .xgmii_txd      (xgmii_txd),
-        .xgmii_txc      (xgmii_txc),
+        .xgmii_txd      (gen_txd),
+        .xgmii_txc      (gen_txc),
         .frames         (gen_frames)
     );
+
+    // MAC mode: test frames through the 10G MAC
+    wire [63:0] mg_tdata;
+    wire [7:0]  mg_tkeep;
+    wire        mg_tvalid, mg_tlast, mg_tready;
+    wire [31:0] mac_gen_frames;
+    wire        mac_underrun;
+    axis_test_gen64 u_mgen (
+        .clk           (txusrclk2),
+        .rst_n         (tx_rst_n),
+        .enable        (s_gen_en[2] && mac_tx),
+        .len           (ctl_mac_len),
+        .sweep         (ctl_sweep),
+        .ipg           (ctl_ipg),
+        .inj_err       (inj_p && mac_tx),
+        .m_axis_tdata  (mg_tdata),
+        .m_axis_tkeep  (mg_tkeep),
+        .m_axis_tvalid (mg_tvalid),
+        .m_axis_tlast  (mg_tlast),
+        .m_axis_tready (mg_tready),
+        .frames        (mac_gen_frames)
+    );
+    eth_mac_10g_tx u_mac_tx (
+        .clk           (txusrclk2),
+        .rst_n         (tx_rst_n),
+        .ce            (xgmii_tx_ready),
+        .s_axis_tdata  (mg_tdata),
+        .s_axis_tkeep  (mg_tkeep),
+        .s_axis_tvalid (mg_tvalid),
+        .s_axis_tlast  (mg_tlast),
+        .s_axis_tuser  (1'b0),
+        .s_axis_tready (mg_tready),
+        .xgmii_txd     (mac_txd),
+        .xgmii_txc     (mac_txc),
+        .stat_tx_frame (),
+        .stat_underrun (mac_underrun)
+    );
+    reg [31:0] tx_underruns;
+    (* ASYNC_REG = "TRUE" *) reg [2:0] s_clr_tx;
+    always @(posedge txusrclk2) s_clr_tx <= {s_clr_tx[1:0], ctl_clear};
+    always @(posedge txusrclk2 or negedge tx_rst_n) begin
+        if (!tx_rst_n)         tx_underruns <= 32'd0;
+        else if (s_clr_tx[2])  tx_underruns <= 32'd0;
+        else if (mac_underrun) tx_underruns <= tx_underruns + 32'd1;
+    end
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] s_clr;
     always @(posedge rxusrclk2) s_clr <= {s_clr[1:0], ctl_clear};
@@ -326,6 +388,61 @@ module zcu106_10g_top (
         .good_pulse     (good_pulse),
         .bad_pulse      (bad_pulse)
     );
+
+    wire [63:0] mr_tdata;
+    wire [7:0]  mr_tkeep;
+    wire        mr_tvalid, mr_tlast, mr_tuser;
+    wire        mr_done, mr_err_fcs;
+    eth_mac_10g_rx u_mac_rx (
+        .clk                (rxusrclk2),
+        .rst_n              (rx_rst_n),
+        .xgmii_rxd          (xgmii_rxd),
+        .xgmii_rxc          (xgmii_rxc),
+        .xgmii_rx_valid     (xgmii_rx_valid),
+        .jumbo_en           (1'b1),
+        .m_axis_tdata       (mr_tdata),
+        .m_axis_tkeep       (mr_tkeep),
+        .m_axis_tvalid      (mr_tvalid),
+        .m_axis_tlast       (mr_tlast),
+        .m_axis_tuser       (mr_tuser),
+        .stat_done          (mr_done),
+        .stat_len           (),
+        .stat_err_fcs       (mr_err_fcs),
+        .stat_err_ctl       (),
+        .stat_err_oversize  (),
+        .stat_err_undersize (),
+        .stat_is_bcast      (),
+        .stat_is_mcast      ()
+    );
+    wire [31:0] mac_good, mac_bad, mac_tuser, mac_seq_gaps;
+    wire        mac_good_pulse, mac_bad_pulse;
+    axis_test_chk64 u_mchk (
+        .clk           (rxusrclk2),
+        .rst_n         (rx_rst_n),
+        .clear         (s_clr[2]),
+        .s_axis_tdata  (mr_tdata),
+        .s_axis_tkeep  (mr_tkeep),
+        .s_axis_tvalid (mr_tvalid),
+        .s_axis_tlast  (mr_tlast),
+        .s_axis_tuser  (mr_tuser),
+        .good_frames   (mac_good),
+        .bad_frames    (mac_bad),
+        .tuser_frames  (mac_tuser),
+        .seq_gaps      (mac_seq_gaps),
+        .good_pulse    (mac_good_pulse),
+        .bad_pulse     (mac_bad_pulse)
+    );
+    reg [31:0] rx_fcs_errs;
+    always @(posedge rxusrclk2 or negedge rx_rst_n) begin
+        if (!rx_rst_n)                  rx_fcs_errs <= 32'd0;
+        else if (s_clr[2])              rx_fcs_errs <= 32'd0;
+        else if (mr_done && mr_err_fcs) rx_fcs_errs <= rx_fcs_errs + 32'd1;
+    end
+    (* ASYNC_REG = "TRUE" *) reg [2:0] s_mac_rx;
+    always @(posedge rxusrclk2) s_mac_rx <= {s_mac_rx[1:0], ctl_mac_mode};
+    wire mac_rx = s_mac_rx[2];
+    wire sel_good_pulse = mac_rx ? mac_good_pulse : good_pulse;
+    wire sel_bad_pulse  = mac_rx ? mac_bad_pulse  : bad_pulse;
 
     // Block lock losses (rxusrclk2)
     reg        lock_d;
@@ -359,15 +476,19 @@ module zcu106_10g_top (
 
     // =========================================================================
     // fcapz EIO (USER3)
-    // eio-write [63:0]:
+    // eio-write [79:0]:
     //   [2:0] LOOPBACK (0 normal, 2 near-end PMA)   [3] TX polarity
     //   [4] RX polarity    [5] RX LPM (0 = DFE)      [6] TX path restart
     //   [7] RX path restart (do it after a LOOPBACK change)
     //   [8] generator on   [9] inject one payload bit error (rising edge)
     //   [10] clear checker counters   [11] full GT reset   [12] laser off
+    //   [13] MAC mode (frames through the 10G MAC)   [14] MAC length sweep
     //   [23:16] frame words - 8   [31:24] idle words between frames
     //   [36:32] TXDIFFCTRL ^ 0x18   [44:40] TXPOSTCURSOR   [52:48] TXPRECURSOR
-    // eio-read [415:0]: see the probe_in concatenation; the low 32 bits are
+    //   [79:64] MAC mode frame length in bytes, no FCS (60..16000; with the
+    //   sweep, the top of the 60..len sweep). [31:24] is also the MAC mode
+    //   gap, in idle cycles.
+    // eio-read [639:0]: see the probe_in concatenation; the low 32 bits are
     //   the status bits, the top 16 bits a layout marker (0x10F0). Counters
     //   cross from the GT clock domains unsynchronized: read twice if a value
     //   must be exact.
@@ -376,11 +497,12 @@ module zcu106_10g_top (
     always @(posedge rxusrclk2 or negedge rx_rst_n)
         if (!rx_rst_n)       bad_seen <= 4'd0;
         else if (s_clr[2])   bad_seen <= 4'd0;
-        else if (bad_pulse)  bad_seen <= 4'hF;
+        else if (sel_bad_pulse) bad_seen <= 4'hF;
 
     wire [31:0] status = {
         8'd0,
-        bad_seen[0], good_frames != 32'd0, rxcdrlock, hi_ber,      // [23:20]
+        bad_seen[0], (mac_rx ? mac_good : good_frames) != 32'd0,    // [23:22]
+        rxcdrlock, hi_ber,                                          // [21:20]
         block_lock, qpll0refclklost, txbufstatus,                   // [19:16]
         1'b0, rxbufstatus, txprgdivresetdone, rxprgdivresetdone,    // [15:10]
         txpmaresetdone, rxpmaresetdone,                             // [9:8]
@@ -389,11 +511,18 @@ module zcu106_10g_top (
     };
 
     fcapz_eio_xilinxus #(
-        .IN_W  (416),
-        .OUT_W (64),
+        .IN_W  (640),
+        .OUT_W (80),
         .CHAIN (3)
     ) u_eio (
-        .probe_in  ({16'h10F0, 8'd1, 8'd0,                // [415:384] marker, layout
+        .probe_in  ({16'h10F0, 8'd2, 8'd0,                // [639:608] marker, layout
+                     rx_fcs_errs,                         // [607:576]
+                     tx_underruns,                        // [575:544] (TX domain)
+                     mac_seq_gaps,                        // [543:512]
+                     mac_tuser,                           // [511:480]
+                     mac_bad,                             // [479:448]
+                     mac_good,                            // [447:416]
+                     mac_gen_frames,                      // [415:384] (TX domain)
                      gen_frames,                          // [383:352] (TX domain)
                      fm_ref, 8'd0,                        // [351:320]
                      fm_rx, 8'd0,                         // [319:288]
@@ -417,7 +546,7 @@ module zcu106_10g_top (
 
     reg [23:0] good_led = 24'd0;
     always @(posedge rxusrclk2)
-        if (good_pulse)            good_led <= 24'hFFFFFF;
+        if (sel_good_pulse)        good_led <= 24'hFFFFFF;
         else if (good_led != 0)    good_led <= good_led - 24'd1;
 
     assign LED = {hb[27], bad_seen[0], good_led != 24'd0, !hi_ber,

@@ -11,6 +11,11 @@
                        length class arrives good and in sequence; injected
                        payload and line errors are counted
   xgmii_test_loop_o63  the same at the largest bit offset
+  mac10g_test_loop     axis_test_gen64 -> the 10G TX MAC -> pcs10gbr -> line
+                       loopback -> pcs10gbr -> the 10G RX MAC ->
+                       axis_test_chk64: minimum frames at line rate, a
+                       length sweep, jumbo frames, an injected payload error
+                       counted once
 """
 import random
 
@@ -36,6 +41,20 @@ SUITES = {
                     "fpga/zcu106/rtl/xgmii_test_chk.v",
                     "sim/cocotb/hdl/h_xgmii_test_loop.v"],
         "params": {"OFFSET": 17, "BER_TIMER_CYCLES": 4000},
+        "skip_vhdl": "ZCU106 10G bring-up logic is Verilog only",
+    },
+    "mac10g_test_loop": {
+        "toplevel": "h_mac10g_test_loop",
+        "sources": ["rtl/crc32_d64.v", "rtl/eth_mac_10g_tx.v",
+                    "rtl/eth_mac_10g_rx.v",
+                    "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
+                    "rtl/pcs10gbr_scrambler.v", "rtl/pcs10gbr_gearbox_tx.v",
+                    "rtl/pcs10gbr_gearbox_rx.v", "rtl/pcs10gbr_block_lock.v",
+                    "rtl/pcs10gbr_ber_mon.v", "rtl/pcs10gbr.v",
+                    "fpga/zcu106/rtl/axis_test_gen64.v",
+                    "fpga/zcu106/rtl/axis_test_chk64.v",
+                    "sim/cocotb/hdl/h_mac10g_test_loop.v"],
+        "params": {"OFFSET": 23, "BER_TIMER_CYCLES": 4000},
         "skip_vhdl": "ZCU106 10G bring-up logic is Verilog only",
     },
     "xgmii_test_loop_o63": {
@@ -353,3 +372,113 @@ async def loop_errors(dut):
         assert c["good_frames"] - base["good_frames"] >= 5, (base, c)
     dut.enable.value = 0
     assert int(dut.block_lock.value) and not int(dut.hi_ber.value)
+
+
+# ---------------------------------------------------------------------------
+# mac10g_test_loop
+# ---------------------------------------------------------------------------
+def mac_counts(dut):
+    return {k: int(getattr(dut, k).value) for k in
+            ("gen_frames", "good_frames", "bad_frames", "tuser_frames", "seq_gaps")}
+
+
+async def mac_setup(dut):
+    cocotb.start_soon(Clock(dut.clk, 6.2, unit="ns").start())
+    dut.rst_n.value = 0
+    dut.enable.value = 0
+    dut.len.value = 60
+    dut.sweep.value = 0
+    dut.ipg.value = 0
+    dut.inj_err.value = 0
+    dut.clear.value = 0
+    await ClockCycles(dut.clk, 5)
+    dut.rst_n.value = 1
+    await wait_for(dut, lambda: int(dut.block_lock.value), 3000, "block lock")
+    await ClockCycles(dut.clk, 20)
+
+
+async def mac_run(dut, n_frames, limit):
+    """Run until n_frames more good frames, return the cycles it took."""
+    start = int(dut.good_frames.value)
+    dut.enable.value = 1
+    cycles = 0
+    for _ in range(limit):
+        await RisingEdge(dut.clk)
+        cycles += 1
+        if int(dut.good_frames.value) - start >= n_frames:
+            break
+    dut.enable.value = 0
+    await ClockCycles(dut.clk, 400)   # drain
+    return cycles
+
+
+@cocotb.test(timeout_time=20, timeout_unit="ms")
+async def mac_line_rate(dut):
+    """64-byte frames (60 + FCS) back to back: 84 line bytes each, so 8 *
+    32/33 / 84 frames per cycle; all good, none lost, no underrun."""
+    if dut._name != "h_mac10g_test_loop":
+        return
+    await mac_setup(dut)
+    underruns = 0
+
+    async def watch():
+        nonlocal underruns
+        while True:
+            await RisingEdge(dut.clk)
+            underruns += int(dut.underrun.value)
+    w = cocotb.start_soon(watch())
+    n0 = int(dut.good_frames.value)
+    cycles = await mac_run(dut, 2000, 40000)
+    rate = 2000 / cycles
+    want = 8 * 32 / 33 / 84
+    assert rate > want * 0.99, f"{rate:.5f} frames/cycle, line rate {want:.5f}"
+    c = mac_counts(dut)
+    assert c["bad_frames"] == 0 and c["seq_gaps"] == 0 and c["tuser_frames"] == 0, c
+    assert c["good_frames"] == c["gen_frames"], c
+    w.cancel()
+    assert underruns == 0
+
+
+@cocotb.test(timeout_time=40, timeout_unit="ms")
+async def mac_sweep_and_jumbo(dut):
+    """Lengths 60..400 one by one, then 9000-byte frames, with and without
+    idle cycles between frames: all good and in sequence."""
+    if dut._name != "h_mac10g_test_loop":
+        return
+    await mac_setup(dut)
+    dut.sweep.value = 1
+    dut.len.value = 400
+    await mac_run(dut, 341 * 2, 200000)
+    dut.sweep.value = 0
+    dut.len.value = 9000
+    dut.ipg.value = 3
+    await mac_run(dut, 6, 60000)
+    c = mac_counts(dut)
+    assert c["bad_frames"] == 0 and c["seq_gaps"] == 0 and c["tuser_frames"] == 0, c
+    assert c["good_frames"] == c["gen_frames"], c
+
+
+@cocotb.test(timeout_time=20, timeout_unit="ms")
+async def mac_inject(dut):
+    """An injected payload bit error (sent with a good FCS) is one bad frame
+    at the checker, and clear resets the counters."""
+    if dut._name != "h_mac10g_test_loop":
+        return
+    await mac_setup(dut)
+    dut.len.value = 200
+    dut.enable.value = 1
+    await ClockCycles(dut.clk, 500)
+    dut.inj_err.value = 1
+    await ClockCycles(dut.clk, 1)
+    dut.inj_err.value = 0
+    await ClockCycles(dut.clk, 1500)
+    dut.enable.value = 0
+    await ClockCycles(dut.clk, 400)
+    c = mac_counts(dut)
+    assert c["bad_frames"] == 1 and c["tuser_frames"] == 0 and c["seq_gaps"] == 0, c
+    assert c["good_frames"] + 1 == c["gen_frames"], c
+    dut.clear.value = 1
+    await ClockCycles(dut.clk, 2)
+    dut.clear.value = 0
+    await ClockCycles(dut.clk, 2)
+    assert mac_counts(dut)["bad_frames"] == 0

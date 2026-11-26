@@ -7,14 +7,23 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
-- 10GBASE-R, work in progress (no MAC yet): a clean-room PCS
+- 10GBASE-R, work in progress: a clean-room PCS
   (`rtl/pcs10gbr*.v`, IEEE 802.3 clause 49: 64b/66b encoder and decoder with
   the receive state machine, scrambler, 66:64 gearboxes, block lock, BER
   monitor) with cocotb suites against a reference model, and a ZCU106 SFP0
   bring-up design (`fpga/zcu106/`, `build_zcu106_10g.tcl`) that drives the
   GTH primitives directly with its own reset sequencer, no AMD IP, and runs
   test frames through the PCS and the GT: block lock to a 10G switch and
-  error-free near-end PMA loopback at full rate on the board. Verilog only.
+  error-free near-end PMA loopback at full rate on the board. A 64-bit
+  transmit MAC (`rtl/eth_mac_10g_tx.v`: start in lane 0 or 4, padding, FCS
+  over 8 bytes per cycle with `rtl/crc32_d64.v`, deficit idle count for line
+  rate at every length; tuser sends a wrong FCS) and receive MAC
+  (`rtl/eth_mac_10g_rx.v`: lane-4 realignment, FCS check and strip; tuser on
+  a bad FCS, runt, oversize frame with VLAN and jumbo limits, error
+  character, frame cut short, or unqualified start) for the PCS's XGMII. On
+  the ZCU106 (MAC mode of the bring-up design, near-end PMA loopback) they
+  carry 64-byte frames at the full 14.88 Mpps and 1514 to 9000-byte frames
+  at line rate with every frame checked. Verilog only.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
   with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while

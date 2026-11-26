@@ -9,6 +9,7 @@ Needs the bitstream on the board and a hw_server on :3121.
     python fpga/zcu106/scripts/sfp10g_test.py status
     python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
     python fpga/zcu106/scripts/sfp10g_test.py loop --loopback none   # over the fibre
+    python fpga/zcu106/scripts/sfp10g_test.py mac --loopback pma --len 60 --seconds 10
 
 status   prints the GT / PCS state, clock meters and checker counters.
 loop     sets the loopback (none / pcs / pma), restarts the RX path, waits for
@@ -17,10 +18,17 @@ loop     sets the loopback (none / pcs / pma), restarts the RX path, waits for
          that every frame came back good, in sequence, with no lock loss.
          --inject adds one payload bit error, which must show up as exactly
          one bad frame. Exit status 0 on PASS.
+mac      the same through the 10G MAC (MAC mode): Ethernet frames of --len
+         bytes before the FCS (60..16000; --sweep steps 60..len frame by
+         frame), --ipg idle cycles between frames, every byte checked after
+         the RX MAC. Prints the frame rate against the line rate for that
+         length. --inject must give exactly one bad frame (sent with a good
+         FCS, caught by the payload compare).
 
-The test frames are not Ethernet frames (no FCS): toward a switch they are
-dropped as CRC errors, so run `loop` with traffic only in a loopback or over
-a fibre between two cages / boards running this design.
+The `loop` test frames are not Ethernet frames (no FCS); the `mac` frames
+are, but go to a made-up unicast address. Run traffic only in a loopback or
+over a fibre between two cages / boards running this design, not toward a
+switch.
 """
 
 import argparse
@@ -35,8 +43,8 @@ from fcapz.cli import _chain_shape_kwargs          # noqa: E402
 from fcapz.eio import EioController                 # noqa: E402
 from fcapz.transport import XilinxHwServerTransport  # noqa: E402
 
-MARKER, LAYOUT = 0x10F0, 1
-EIO_IN_W, EIO_OUT_W = 416, 64
+MARKER, LAYOUT = 0x10F0, 2
+EIO_IN_W, EIO_OUT_W = 640, 80
 
 # probe_in fields (name, lsb, width), see the EIO block in zcu106_10g_top.v
 FIELDS = [
@@ -52,8 +60,15 @@ FIELDS = [
     ("fm_rx", 296, 24),
     ("fm_ref", 328, 24),
     ("gen_frames", 352, 32),
-    ("layout", 392, 8),
-    ("marker", 400, 16),
+    ("mac_gen_frames", 384, 32),
+    ("mac_good", 416, 32),
+    ("mac_bad", 448, 32),
+    ("mac_tuser", 480, 32),
+    ("mac_seq_gaps", 512, 32),
+    ("tx_underruns", 544, 32),
+    ("rx_fcs_errs", 576, 32),
+    ("layout", 616, 8),
+    ("marker", 624, 16),
 ]
 STATUS_BITS = [
     "qpll0lock", "gtpowergood", "txuserrdy", "rxuserrdy",
@@ -68,6 +83,7 @@ STATUS_BITS = [
 LOOPBACK = {"none": 0, "pcs": 1, "pma": 2}
 B_TXPOL, B_RXPOL, B_LPM, B_TXRST, B_RXRST = 3, 4, 5, 6, 7
 B_GEN, B_INJ, B_CLEAR, B_GTRST, B_LASER_OFF = 8, 9, 10, 11, 12
+B_MAC, B_SWEEP = 13, 14
 WINDOW_S = (1 << 22) / 50e6     # frequency meter window
 
 
@@ -147,6 +163,10 @@ def show(f):
     print("  gen_frames %d good %d bad %d seq_gaps %d bad_words %d"
           % (f["gen_frames"], f["good_frames"], f["bad_frames"], f["seq_gaps"],
              f["bad_words"]))
+    print("  MAC: gen_frames %d good %d bad %d tuser %d seq_gaps %d "
+          "fcs_errs %d tx_underruns %d"
+          % (f["mac_gen_frames"], f["mac_good"], f["mac_bad"], f["mac_tuser"],
+             f["mac_seq_gaps"], f["rx_fcs_errs"], f["tx_underruns"]))
 
 
 def wait_lock(b, timeout=2.0):
@@ -165,6 +185,7 @@ def cmd_loop(b, args):
         raise SystemExit("--words must be 1..255")
     b.set_bit(B_GEN, False)
     time.sleep(0.01)
+    b.set_bit(B_MAC, False)
     b.set_field(0, 3, LOOPBACK[args.loopback])
     b.set_bit(B_LPM, args.lpm)
     b.set_field(16, 8, (words - 8) & 0xFF)
@@ -202,6 +223,61 @@ def cmd_loop(b, args):
     return 0 if ok else 1
 
 
+def cmd_mac(b, args):
+    if not 60 <= args.len <= 16000:
+        raise SystemExit("--len must be 60..16000")
+    b.set_bit(B_GEN, False)
+    time.sleep(0.01)
+    b.set_bit(B_MAC, True)
+    b.set_bit(B_SWEEP, args.sweep)
+    b.set_field(0, 3, LOOPBACK[args.loopback])
+    b.set_bit(B_LPM, args.lpm)
+    b.set_field(64, 16, args.len)
+    b.set_field(24, 8, args.ipg)
+    b.pulse(B_RXRST)
+    f = wait_lock(b)
+    if f is None:
+        show(b.read())
+        print("FAIL: no block lock")
+        return 1
+    time.sleep(0.01)
+    b.pulse(B_CLEAR)
+    g0 = b.read()["mac_gen_frames"]
+    b.set_bit(B_GEN, True)
+    if args.inject:
+        time.sleep(args.seconds / 2)
+        b.pulse(B_INJ)
+        time.sleep(args.seconds / 2)
+    else:
+        time.sleep(args.seconds)
+    b.set_bit(B_GEN, False)
+    time.sleep(0.05)
+    f = b.read()
+    show(f)
+    sent = (f["mac_gen_frames"] - g0) & 0xFFFFFFFF
+    # line bytes per frame: preamble/SFD 8 + frame + FCS 4 + 12 gap on average
+    avg_len = (60 + args.len) / 2 if args.sweep else args.len
+    pps = sent / args.seconds
+    line = 10e9 / ((avg_len + 4 + 8 + 12) * 8)
+    print("  sent %d frames in %.1f s: %.4f Mpps, %.3f Gb/s of frames with FCS; "
+          "line rate for %s bytes %.4f Mpps (%.2f%%)"
+          % (sent, args.seconds, pps / 1e6, pps * (avg_len + 4) * 8 / 1e9,
+             "%.0f" % avg_len, line / 1e6, 100 * pps / line))
+    want_bad = 1 if args.inject else 0
+    want_tuser = 0
+    if args.len > 9014 and not args.sweep:
+        # above the RX MAC's jumbo limit (9018 bytes with the FCS): every
+        # frame must come back flagged oversize
+        want_bad = want_tuser = sent
+        print("  frames over 9018 bytes: expecting every one flagged (oversize)")
+    ok = (f["mac_good"] + f["mac_bad"] == sent and f["mac_bad"] == want_bad
+          and f["mac_tuser"] == want_tuser and f["mac_seq_gaps"] == 0
+          and f["rx_fcs_errs"] == 0 and f["tx_underruns"] == 0
+          and f["lock_losses"] == 0 and f["block_lock"])
+    print("PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -217,6 +293,14 @@ def main():
     lp.add_argument("--ipg", type=int, default=0)
     lp.add_argument("--lpm", action="store_true", help="LPM receiver instead of DFE")
     lp.add_argument("--inject", action="store_true")
+    mp = sub.add_parser("mac")
+    mp.add_argument("--loopback", choices=sorted(LOOPBACK), default="pma")
+    mp.add_argument("--seconds", type=float, default=5.0)
+    mp.add_argument("--len", type=int, default=60)
+    mp.add_argument("--sweep", action="store_true")
+    mp.add_argument("--ipg", type=int, default=0)
+    mp.add_argument("--lpm", action="store_true", help="LPM receiver instead of DFE")
+    mp.add_argument("--inject", action="store_true")
     for name in ("restart-rx", "restart-tx", "gt-reset"):
         sub.add_parser(name)
     args = ap.parse_args()
@@ -228,6 +312,8 @@ def main():
             return 0
         if args.cmd == "loop":
             return cmd_loop(b, args)
+        if args.cmd == "mac":
+            return cmd_mac(b, args)
         bit = {"restart-rx": B_RXRST, "restart-tx": B_TXRST, "gt-reset": B_GTRST}[args.cmd]
         b.pulse(bit)
         time.sleep(0.2)
