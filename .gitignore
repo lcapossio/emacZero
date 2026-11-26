@@ -32,3 +32,4 @@ sim/parity/**/*.o
 .formal_*/
 .synthcmp_*/
 _vhdl_netlist_*.v
+sim/.xsim_vhdl_*/

@@ -336,21 +336,25 @@ Still open:
 
 ## 10GBASE-R bring-up (work in progress)
 
-A separate design, `zcu106_10g_top`, brings up 10GBASE-R (10.3125 Gb/s) on
-SFP cage 0 with no AMD IP: the clean-room PCS in `rtl/pcs10gbr*.v` and the
+A separate design, `zcu106_10g_top`, runs 10GBASE-R (10.3125 Gb/s) on SFP
+cages 0 and 1 with no AMD IP: the clean-room PCS in `rtl/pcs10gbr*.v` and the
 GTH transceiver primitives (`GTHE4_COMMON`, `GTHE4_CHANNEL`) instantiated
-directly, with their own reset sequencer. Two test paths share the PCS and
-the GT: raw XGMII test frames (`xgmii_test_gen.v`, `xgmii_test_chk.v`), and,
-in MAC mode, Ethernet frames through the 10G MAC system
-(`rtl/eth_mac_sys_10g.v`: TX and RX frame FIFOs across to the application
-clock, the 10G MACs, address filter, counters and CSRs) from a 64-bit AXIS
-generator and checker (`axis_test_gen64.v`, `axis_test_chk64.v`) on a
-200 MHz application clock.
+directly, with their own reset sequencer. The two ports are identical
+(`zcu106_10g_port.v`: a channel on the shared QPLL0, its clocks and resets,
+and `zcu106_10g_lane.v`). In each, two test paths share the PCS and the GT:
+raw XGMII test frames (`xgmii_test_gen.v`, `xgmii_test_chk.v`), and, in MAC
+mode, Ethernet frames through the 10G MAC system (`rtl/eth_mac_sys_10g.v`: TX
+and RX frame FIFOs across to the application clock, the 10G MACs, address
+filter, counters and CSRs) from a 64-bit AXIS generator and checker
+(`axis_test_gen64.v`, `axis_test_chk64.v`) on a 200 MHz application clock.
+Each port's checkers check what its receiver gets: its own frames in a
+near-end loopback, the other port's over a fibre from SFP0 to SFP1.
 
 ```
-xgmii_test_gen  ------------------------------> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFP0
+one port (zcu106_10g_lane), SFPn = SFP0 or SFP1:
+xgmii_test_gen  ------------------------------> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFPn
 axis_test_gen64 (clk_app) -> eth_mac_sys_10g -^
-SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
+SFPn -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
                              -> eth_mac_sys_10g -> axis_test_chk64 (clk_app)
 ```
 
@@ -374,16 +378,23 @@ SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
   power good, QPLL0 reset and lock, then TX and RX each: GT and PROGDIV
   reset release, user clock running, USERRDY, reset done. It does not wait
   for RXCDRLOCK (UG576 reserves it). Each step times out and retries.
+- Both channels (SFP0 on GTHE4_CHANNEL_X0Y10, SFP1 on X0Y11, both in Quad
+  225) run on the one QPLL0. Each has its own user clocks and its own reset
+  sequencer; only port 0's drives the QPLL0 reset, so a full reset of port
+  0 resets both, while a TX / RX restart or full reset of port 1 touches
+  port 1 only.
 - The application clock `clk_app` (200 MHz) comes from the 300 MHz system
   clock through an `MMCME4_BASE`, unrelated to the transceiver clocks, so
   both of `eth_mac_sys_10g`'s FIFOs really cross clock domains.
-- An fcapz EIO on USER3 sets the loopback (none, near-end PCS, near-end PMA),
-  polarities, DFE or LPM receiver, TX swing and emphasis, the test path (raw
-  XGMII or MAC mode), the generators and their frame length / gap, and
+- An fcapz EIO on USER3 has a control block and a status block for each
+  port. It sets the loopback (none, near-end PCS, near-end PMA), polarities,
+  DFE or LPM receiver, TX swing and emphasis, the test path (raw XGMII or
+  MAC mode), the generators and their frame length / gap, the laser and
   resets; it reads the GT and PCS state, block lock, BER counter, lock
   losses, both checkers' counters and frequency meters for TXUSRCLK2,
-  RXUSRCLK2 and the reference clock. It also reaches `eth_mac_sys_10g`'s
-  AXI4-Lite CSRs, one access at a time, through `axil_cmd_master.v`.
+  RXUSRCLK2 and the reference clock. It also reaches each port's
+  `eth_mac_sys_10g` AXI4-Lite CSRs, one access at a time, through
+  `axil_cmd_master.v`.
 
 Build, program and test (from the repository root):
 
@@ -394,6 +405,8 @@ vivado -mode batch -source fpga/zcu106/scripts/program_zcu106.tcl \
 python fpga/zcu106/scripts/sfp10g_test.py status
 python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py mac --loopback pma --len 60 --seconds 10
+python fpga/zcu106/scripts/sfp10g_test.py --sfp 1 mac --loopback pma --len 1514
+python fpga/zcu106/scripts/sfp10g_test.py dual --len 60 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py csr 0xC0      # read a MAC CSR
 ```
 
@@ -408,19 +421,45 @@ line rate for that length and the MAC's own counters, read over the CSR
 port, which must agree with the generator and checker. Frames longer than
 the RX MAC's 9018-byte jumbo limit must all be counted oversize and
 dropped (so `--sweep` and `--inject` take `--len` up to 9014). `csr` reads
-or writes one CSR (register map in `docs/registers.md`). Neither generator's
-traffic is meant for a switch (the raw frames have no FCS, the MAC frames
-go to a made-up address at line rate): use a loopback, or a fibre between
-two cages.
+or writes one CSR (register map in `docs/registers.md`). `--sfp` picks the
+port `loop`, `mac`, `csr` and the resets act on (default 0). `dual` needs a
+fibre from SFP0 to SFP1: it runs MAC mode on both ports at once, each sending
+`--len` byte frames (port 1 `--len1` if given; `--sweep` makes both sweep
+from 60) and checking every byte of the other's, and passes when every
+frame each way arrived good and in order and both MACs' counters agree
+(TX_FRAMES and TX_BYTES of one equal RX_FRAMES and RX_BYTES of the other, no
+error, drop or underrun). Neither generator's traffic is meant for a switch
+(the raw frames have no FCS, the MAC frames go to a made-up address at line
+rate): use a loopback, or a fibre between the two cages.
 
 Simulated: the reset sequencer against a model of the GT reset handshakes,
-and both test paths through PCS -> serial loopback -> PCS (the
-`gt10g_reset`, `xgmii_test_loop*` and `mac10g_test_loop` cocotb suites).
-The GT itself is only tested on the board. The design meets timing (WNS
-+0.793 ns).
+both test paths through PCS -> serial loopback -> PCS, and both ports' lanes
+with a "fibre" between them, traffic both ways at once (the `gt10g_reset`,
+`xgmii_test_loop*`, `mac10g_test_loop` and `mac10g_dual` cocotb suites; the
+last two simulate `zcu106_10g_lane` itself).
+The GT itself is only tested on the board. The two-port design meets
+timing (WNS +0.676 ns, WHS +0.004 ns).
 
-Tested on the board (2026-11-26, 10GBASE-SR SFP+ in cage 0, fibre to a
-switch):
+Tested on the board, two ports (2026-11-27, 10GBASE-SR SFP+ in cages 0
+and 1, one duplex fibre between them), every run checked frame by frame by
+the receiving port's checker and against both MACs' counters (TX_FRAMES =
+far RX_FRAMES = frames sent, TX_BYTES = far RX_BYTES, every error, drop and
+underrun counter 0, no lock loss):
+
+- `dual --len 60`: 149,920,681 frames SFP0 -> SFP1 and 149,561,963 frames
+  SFP1 -> SFP0 in 10 s, both at line rate (14.88 Mpps), at the same time.
+- `dual --sweep --len 1514 --len1 9000`: SFP0 sweeps 60..1514 at 99.9 % of
+  line rate while SFP1 sweeps 60..9000 at 99.9 %.
+- `dual --len 9000`: 9.98 Gb/s of frames each way; `--len 9014 --len1 60`:
+  9014-byte frames one way, 64-byte frames at line rate the other.
+- `dual --len 1514 --inject`: the injected error is exactly one bad frame
+  at SFP1, none at SFP0. `dual --len 60 --lpm` (LPM receivers): line rate
+  both ways, all good.
+- Each port alone, near-end PMA loopback: raw test frames at full rate and
+  MAC mode at line rate, 64 to 9000 bytes.
+
+Tested on the board, one port (2026-11-26, 10GBASE-SR SFP+ in cage 0,
+fibre to a switch):
 
 - Normal mode: QPLL0 lock, both GT paths up, PCS block lock to the switch
   with a BER count of 0 and no lock loss; RXUSRCLK2 reads 161.1363 MHz
@@ -496,7 +535,9 @@ On the test board the loopback build's frequency meter read userclk2 at
 | `scripts/sfp_lb_test.py` | Run the loopback tests through the fcapz EIO |
 | `scripts/sfp_perf_test.py` | Host throughput test against the demo's iperf2 sink and UDP blast |
 | `scripts/sfp_counters.py` | Read or clear the MAC statistics and PCS/PMA event counters over JTAG |
-| `rtl/zcu106_10g_top.v` | 10GBASE-R bring-up top: GT, reset, PCS, test traffic, fcapz EIO |
+| `rtl/zcu106_10g_top.v` | 10GBASE-R top: clocks, QPLL0, two ports, fcapz EIO, LEDs |
+| `rtl/zcu106_10g_port.v` | One SFP port: GT channel, user clocks, reset sequencer, lane, EIO status block |
+| `rtl/zcu106_10g_lane.v` | One port short of the GT: PCS, raw XGMII and MAC-mode test paths, CSR access |
 | `rtl/gthe4_common_10g.v` | `GTHE4_COMMON` with QPLL0 at 10.3125 GHz from 156.25 MHz |
 | `rtl/gthe4_channel_10g.v` | `GTHE4_CHANNEL` in 10.3125 Gb/s raw mode, 64-bit data |
 | `rtl/gt10g_reset.v` | GT reset sequencer (QPLL0, TX, RX) |
@@ -505,9 +546,9 @@ On the test board the loopback build's frequency meter read userclk2 at
 | `rtl/axis_test_gen64.v` | 64-bit AXIS Ethernet test frame source for the 10G MAC (length sweep, error inject) |
 | `rtl/axis_test_chk64.v` | Checker for those frames after the RX MAC: every byte, length, sequence, tuser |
 | `rtl/axil_cmd_master.v` | One AXI4-Lite access per toggle of a request bit, for CSRs reached from the EIO |
-| `constraints/zcu106_10g.xdc` | Pins, GT placement and clocks of the 10G design |
+| `constraints/zcu106_10g.xdc` | Pins, GT placement (SFP0, SFP1) and clocks of the 10G design |
 | `scripts/build_zcu106_10g.tcl` | Non-project Vivado build of the 10G design (no IP) |
-| `scripts/sfp10g_test.py` | Status and loopback test of the 10G design over the fcapz EIO |
+| `scripts/sfp10g_test.py` | Status, loopback and SFP0 <-> SFP1 tests of the 10G design over the fcapz EIO |
 
 The ARP responder and TX arbiter are reused from `fpga/arty_a7/rtl/`.
 The I2C sequence is simulated by `ZCU106-I2C-INIT` in `build_and_test.py`.

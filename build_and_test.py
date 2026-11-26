@@ -264,6 +264,7 @@ LINT_SOURCES = [
     "fpga/zcu106/rtl/axis_test_gen64.v",
     "fpga/zcu106/rtl/axis_test_chk64.v",
     "fpga/zcu106/rtl/axil_cmd_master.v",
+    "fpga/zcu106/rtl/zcu106_10g_lane.v",
 ]
 
 LINT_SUPPRESS = [

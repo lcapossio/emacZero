@@ -11,13 +11,20 @@
                        length class arrives good and in sequence; injected
                        payload and line errors are counted
   xgmii_test_loop_o63  the same at the largest bit offset
-  mac10g_test_loop     axis_test_gen64 (200 MHz app clock) -> eth_mac_sys_10g
-                       -> pcs10gbr -> line loopback -> pcs10gbr ->
-                       eth_mac_sys_10g -> axis_test_chk64, with the board's
-                       settings: minimum frames at line rate through both
-                       clock crossings, a length sweep, jumbo frames, an
-                       injected payload error counted once, and the MAC's
+  mac10g_test_loop     one port of the board design (zcu106_10g_lane) in
+                       MAC mode with a line loopback: axis_test_gen64 (200
+                       MHz app clock) -> eth_mac_sys_10g -> pcs10gbr ->
+                       loopback -> pcs10gbr -> eth_mac_sys_10g ->
+                       axis_test_chk64: minimum frames at line rate through
+                       both clock crossings, a length sweep, jumbo frames,
+                       an injected payload error counted once, and the MAC's
                        counters read through axil_cmd_master
+  mac10g_dual          both ports (two zcu106_10g_lane) with a fibre between
+                       them, each direction on its own clock: traffic both
+                       ways at once at line rate, every length 64..1518
+                       with the FCS one way while jumbo frames go the other,
+                       each port's checker and MAC counters against the
+                       other port's generator
 """
 import random
 
@@ -55,11 +62,34 @@ SUITES = {
                     "rtl/pcs10gbr_scrambler.v", "rtl/pcs10gbr_gearbox_tx.v",
                     "rtl/pcs10gbr_gearbox_rx.v", "rtl/pcs10gbr_block_lock.v",
                     "rtl/pcs10gbr_ber_mon.v", "rtl/pcs10gbr.v",
+                    "fpga/zcu106/rtl/xgmii_test_gen.v",
+                    "fpga/zcu106/rtl/xgmii_test_chk.v",
                     "fpga/zcu106/rtl/axis_test_gen64.v",
                     "fpga/zcu106/rtl/axis_test_chk64.v",
                     "fpga/zcu106/rtl/axil_cmd_master.v",
+                    "fpga/zcu106/rtl/zcu106_10g_lane.v",
                     "sim/cocotb/hdl/h_mac10g_test_loop.v"],
         "params": {"OFFSET": 23, "BER_TIMER_CYCLES": 4000},
+        "skip_vhdl": "ZCU106 10G bring-up logic is Verilog only",
+    },
+    "mac10g_dual": {
+        "toplevel": "h_mac10g_dual",
+        "sources": ["rtl/crc32_d64.v", "rtl/async_fifo.v",
+                    "rtl/axis_async_frame_fifo.v", "rtl/cdc_event_count.v",
+                    "rtl/eth_mac_10g_tx.v", "rtl/eth_mac_10g_rx.v",
+                    "rtl/eth_mac_sys_10g.v",
+                    "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
+                    "rtl/pcs10gbr_scrambler.v", "rtl/pcs10gbr_gearbox_tx.v",
+                    "rtl/pcs10gbr_gearbox_rx.v", "rtl/pcs10gbr_block_lock.v",
+                    "rtl/pcs10gbr_ber_mon.v", "rtl/pcs10gbr.v",
+                    "fpga/zcu106/rtl/xgmii_test_gen.v",
+                    "fpga/zcu106/rtl/xgmii_test_chk.v",
+                    "fpga/zcu106/rtl/axis_test_gen64.v",
+                    "fpga/zcu106/rtl/axis_test_chk64.v",
+                    "fpga/zcu106/rtl/axil_cmd_master.v",
+                    "fpga/zcu106/rtl/zcu106_10g_lane.v",
+                    "sim/cocotb/hdl/h_mac10g_dual.v"],
+        "params": {"OFFSET01": 23, "OFFSET10": 41, "BER_TIMER_CYCLES": 4000},
         "skip_vhdl": "ZCU106 10G bring-up logic is Verilog only",
     },
     "xgmii_test_loop_o63": {
@@ -522,5 +552,202 @@ async def mac_inject(dut):
     assert c["bad_frames"] == 1 and c["tuser_frames"] == 0 and c["seq_gaps"] == 0, c
     assert c["good_frames"] + 1 == c["gen_frames"], c
     await app_pulse(dut, dut.clear)
-    await ClockCycles(dut.app_clk, 2)
+    await ClockCycles(dut.app_clk, 6)
     assert mac_counts(dut)["bad_frames"] == 0
+
+
+# ---------------------------------------------------------------------------
+# mac10g_dual
+# ---------------------------------------------------------------------------
+# EIO control word bits (zcu106_10g_top.v)
+B_GEN, B_INJ, B_CLEAR, B_MAC, B_SWEEP, B_CSR_GO, B_CSR_WRITE = 8, 9, 10, 13, 14, 120, 121
+
+
+class DualPort:
+    """One port's EIO control word and counters in h_mac10g_dual."""
+
+    def __init__(self, dut, p):
+        self.dut, self.p = dut, p
+        self.ctrl_sig = getattr(dut, f"ctrl{p}")
+        self.word = 1 << B_MAC
+
+    def sig(self, name):
+        return getattr(self.dut, f"{name}{self.p}")
+
+    def put(self):
+        self.ctrl_sig.value = self.word
+
+    def set(self, bit, on):
+        self.word = (self.word | (1 << bit)) if on else (self.word & ~(1 << bit))
+        self.put()
+
+    def field(self, lsb, width, value):
+        m = ((1 << width) - 1) << lsb
+        self.word = (self.word & ~m) | ((value << lsb) & m)
+        self.put()
+
+    def counts(self):
+        return {k: int(self.sig(k).value) for k in ("gen", "good", "bad", "tuser", "gaps")}
+
+    async def csr(self, addr, data=None):
+        d = self.dut
+        await FallingEdge(d.app_clk)
+        self.field(80, 8, addr)
+        self.field(88, 32, data or 0)
+        self.set(B_CSR_WRITE, data is not None)
+        await FallingEdge(d.app_clk)
+        go = 1 - ((self.word >> B_CSR_GO) & 1)
+        self.set(B_CSR_GO, go)
+        for _ in range(200):
+            await RisingEdge(d.app_clk)
+            if int(self.sig("csr_ack").value) == go:
+                break
+        assert int(self.sig("csr_ack").value) == go, "CSR access never finished"
+        return int(self.sig("csr_rdata").value)
+
+    async def csr64(self, addr):
+        lo = await self.csr(addr)
+        return lo | (await self.csr(addr + 4)) << 32
+
+
+async def dual_setup(dut):
+    cocotb.start_soon(Clock(dut.clk_a, 6.2, unit="ns").start())
+    await ClockCycles(dut.clk_a, 1)
+    await FallingEdge(dut.clk_a)     # clk_b half a cycle behind clk_a
+    cocotb.start_soon(Clock(dut.clk_b, 6.2, unit="ns").start())
+    cocotb.start_soon(Clock(dut.app_clk, 5.0, unit="ns").start())
+    ports = [DualPort(dut, 0), DualPort(dut, 1)]
+    dut.rst_n.value = 0
+    dut.app_rst_n.value = 0
+    for q in ports:
+        q.field(64, 16, 60)
+        q.put()
+    await ClockCycles(dut.clk_a, 5)
+    dut.rst_n.value = 1
+    dut.app_rst_n.value = 1
+    for _ in range(4000):
+        await RisingEdge(dut.clk_a)
+        if int(dut.block_lock0.value) and int(dut.block_lock1.value):
+            break
+    assert int(dut.block_lock0.value) and int(dut.block_lock1.value), "no block lock"
+    await ClockCycles(dut.clk_a, 20)
+    return ports
+
+
+async def dual_drain(dut, ports, limit=400000):
+    """Until each checker has seen every frame the other port generated."""
+    def done():
+        a, b = ports[0].counts(), ports[1].counts()
+        return (b["good"] + b["bad"] + b["gaps"] >= a["gen"] and
+                a["good"] + a["bad"] + a["gaps"] >= b["gen"])
+    for _ in range(limit // 100):
+        await ClockCycles(dut.clk_a, 100)
+        if done():
+            break
+    await ClockCycles(dut.clk_a, 400)
+
+
+async def dual_check(ports):
+    """Each direction: every frame good and in order at the far checker, and
+    both MACs' counters agree."""
+    for tx, rx in ((ports[0], ports[1]), (ports[1], ports[0])):
+        t, r = tx.counts(), rx.counts()
+        assert r["bad"] == 0 and r["gaps"] == 0 and r["tuser"] == 0, (tx.p, r)
+        assert r["good"] == t["gen"], (tx.p, t, r)
+        assert await tx.csr64(0xB0) == t["gen"], "TX_FRAMES"
+        assert await rx.csr64(0xC0) == t["gen"], "RX_FRAMES"
+        assert await tx.csr64(0xB8) == await rx.csr64(0xC8), "TX_BYTES != RX_BYTES"
+        # every error, drop and underrun counter, both ends
+        for a in (0xD0, 0xD4, 0xD8, 0xDC, 0xE8, 0xEC, 0xF0, 0xF4, 0xF8):
+            assert await rx.csr(a) == 0 and await tx.csr(a) == 0, f"counter 0x{a:02X}"
+
+
+@cocotb.test(timeout_time=30, timeout_unit="ms")
+async def dual_line_rate(dut):
+    """64-byte frames (60 + FCS) both ways at once, back to back: each
+    direction at line rate, all good, every frame accounted for by both
+    checkers and all four MAC counters."""
+    if dut._name != "h_mac10g_dual":
+        return
+    ports = await dual_setup(dut)
+    for q in ports:
+        q.set(B_GEN, True)
+    n, cycles = 1500, 0
+    start = [q.counts()["good"] for q in ports]
+    for _ in range(40000):
+        await RisingEdge(dut.clk_a)
+        cycles += 1
+        if all(q.counts()["good"] - s0 >= n for q, s0 in zip(ports, start)):
+            break
+    for q in ports:
+        q.set(B_GEN, False)
+    want = 8 * 32 / 33 / 84
+    for q, s0 in zip(ports, start):
+        rate = (q.counts()["good"] - s0) / cycles
+        dut._log.info("port %d receives %.5f frames/cycle, line rate %.5f",
+                      q.p, rate, want)
+        assert rate > want * 0.99, f"port {q.p}: {rate:.5f} frames/cycle"
+    await dual_drain(dut, ports)
+    await dual_check(ports)
+
+
+@cocotb.test(timeout_time=200, timeout_unit="ms")
+async def dual_lengths(dut):
+    """Port 0 sweeps every length 60..1514 (64..1518 with the FCS) while port
+    1 sends 9014-byte jumbo frames back at it; then port 1 sweeps 60..300
+    while port 0 sends 9000-byte frames with idle cycles between them."""
+    if dut._name != "h_mac10g_dual":
+        return
+    ports = await dual_setup(dut)
+    p0, p1 = ports
+    p0.set(B_SWEEP, True)
+    p0.field(64, 16, 1514)
+    p1.field(64, 16, 9014)
+    for q in ports:
+        q.set(B_GEN, True)
+    while p1.counts()["good"] < 1455:
+        await ClockCycles(dut.clk_a, 1000)
+    for q in ports:
+        q.set(B_GEN, False)
+    await dual_drain(dut, ports)
+    c0, c1 = p0.counts(), p1.counts()
+    dut._log.info("port 0 sent %d swept frames, port 1 %d jumbo", c0["gen"], c1["gen"])
+    assert c1["good"] >= 1455 and c0["good"] > 0
+    await dual_check(ports)
+    # the other way round
+    p0.set(B_SWEEP, False)
+    p0.field(64, 16, 9000)
+    p0.field(24, 8, 5)
+    p1.set(B_SWEEP, True)
+    p1.field(64, 16, 300)
+    for q in ports:
+        q.set(B_GEN, True)
+    while p0.counts()["good"] - c0["good"] < 2 * 241:
+        await ClockCycles(dut.clk_a, 1000)
+    for q in ports:
+        q.set(B_GEN, False)
+    await dual_drain(dut, ports)
+    await dual_check(ports)
+
+
+@cocotb.test(timeout_time=20, timeout_unit="ms")
+async def dual_inject(dut):
+    """An error injected at port 0 is one bad frame at port 1 only."""
+    if dut._name != "h_mac10g_dual":
+        return
+    ports = await dual_setup(dut)
+    for q in ports:
+        q.field(64, 16, 200)
+        q.set(B_GEN, True)
+    await ClockCycles(dut.clk_a, 500)
+    await FallingEdge(dut.app_clk)
+    ports[0].set(B_INJ, True)
+    await ClockCycles(dut.app_clk, 4)
+    ports[0].set(B_INJ, False)
+    await ClockCycles(dut.clk_a, 1500)
+    for q in ports:
+        q.set(B_GEN, False)
+    await dual_drain(dut, ports)
+    c0, c1 = ports[0].counts(), ports[1].counts()
+    assert c1["bad"] == 1 and c1["good"] + 1 == c0["gen"] and c1["gaps"] == 0, c1
+    assert c0["bad"] == 0 and c0["good"] == c1["gen"], c0

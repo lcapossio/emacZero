@@ -364,12 +364,22 @@ Verilog only for now (the suites skip the VHDL run).
   delivered unflagged, and no counter jumps. An always-open filter, a TX
   FIFO that publishes words before their frame is whole, or an RX FIFO
   reset on one side only, each fails it.
-- `mac10g_test_loop`: the ZCU106 MAC-mode test path, `axis_test_gen64` (200
-  MHz) -> `eth_mac_sys_10g` -> PCS -> line loopback -> PCS ->
+- `mac10g_test_loop`: the ZCU106 MAC-mode test path through the board's own
+  port logic (`zcu106_10g_lane`, everything but the GT), `axis_test_gen64`
+  (200 MHz) -> `eth_mac_sys_10g` -> PCS -> line loopback -> PCS ->
   `eth_mac_sys_10g` -> `axis_test_chk64`, with the board's settings:
   minimum frames at line rate, a 60..400 length sweep, 9000-byte frames, an
   injected payload error counted once, and the MAC's counters read and
   cleared through `axil_cmd_master` as the board's EIO does.
+- `mac10g_dual`: two `zcu106_10g_lane`s crossed, each one's line output into
+  the other's input (with different bit offsets, and each direction on its
+  own transceiver clock), as SFP0 and SFP1 with a fibre between them:
+  minimum frames at line rate both ways at once; port 0 sweeping 60..1514
+  while port 1 sends 9014-byte frames, then port 0 sending 9000-byte frames
+  with 5 idle cycles between them while port 1 sweeps 60..300; and an
+  injected error counted only on the port that received it. Each direction
+  passes when every frame arrived good and in order and the sender's
+  TX_FRAMES / TX_BYTES equal the receiver's RX_FRAMES / RX_BYTES.
 
 ## Reset defaults
 

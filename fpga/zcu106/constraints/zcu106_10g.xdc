@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 #
 # =============================================================================
-# zcu106_10g.xdc - 10GBASE-R bring-up (zcu106_10g_top) on SFP cage 0 of the
+# zcu106_10g.xdc - 10GBASE-R (zcu106_10g_top) on SFP cages 0 and 1 of the
 # AMD ZCU106. Pins as zcu106.xdc / refclk_si570.xdc (Vivado board files).
 # =============================================================================
 
@@ -27,17 +27,28 @@ create_clock -name sfp_refclk -period 6.400 [get_ports SFP_REFCLK_P]
 set_property LOC GTHE4_COMMON_X0Y3 [get_cells -hierarchical -filter {REF_NAME == IBUFDS_GTE4}]
 set_property BEL GTHE4_COMMON.IBUFDS1_GTHE4 [get_cells -hierarchical -filter {REF_NAME == IBUFDS_GTE4}]
 
-# ---- SFP cage 0 serial lanes: GTHE4_CHANNEL_X0Y10, Quad 225 ----
+# ---- SFP cage 0 serial lanes: GTHE4_CHANNEL_X0Y10, Quad 225 (port 0) ----
 set_property PACKAGE_PIN Y4  [get_ports SFP0_TX_P]
 set_property PACKAGE_PIN Y3  [get_ports SFP0_TX_N]
 set_property PACKAGE_PIN AA2 [get_ports SFP0_RX_P]
 set_property PACKAGE_PIN AA1 [get_ports SFP0_RX_N]
-set_property LOC GTHE4_CHANNEL_X0Y10 [get_cells -hierarchical -filter {REF_NAME == GTHE4_CHANNEL}]
-set_property LOC GTHE4_COMMON_X0Y2   [get_cells -hierarchical -filter {REF_NAME == GTHE4_COMMON}]
+set_property LOC GTHE4_CHANNEL_X0Y10 \
+    [get_cells -hierarchical -filter {REF_NAME == GTHE4_CHANNEL && NAME =~ u_port0/*}]
 
-# ---- SFP0 TX_DISABLE (high = laser on; jumper J16 also forces it on) ----
+# ---- SFP cage 1 serial lanes: GTHE4_CHANNEL_X0Y11, Quad 225 (port 1) ----
+set_property PACKAGE_PIN W6 [get_ports SFP1_TX_P]
+set_property PACKAGE_PIN W5 [get_ports SFP1_TX_N]
+set_property PACKAGE_PIN W2 [get_ports SFP1_RX_P]
+set_property PACKAGE_PIN W1 [get_ports SFP1_RX_N]
+set_property LOC GTHE4_CHANNEL_X0Y11 \
+    [get_cells -hierarchical -filter {REF_NAME == GTHE4_CHANNEL && NAME =~ u_port1/*}]
+
+set_property LOC GTHE4_COMMON_X0Y2 [get_cells -hierarchical -filter {REF_NAME == GTHE4_COMMON}]
+
+# ---- SFP TX_DISABLE (high = laser on; jumper J16 also forces SFP0's on) ----
 set_property PACKAGE_PIN AE22 [get_ports SFP0_TX_DISABLE_B]
-set_property IOSTANDARD LVCMOS12 [get_ports SFP0_TX_DISABLE_B]
+set_property PACKAGE_PIN AF20 [get_ports SFP1_TX_DISABLE_B]
+set_property IOSTANDARD LVCMOS12 [get_ports {SFP0_TX_DISABLE_B SFP1_TX_DISABLE_B}]
 
 # ---- LEDs ----
 set_property PACKAGE_PIN AL11 [get_ports {LED[0]}]
@@ -55,11 +66,16 @@ set_property IOSTANDARD LVCMOS12 [get_ports {LED[*]}]
 # instantiated GTHE4_CHANNEL, so define both: 322.27 MHz (10.3125 Gb/s / 32,
 # PROGDIV 16 of the 5.15625 GHz QPLL0 clock). The BUFG_GT /1 and /2 outputs
 # (TX/RXUSRCLK, TX/RXUSRCLK2) are generated from them. TX (from the local
-# refclk) and RX (recovered) are plesiochronous: unrelated groups below.
-create_clock -name txoutclk -period 3.103 \
-    [get_pins -hierarchical -filter {NAME =~ *u_gthe4_channel/TXOUTCLK}]
-create_clock -name rxoutclk -period 3.103 \
-    [get_pins -hierarchical -filter {NAME =~ *u_gthe4_channel/RXOUTCLK}]
+# refclk) and RX (recovered) are plesiochronous: unrelated groups below, one
+# per port and direction.
+create_clock -name txoutclk0 -period 3.103 \
+    [get_pins -hierarchical -filter {NAME =~ u_port0/*u_gthe4_channel/TXOUTCLK}]
+create_clock -name rxoutclk0 -period 3.103 \
+    [get_pins -hierarchical -filter {NAME =~ u_port0/*u_gthe4_channel/RXOUTCLK}]
+create_clock -name txoutclk1 -period 3.103 \
+    [get_pins -hierarchical -filter {NAME =~ u_port1/*u_gthe4_channel/TXOUTCLK}]
+create_clock -name rxoutclk1 -period 3.103 \
+    [get_pins -hierarchical -filter {NAME =~ u_port1/*u_gthe4_channel/RXOUTCLK}]
 
 # ---- Clock domains ----
 # The 50 MHz control clock, the refclk meter clock, the TX user clocks, the
@@ -75,10 +91,12 @@ create_waiver -type METHODOLOGY -id TIMING-2 -user emacZero \
 set_clock_groups -asynchronous \
     -group [get_clocks -include_generated_clocks sysclk_300] \
     -group [get_clocks -include_generated_clocks sfp_refclk] \
-    -group [get_clocks -include_generated_clocks txoutclk] \
-    -group [get_clocks -include_generated_clocks rxoutclk] \
+    -group [get_clocks -include_generated_clocks txoutclk0] \
+    -group [get_clocks -include_generated_clocks rxoutclk0] \
+    -group [get_clocks -include_generated_clocks txoutclk1] \
+    -group [get_clocks -include_generated_clocks rxoutclk1] \
     -group [get_clocks tck_bscan]
 
 # Static / slow board inputs and LED outputs
 set_false_path -from [get_ports CPU_RESET]
-set_false_path -to   [get_ports {LED[*] SFP0_TX_DISABLE_B}]
+set_false_path -to   [get_ports {LED[*] SFP0_TX_DISABLE_B SFP1_TX_DISABLE_B}]

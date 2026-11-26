@@ -2,10 +2,10 @@
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
 #
 # =============================================================================
-# build_zcu106_10g.tcl - Vivado non-project build of the 10GBASE-R bring-up
-# design (zcu106_10g_top, with the eth_mac_sys_10g test path) for the AMD ZCU106, SFP
-# cage 0. No IP is generated: the GTH transceiver primitives are instantiated
-# directly.
+# build_zcu106_10g.tcl - Vivado non-project build of the 10GBASE-R design
+# (zcu106_10g_top, with the eth_mac_sys_10g test path) for the AMD ZCU106, SFP
+# cages 0 and 1. No IP is generated: the GTH transceiver primitives are
+# instantiated directly.
 # Usage: vivado -mode batch -source fpga/zcu106/scripts/build_zcu106_10g.tcl
 # Output goes to build_zcu106_10g/. Run from the repository root directory.
 # =============================================================================
@@ -46,6 +46,8 @@ read_verilog [list \
     fpga/zcu106/rtl/axis_test_gen64.v \
     fpga/zcu106/rtl/axis_test_chk64.v \
     fpga/zcu106/rtl/axil_cmd_master.v \
+    fpga/zcu106/rtl/zcu106_10g_lane.v \
+    fpga/zcu106/rtl/zcu106_10g_port.v \
     fpga/zcu106/rtl/zcu106_10g_top.v \
     fcapz/rtl/jtag_tap/jtag_tap_xilinx7.v \
     fcapz/rtl/jtag_reg_iface.v \

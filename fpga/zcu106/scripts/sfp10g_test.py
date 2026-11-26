@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Leonardo Capossio - bard0 design
-"""sfp10g_test.py - Drive and read the ZCU106 10GBASE-R bring-up design
+"""sfp10g_test.py - Drive and read the ZCU106 10GBASE-R design
 (zcu106_10g_top, build_zcu106_10g.tcl) over its fcapz EIO on USER3.
 
-Needs the bitstream on the board and a hw_server on :3121.
+Needs the bitstream on the board and a hw_server on :3121. The design has two
+ports, SFP0 and SFP1; --sfp picks the one loop, mac, csr and the resets act on
+(default 0).
 
     python fpga/zcu106/scripts/sfp10g_test.py status
     python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
-    python fpga/zcu106/scripts/sfp10g_test.py loop --loopback none   # over the fibre
     python fpga/zcu106/scripts/sfp10g_test.py mac --loopback pma --len 60 --seconds 10
+    python fpga/zcu106/scripts/sfp10g_test.py --sfp 1 mac --loopback pma --len 1514
+    python fpga/zcu106/scripts/sfp10g_test.py dual --len 60 --seconds 10
+    python fpga/zcu106/scripts/sfp10g_test.py dual --sweep --len 1514 --len1 9000
     python fpga/zcu106/scripts/sfp10g_test.py csr 0xC0          # read a MAC CSR
     python fpga/zcu106/scripts/sfp10g_test.py csr 0x04 0x43     # write one
 
-status   prints the GT / PCS state, clock meters and checker counters.
+status   prints both ports' GT / PCS state, clock meters and checker counters.
 loop     sets the loopback (none / pcs / pma), restarts the RX path, waits for
          block lock, then runs the generator for --seconds with --words words
          per frame (header + payload, 1..255) and --ipg idle words, and checks
@@ -29,6 +33,14 @@ mac      the same through the 10G MAC system eth_mac_sys_10g (MAC mode):
          exactly one bad frame (sent with a good FCS, caught by the payload
          compare). Above 9014 bytes every frame must be counted oversize and
          dropped by the MAC; --sweep and --inject need --len <= 9014.
+dual     MAC mode on both ports at once over a fibre from SFP0 to SFP1 (no
+         loopback): each port sends --len byte frames (port 1 --len1 if
+         given; --sweep makes both sweep 60..their length) and checks every
+         byte of the other's. Passes when every frame sent each way arrived
+         good and in order and both MACs' counters agree (TX_FRAMES and
+         TX_BYTES of one = RX_FRAMES and RX_BYTES of the other, no error,
+         drop or underrun). --inject puts one bad frame in port 0's stream,
+         which port 1 must count once. Lengths up to 9014.
 csr      reads (one argument) or writes (two) an eth_mac_sys_10g CSR; see
          the register map in rtl/eth_mac_sys_10g.v.
 
@@ -47,13 +59,15 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 sys.path.insert(0, os.path.join(REPO, "fcapz", "host"))
 
 from fcapz.cli import _chain_shape_kwargs          # noqa: E402
-from fcapz.eio import EioController                 # noqa: E402
+from fcapz.eio import EioController, _ADDR_IN_BASE  # noqa: E402
 from fcapz.transport import XilinxHwServerTransport  # noqa: E402
 
-MARKER, LAYOUT = 0x10F0, 3
-EIO_IN_W, EIO_OUT_W = 640, 128
+MARKER, LAYOUT = 0x10F0, 4
+PORTS = 2
+PORT_IN_W, PORT_OUT_W = 640, 128     # per port
+EIO_IN_W, EIO_OUT_W = PORTS * PORT_IN_W, PORTS * PORT_OUT_W
 
-# probe_in fields (name, lsb, width), see the EIO block in zcu106_10g_top.v
+# probe_in fields of one port (name, lsb, width), see zcu106_10g_port.v
 FIELDS = [
     ("status", 0, 32),
     ("good_frames", 32, 32),
@@ -74,9 +88,19 @@ FIELDS = [
     ("mac_seq_gaps", 512, 32),
     ("csr_ack", 544, 1),
     ("csr_rdata", 576, 32),
+    ("port", 608, 8),
     ("layout", 616, 8),
     ("marker", 624, 16),
 ]
+FIELD = {n: (lsb, w) for n, lsb, w in FIELDS}
+# The frequency meters change every window, so two whole reads in a row
+# rarely match while they are in the comparison: leave them out of it.
+METER_MASK = 0
+for _q in range(PORTS):
+    for _n in ("fm_tx", "fm_rx", "fm_ref"):
+        _lsb, _w = FIELD[_n]
+        METER_MASK |= ((1 << _w) - 1) << (_q * PORT_IN_W + _lsb)
+STABLE_MASK = ((1 << EIO_IN_W) - 1) & ~METER_MASK
 STATUS_BITS = [
     "qpll0lock", "gtpowergood", "txuserrdy", "rxuserrdy",
     "rx_done", "tx_done", "rxresetdone", "txresetdone",
@@ -86,7 +110,7 @@ STATUS_BITS = [
     "hi_ber", "rxcdrlock", "good_seen", "bad_seen",
 ]
 
-# probe_out bits
+# probe_out bits of one port
 LOOPBACK = {"none": 0, "pcs": 1, "pma": 2}
 B_TXPOL, B_RXPOL, B_LPM, B_TXRST, B_RXRST = 3, 4, 5, 6, 7
 B_GEN, B_INJ, B_CLEAR, B_GTRST, B_LASER_OFF = 8, 9, 10, 11, 12
@@ -114,30 +138,51 @@ def transport(args):
 
 
 class Board:
+    """The EIO; bit and field numbers are those of one port (self.sfp)."""
+
     def __init__(self, args):
+        self.sfp = args.sfp
         self.eio = EioController(transport(args), chain=3)
         self.eio.connect()
         if (self.eio.in_w, self.eio.out_w) != (EIO_IN_W, EIO_OUT_W):
             raise SystemExit("EIO on USER3 is %d in / %d out, expected %d / %d: "
-                             "not the 10G bring-up build"
+                             "not the 10G build"
                              % (self.eio.in_w, self.eio.out_w, EIO_IN_W, EIO_OUT_W))
-        f = self.read()
-        if (f["marker"], f["layout"]) != (MARKER, LAYOUT):
-            raise SystemExit("EIO marker 0x%04x layout %d, expected 0x%04x layout %d"
-                             % (f["marker"], f["layout"], MARKER, LAYOUT))
+        for q, f in enumerate(self.read_all()):
+            if (f["marker"], f["layout"], f["port"]) != (MARKER, LAYOUT, q):
+                raise SystemExit("EIO port %d: marker 0x%04x layout %d port %d, "
+                                 "expected 0x%04x layout %d"
+                                 % (q, f["marker"], f["layout"], f["port"],
+                                    MARKER, LAYOUT))
         self.ctrl = self.eio.read_outputs()
 
     def close(self):
         self.eio.close()
 
-    def read(self):
-        # counters cross into TCK unsynchronized: take two equal reads
+    def read(self, sfp=None):
+        return self.read_all()[self.sfp if sfp is None else sfp]
+
+    def read_all(self):
+        # counters cross into TCK unsynchronized: take two equal reads (the
+        # meters aside); every read is one JTAG round trip per 32-bit word
         prev = None
         for _ in range(20):
             raw = self.eio.read_inputs()
-            if raw == prev:
+            if prev is not None and (raw ^ prev) & STABLE_MASK == 0:
                 break
             prev = raw
+        return [self._fields(raw >> (q * PORT_IN_W)) for q in range(PORTS)]
+
+    def read_words(self, first, count):
+        """`count` 32-bit probe_in words from word `first`, without reading
+        the other words (fcapz's EioController reads all of them)."""
+        e = self.eio
+        with e._access():
+            return [e._t.read_reg(e._abs(_ADDR_IN_BASE + 4 * (first + i)))
+                    for i in range(count)]
+
+    @staticmethod
+    def _fields(raw):
         f = {n: (raw >> lsb) & ((1 << w) - 1) for n, lsb, w in FIELDS}
         st = f["status"]
         for i, name in enumerate(STATUS_BITS):
@@ -148,39 +193,57 @@ class Board:
         return f
 
     def write(self, value):
+        t0 = time.time()
         self.eio.write_outputs(value)
+        self.t_write = (t0 + time.time()) / 2   # when it took effect, about
         got = self.eio.read_outputs()
         if got != value:
             raise RuntimeError("EIO output reads 0x%x after writing 0x%x" % (got, value))
         self.ctrl = value
 
-    def set_bit(self, bit, on):
-        v = (self.ctrl | (1 << bit)) if on else (self.ctrl & ~(1 << bit))
+    def _off(self, sfps):
+        return [q * PORT_OUT_W for q in ([self.sfp] if sfps is None else sfps)]
+
+    def set_bit(self, bit, on, sfps=None):
+        """Set or clear a control bit of this port, or of every port in sfps
+        at once (one EIO write)."""
+        v = self.ctrl
+        for o in self._off(sfps):
+            v = (v | (1 << (bit + o))) if on else (v & ~(1 << (bit + o)))
         self.write(v)
 
-    def pulse(self, bit, hold=0.01):
-        self.set_bit(bit, True)
+    def pulse(self, bit, hold=0.01, sfps=None):
+        self.set_bit(bit, True, sfps)
         time.sleep(hold)
-        self.set_bit(bit, False)
+        self.set_bit(bit, False, sfps)
 
-    def set_field(self, lsb, width, value):
-        m = ((1 << width) - 1) << lsb
-        self.write((self.ctrl & ~m) | ((value << lsb) & m))
+    def set_field(self, lsb, width, value, sfps=None):
+        v = self.ctrl
+        for o in self._off(sfps):
+            m = ((1 << width) - 1) << (lsb + o)
+            v = (v & ~m) | ((value << (lsb + o)) & m)
+        self.write(v)
 
     def csr(self, addr, data=None):
         """One eth_mac_sys_10g CSR access; returns the value read."""
+        o = self.sfp * PORT_OUT_W
         v = self.ctrl
-        v &= ~((0xFF << 80) | (0xFFFFFFFF << 88) | (1 << B_CSR_WRITE))
-        v |= (addr & 0xFF) << 80
+        v &= ~(((0xFF << 80) | (0xFFFFFFFF << 88) | (1 << B_CSR_WRITE)) << o)
+        v |= ((addr & 0xFF) << 80) << o
         if data is not None:
-            v |= ((data & 0xFFFFFFFF) << 88) | (1 << B_CSR_WRITE)
+            v |= (((data & 0xFFFFFFFF) << 88) | (1 << B_CSR_WRITE)) << o
         self.write(v)
-        go = ((self.ctrl >> B_CSR_GO) & 1) ^ 1
+        go = ((self.ctrl >> (B_CSR_GO + o)) & 1) ^ 1
         self.set_bit(B_CSR_GO, go)
+        # poll the two words holding csr_ack and csr_rdata, not all 40;
+        # csr_rdata is held from the ack toggle until the next access
+        ack_bit = self.sfp * PORT_IN_W + FIELD["csr_ack"][0]
+        dat_bit = self.sfp * PORT_IN_W + FIELD["csr_rdata"][0]
+        assert dat_bit % 32 == 0 and dat_bit // 32 == ack_bit // 32 + 1
         for _ in range(50):
-            f = self.read()
-            if f["csr_ack"] == go:
-                return f["csr_rdata"]
+            ack, data = self.read_words(ack_bit // 32, 2)
+            if (ack >> (ack_bit % 32)) & 1 == go:
+                return data
         raise RuntimeError("CSR access to 0x%02x did not finish" % addr)
 
     def mac_counters(self):
@@ -203,7 +266,7 @@ def mhz(count):
 
 def show(f):
     flags = " ".join(n for n in STATUS_BITS if n and f.get(n))
-    print("status 0x%08x: %s" % (f["status"], flags))
+    print("SFP%d status 0x%08x: %s" % (f["port"], f["status"], flags))
     print("  rxbufstatus %d  txbufstatus %d" % (f["rxbufstatus"], f["txbufstatus"]))
     print("  clocks: txusrclk2 %.4f MHz  rxusrclk2 %.4f MHz  refclk %.4f MHz"
           % (mhz(f["fm_tx"]), mhz(f["fm_rx"]), mhz(f["fm_ref"])))
@@ -217,14 +280,35 @@ def show(f):
              f["mac_seq_gaps"]))
 
 
-def wait_lock(b, timeout=2.0):
+def wait_lock(b, timeout=2.0, sfps=None):
+    """Wait for RX reset done and block lock without a high BER on this port
+    (or on every port in sfps); returns its fields (the list of them)."""
     t0 = time.time()
     while time.time() - t0 < timeout:
-        f = b.read()
-        if f["rx_done"] and f["block_lock"] and not f["hi_ber"]:
-            return f
+        fs = b.read_all()
+        want = [fs[q] for q in ([b.sfp] if sfps is None else sfps)]
+        if all(f["rx_done"] and f["block_lock"] and not f["hi_ber"] for f in want):
+            return want[0] if sfps is None else want
         time.sleep(0.05)
     return None
+
+
+def run_gen(b, seconds, inject=False, sfps=None, inject_sfps=None):
+    """Run the generators of this port (or of every port in sfps) for about
+    `seconds`, with one injected error halfway if asked; returns the time
+    they really ran, from the middle of the EIO write that starts them to the
+    middle of the one that stops them (a write takes tens of ms, so the
+    requested time alone overstates short runs' rates by a few percent)."""
+    b.set_bit(B_GEN, True, sfps)
+    t_on = b.t_write
+    if inject:
+        time.sleep(seconds / 2)
+        b.pulse(B_INJ, sfps=inject_sfps if inject_sfps is not None else sfps)
+        time.sleep(seconds / 2)
+    else:
+        time.sleep(seconds)
+    b.set_bit(B_GEN, False, sfps)
+    return b.t_write - t_on
 
 
 def cmd_loop(b, args):
@@ -246,23 +330,16 @@ def cmd_loop(b, args):
         return 1
     b.pulse(B_CLEAR)
     g0 = b.read()["gen_frames"]
-    b.set_bit(B_GEN, True)
-    if args.inject:
-        time.sleep(args.seconds / 2)
-        b.pulse(B_INJ)
-        time.sleep(args.seconds / 2)
-    else:
-        time.sleep(args.seconds)
-    b.set_bit(B_GEN, False)
+    secs = run_gen(b, args.seconds, args.inject)
     time.sleep(0.05)
     f = b.read()
     show(f)
     sent = (f["gen_frames"] - g0) & 0xFFFFFFFF
     # line rate: (words + 2) words per frame plus ipg, 32 of 33 cycles carry a
     # word at 161.13 MHz -> payload Gb/s of the test frames
-    rate = sent * (words + 2 + args.ipg) * 64 / args.seconds / 1e9
-    print("  sent %d frames in %.1f s: %.3f Gb/s of XGMII words (10.000 max)"
-          % (sent, args.seconds, rate))
+    rate = sent * (words + 2 + args.ipg) * 64 / secs / 1e9
+    print("  sent %d frames in %.2f s: %.3f Gb/s of XGMII words (10.000 max)"
+          % (sent, secs, rate))
     want_bad = 1 if args.inject else 0
     ok = (f["good_frames"] + f["bad_frames"] == sent and f["bad_frames"] == want_bad
           and f["seq_gaps"] == 0 and f["lock_losses"] == 0
@@ -298,25 +375,18 @@ def cmd_mac(b, args):
     b.pulse(B_CLEAR)
     b.mac_clear()
     g0 = b.read()["mac_gen_frames"]
-    b.set_bit(B_GEN, True)
-    if args.inject:
-        time.sleep(args.seconds / 2)
-        b.pulse(B_INJ)
-        time.sleep(args.seconds / 2)
-    else:
-        time.sleep(args.seconds)
-    b.set_bit(B_GEN, False)
+    secs = run_gen(b, args.seconds, args.inject)
     time.sleep(0.05)
     f = b.read()
     show(f)
     sent = (f["mac_gen_frames"] - g0) & 0xFFFFFFFF
     # line bytes per frame: preamble/SFD 8 + frame + FCS 4 + 12 gap on average
     avg_len = (60 + args.len) / 2 if args.sweep else args.len
-    pps = sent / args.seconds
+    pps = sent / secs
     line = 10e9 / ((avg_len + 4 + 8 + 12) * 8)
-    print("  sent %d frames in %.1f s: %.4f Mpps, %.3f Gb/s of frames with FCS; "
+    print("  sent %d frames in %.2f s: %.4f Mpps, %.3f Gb/s of frames with FCS; "
           "line rate for %s bytes %.4f Mpps (%.2f%%)"
-          % (sent, args.seconds, pps / 1e6, pps * (avg_len + 4) * 8 / 1e9,
+          % (sent, secs, pps / 1e6, pps * (avg_len + 4) * 8 / 1e9,
              "%.0f" % avg_len, line / 1e6, 100 * pps / line))
     c = b.mac_counters()
     print("  MAC counters: " + " ".join("%s %d" % kv for kv in c.items()))
@@ -338,12 +408,83 @@ def cmd_mac(b, args):
     return 0 if ok else 1
 
 
+def cmd_dual(b, args):
+    lens = [args.len, args.len1 or args.len]
+    if not all(60 <= n <= 9014 for n in lens):
+        raise SystemExit("--len / --len1 must be 60..9014 (the RX MAC's jumbo limit)")
+    both = list(range(PORTS))
+    b.set_bit(B_GEN, False, both)
+    time.sleep(0.01)
+    b.set_bit(B_MAC, True, both)
+    b.set_bit(B_SWEEP, args.sweep, both)
+    b.set_field(0, 3, LOOPBACK["none"], both)
+    b.set_bit(B_LPM, args.lpm, both)
+    b.set_field(24, 8, args.ipg, both)
+    for q in both:
+        b.set_field(64, 16, lens[q], [q])
+    b.pulse(B_RXRST, sfps=both)
+    if wait_lock(b, sfps=both) is None:
+        for f in b.read_all():
+            show(f)
+        print("FAIL: no block lock on both ports (is the fibre SFP0 <-> SFP1 in?)")
+        return 1
+    time.sleep(0.01)
+    b.pulse(B_CLEAR, sfps=both)
+    for q in both:
+        b.sfp = q
+        b.mac_clear()
+    g0 = [f["mac_gen_frames"] for f in b.read_all()]
+    secs = run_gen(b, args.seconds, args.inject, both, [0])
+    time.sleep(0.05)
+    fs = b.read_all()
+    cs = []
+    for q in both:
+        b.sfp = q
+        cs.append(b.mac_counters())
+    ok = True
+    for tx, rx in ((0, 1), (1, 0)):
+        ft, fr, ct, cr = fs[tx], fs[rx], cs[tx], cs[rx]
+        sent = (ft["mac_gen_frames"] - g0[tx]) & 0xFFFFFFFF
+        avg_len = (60 + lens[tx]) / 2 if args.sweep else lens[tx]
+        pps = sent / secs
+        line = 10e9 / ((avg_len + 4 + 8 + 12) * 8)
+        print("SFP%d -> SFP%d: %d frames of %s bytes in %.2f s: %.4f Mpps, %.3f Gb/s "
+              "of frames with FCS; line rate %.4f Mpps (%.2f%%)"
+              % (tx, rx, sent, "%.0f" % avg_len, secs, pps / 1e6,
+                 pps * (avg_len + 4) * 8 / 1e9, line / 1e6, 100 * pps / line))
+        print("  checker at SFP%d: good %d bad %d tuser %d seq_gaps %d"
+              % (rx, fr["mac_good"], fr["mac_bad"], fr["mac_tuser"], fr["mac_seq_gaps"]))
+        print("  SFP%d TX_FRAMES %d TX_BYTES %d TX_UNDERRUN %d TX_DROP %d"
+              % (tx, ct["TX_FRAMES"], ct["TX_BYTES"], ct["TX_UNDERRUN"], ct["TX_DROP"]))
+        print("  SFP%d RX_FRAMES %d RX_BYTES %d RX_ERR_FCS %d RX_ERR_CTL %d "
+              "RX_ERR_OVERSIZE %d RX_DROP %d RX_DISCARD %d lock_losses %d"
+              % (rx, cr["RX_FRAMES"], cr["RX_BYTES"], cr["RX_ERR_FCS"],
+                 cr["RX_ERR_CTL"], cr["RX_ERR_OVERSIZE"], cr["RX_DROP"],
+                 cr["RX_DISCARD"], fr["lock_losses"]))
+        want_bad = 1 if (args.inject and tx == 0) else 0
+        good = (fr["mac_good"] + fr["mac_bad"] == sent and fr["mac_bad"] == want_bad
+                and fr["mac_tuser"] == 0 and fr["mac_seq_gaps"] == 0
+                and ct["TX_FRAMES"] == sent and cr["RX_FRAMES"] == sent
+                and ct["TX_BYTES"] == cr["RX_BYTES"]
+                and ct["TX_UNDERRUN"] == 0 and ct["TX_DROP"] == 0
+                and cr["RX_ERR_FCS"] == 0 and cr["RX_ERR_CTL"] == 0
+                and cr["RX_ERR_OVERSIZE"] == 0 and cr["RX_DROP"] == 0
+                and cr["RX_DISCARD"] == 0
+                and fr["lock_losses"] == 0 and fr["block_lock"])
+        print("  %s" % ("ok" if good else "FAIL"))
+        ok = ok and good
+    print("PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=3121)
     ap.add_argument("--tap", default="xczu7.tap")
+    ap.add_argument("--sfp", type=int, choices=range(PORTS), default=0,
+                    help="port for loop, mac, csr and the resets (default 0)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
     lp = sub.add_parser("loop")
@@ -361,6 +502,14 @@ def main():
     mp.add_argument("--ipg", type=int, default=0)
     mp.add_argument("--lpm", action="store_true", help="LPM receiver instead of DFE")
     mp.add_argument("--inject", action="store_true")
+    dp = sub.add_parser("dual")
+    dp.add_argument("--seconds", type=float, default=5.0)
+    dp.add_argument("--len", type=int, default=60)
+    dp.add_argument("--len1", type=int, default=0, help="port 1's length (default --len)")
+    dp.add_argument("--sweep", action="store_true")
+    dp.add_argument("--ipg", type=int, default=0)
+    dp.add_argument("--lpm", action="store_true", help="LPM receivers instead of DFE")
+    dp.add_argument("--inject", action="store_true")
     cp = sub.add_parser("csr")
     cp.add_argument("addr", type=lambda x: int(x, 0))
     cp.add_argument("data", type=lambda x: int(x, 0), nargs="?")
@@ -371,8 +520,11 @@ def main():
     b = Board(args)
     try:
         if args.cmd == "status":
-            show(b.read())
+            for f in b.read_all():
+                show(f)
             return 0
+        if args.cmd == "dual":
+            return cmd_dual(b, args)
         if args.cmd == "loop":
             return cmd_loop(b, args)
         if args.cmd == "mac":

@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Leonardo Capossio - bard0 design
 // =============================================================================
-// zcu106_10g_top.v - 10GBASE-R bring-up on SFP cage 0 of the AMD ZCU106
+// zcu106_10g_top.v - 10GBASE-R on SFP cages 0 and 1 of the AMD ZCU106
 //
-//   xgmii_test_gen -> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFP0
-//   SFP0 -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
-//
+// Two identical ports (zcu106_10g_port.v), each a GTHE4 channel with the PCS
+// and two test paths (zcu106_10g_lane.v):
+//   xgmii_test_gen -> pcs10gbr TX -> GTHE4 (10.3125 Gb/s) -> SFPn
+//   SFPn -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
 // or, in MAC mode, Ethernet frames through the 10G MAC system:
 //   axis_test_gen64 (clk_app) -> eth_mac_sys_10g -> pcs10gbr TX -> ...
 //   ... -> pcs10gbr RX -> eth_mac_sys_10g -> axis_test_chk64 (clk_app)
-// eth_mac_sys_10g's CSRs are reached from the EIO through axil_cmd_master.
+// Each port's checkers check whatever its receiver gets: its own frames in a
+// near-end loopback, the other port's over a fibre from SFP0 to SFP1.
 //
 // No AMD IP: the GTHE4_COMMON / GTHE4_CHANNEL primitives are instantiated
 // directly (gthe4_common_10g.v, gthe4_channel_10g.v), reset by gt10g_reset.v,
@@ -18,24 +20,27 @@
 // Clocks:
 //   clk_50     300 MHz USER_SI570 / 6, free-running: GT DRP / reset clock
 //   clk_app    200 MHz, MMCM from the same 300 MHz: eth_mac_sys_10g's
-//              application side, MAC mode generator and checker
+//              application side, MAC mode generators and checkers
 //   refclk     USER_MGT_SI570 156.25 MHz, Quad 226 MGTREFCLK1 -> QPLL0 of
 //              Quad 225 (GTREFCLK00; Vivado routes it over the south
-//              reference clock lines)
-//   txusrclk2  161.13 MHz, BUFG_GT /2 of TXOUTCLK (txusrclk is /1, 322 MHz):
-//              PCS TX, TX MAC and the raw XGMII generator
-//   rxusrclk2  161.13 MHz from RXOUTCLK (recovered clock): PCS RX, RX MAC,
-//              raw XGMII checker
+//              reference clock lines), shared by both channels
+//   per port:  txusrclk2 161.13 MHz, BUFG_GT /2 of TXOUTCLK (txusrclk is /1,
+//              322 MHz): PCS TX, TX MAC, raw XGMII generator
+//              rxusrclk2 161.13 MHz from RXOUTCLK (recovered clock): PCS RX,
+//              RX MAC, raw XGMII checker
 //
-// Control and status over an fcapz EIO on USER3 (CHAIN 3); see the EIO block
-// for the bit map and scripts/sfp10g_test.py for the host side. Power-up
-// state: normal (no loopback) toward the SFP, generator off.
+// Control and status over an fcapz EIO on USER3 (CHAIN 3); bit maps below
+// and scripts/sfp10g_test.py for the host side. Power-up state: normal (no
+// loopback), generators off.
 //
-// LEDs: 0 QPLL0 lock      1 TX reset done    2 RX reset done
-//       3 PCS block lock  4 no high BER      5 good test frame seen
-//       6 bad test frame seen (sticky until the counters are cleared;
-//         LEDs 5 and 6 follow the checker of the selected mode)
-//       7 txusrclk2 heartbeat
+// LEDs: 0 QPLL0 lock         1 port 0 TX and RX reset done
+//       2 port 1 TX and RX reset done
+//       3 port 0 block lock  4 port 1 block lock (each blinks with a high
+//         BER)
+//       5 good test frame seen (either port)
+//       6 bad test frame seen (either port; sticky until cleared; LEDs 5
+//         and 6 follow the checkers of each port's selected mode)
+//       7 heartbeat (clk_50)
 // Verilog 2001
 // =============================================================================
 
@@ -51,12 +56,17 @@ module zcu106_10g_top (
     input  wire       SFP0_RX_P,
     input  wire       SFP0_RX_N,
     output wire       SFP0_TX_DISABLE_B,     // high = laser on
+    output wire       SFP1_TX_P,
+    output wire       SFP1_TX_N,
+    input  wire       SFP1_RX_P,
+    input  wire       SFP1_RX_N,
+    output wire       SFP1_TX_DISABLE_B,
 
     output wire [7:0] LED
 );
 
     // =========================================================================
-    // Free-running 50 MHz control clock and reset
+    // Free-running 50 MHz control clock, application clock, resets
     // =========================================================================
     wire clk_300_ibuf, clk_50;
 
@@ -106,44 +116,10 @@ module zcu106_10g_top (
         if (CPU_RESET) rst50_sync <= 3'b000;
         else           rst50_sync <= {rst50_sync[1:0], 1'b1};
     end
-
-    // EIO controls (defined in the EIO block)
-    wire [127:0] ctrl;
-    wire [2:0]  ctl_loopback   = ctrl[2:0];
-    wire        ctl_txpol      = ctrl[3];
-    wire        ctl_rxpol      = ctrl[4];
-    wire        ctl_lpm        = ctrl[5];
-    wire        ctl_tx_restart = ctrl[6];
-    wire        ctl_rx_restart = ctrl[7];
-    wire        ctl_gen_en     = ctrl[8];
-    wire        ctl_inj        = ctrl[9];
-    wire        ctl_clear      = ctrl[10];
-    wire        ctl_gt_reset   = ctrl[11];
-    wire        ctl_laser_off  = ctrl[12];
-    wire        ctl_mac_mode   = ctrl[13];
-    wire        ctl_sweep      = ctrl[14];
-    wire [7:0]  ctl_len        = ctrl[23:16];
-    wire [7:0]  ctl_ipg        = ctrl[31:24];
-    wire [4:0]  ctl_txdiff     = ctrl[36:32];
-    wire [4:0]  ctl_txpost     = ctrl[44:40];
-    wire [4:0]  ctl_txpre      = ctrl[52:48];
-    wire [15:0] ctl_mac_len    = ctrl[79:64];
-    wire [7:0]  ctl_csr_addr   = ctrl[87:80];
-    wire [31:0] ctl_csr_wdata  = ctrl[119:88];
-    wire        ctl_csr_go     = ctrl[120];
-    wire        ctl_csr_write  = ctrl[121];
-
-    // EIO outputs come from the TCK domain: synchronize the reset controls
-    (* ASYNC_REG = "TRUE" *) reg [5:0] s50_gtr, s50_txr, s50_rxr;
-    always @(posedge clk_50) begin
-        s50_gtr <= {s50_gtr[4:0], ctl_gt_reset};
-        s50_txr <= {s50_txr[4:0], ctl_tx_restart};
-        s50_rxr <= {s50_rxr[4:0], ctl_rx_restart};
-    end
-    wire gt_rst = !rst50_sync[2] || s50_gtr[1];
+    wire rst_50 = !rst50_sync[2];
 
     // =========================================================================
-    // Reference clock
+    // Reference clock and QPLL0
     // =========================================================================
     wire refclk, refclk_div2;
 
@@ -165,9 +141,6 @@ module zcu106_10g_top (
         .CLRMASK (1'b0), .DIV (3'd0), .O (refclk_fab)
     );
 
-    // =========================================================================
-    // GT: common (QPLL0), channel, reset sequencer, user clock buffers
-    // =========================================================================
     wire qpll0reset, qpll0lock, qpll0refclklost, qpll0outclk, qpll0outrefclk;
 
     gthe4_common_10g #(.QPLL0_REFCLK_SEL(3'b001)) u_common (
@@ -180,360 +153,6 @@ module zcu106_10g_top (
         .qpll0outrefclk  (qpll0outrefclk)
     );
 
-    wire gttxreset, gtrxreset, txprogdivreset, rxprogdivreset;
-    wire txuserrdy, rxuserrdy, tx_done, rx_done;
-    wire gtpowergood, txpmaresetdone, rxpmaresetdone;
-    wire txprgdivresetdone, rxprgdivresetdone, txresetdone, rxresetdone;
-    wire txoutclk, rxoutclk, rxcdrlock;
-    wire [2:0]  rxbufstatus;
-    wire [1:0]  txbufstatus;
-    wire [63:0] gt_txdata, gt_rxdata;
-    wire txusrclk, txusrclk2, rxusrclk, rxusrclk2;
-
-    // TX/RX polarity and loopback come from the TCK domain; they are static
-    // settings (RX is reset after a loopback change), applied through two
-    // flops in the GT user clock domains.
-    (* ASYNC_REG = "TRUE" *) reg [1:0] s_txpol;
-    (* ASYNC_REG = "TRUE" *) reg [1:0] s_rxpol;
-    always @(posedge txusrclk2) s_txpol <= {s_txpol[0], ctl_txpol};
-    always @(posedge rxusrclk2) s_rxpol <= {s_rxpol[0], ctl_rxpol};
-
-    gthe4_channel_10g u_channel (
-        .drpclk            (clk_50),
-        .qpll0clk          (qpll0outclk),
-        .qpll0refclk       (qpll0outrefclk),
-        .gthrxp            (SFP0_RX_P),
-        .gthrxn            (SFP0_RX_N),
-        .gthtxp            (SFP0_TX_P),
-        .gthtxn            (SFP0_TX_N),
-        .gttxreset         (gttxreset),
-        .gtrxreset         (gtrxreset),
-        .txprogdivreset    (txprogdivreset),
-        .rxprogdivreset    (rxprogdivreset),
-        .txuserrdy         (txuserrdy),
-        .rxuserrdy         (rxuserrdy),
-        .gtpowergood       (gtpowergood),
-        .txpmaresetdone    (txpmaresetdone),
-        .rxpmaresetdone    (rxpmaresetdone),
-        .txprgdivresetdone (txprgdivresetdone),
-        .rxprgdivresetdone (rxprgdivresetdone),
-        .txresetdone       (txresetdone),
-        .rxresetdone       (rxresetdone),
-        .txoutclk          (txoutclk),
-        .rxoutclk          (rxoutclk),
-        .txusrclk          (txusrclk),
-        .txusrclk2         (txusrclk2),
-        .rxusrclk          (rxusrclk),
-        .rxusrclk2         (rxusrclk2),
-        .txdata            (gt_txdata),
-        .rxdata            (gt_rxdata),
-        .loopback          (ctl_loopback),
-        .txpolarity        (s_txpol[1]),
-        .rxpolarity        (s_rxpol[1]),
-        .rxlpmen           (ctl_lpm),
-        .txdiffctrl        (ctl_txdiff ^ 5'h18),   // EIO 0 = reference swing
-        .txpostcursor      (ctl_txpost),
-        .txprecursor       (ctl_txpre),
-        .rxcdrlock         (rxcdrlock),
-        .rxbufstatus       (rxbufstatus),
-        .txbufstatus       (txbufstatus)
-    );
-
-    // User clock buffers: held in reset until the PMA reset is done, as the
-    // Wizard's user clock helper does. TXUSRCLK = TXOUTCLK, TXUSRCLK2 = /2.
-    wire tx_uclk_rst = !txpmaresetdone;
-    wire rx_uclk_rst = !rxpmaresetdone;
-
-    BUFG_GT u_txusrclk (
-        .I (txoutclk), .CE (1'b1), .CEMASK (1'b0), .CLR (tx_uclk_rst),
-        .CLRMASK (1'b0), .DIV (3'd0), .O (txusrclk)
-    );
-    BUFG_GT u_txusrclk2 (
-        .I (txoutclk), .CE (1'b1), .CEMASK (1'b0), .CLR (tx_uclk_rst),
-        .CLRMASK (1'b0), .DIV (3'd1), .O (txusrclk2)
-    );
-    BUFG_GT u_rxusrclk (
-        .I (rxoutclk), .CE (1'b1), .CEMASK (1'b0), .CLR (rx_uclk_rst),
-        .CLRMASK (1'b0), .DIV (3'd0), .O (rxusrclk)
-    );
-    BUFG_GT u_rxusrclk2 (
-        .I (rxoutclk), .CE (1'b1), .CEMASK (1'b0), .CLR (rx_uclk_rst),
-        .CLRMASK (1'b0), .DIV (3'd1), .O (rxusrclk2)
-    );
-
-    // "user clock active": two txusrclk2 / rxusrclk2 edges after the buffer
-    // reset releases
-    (* ASYNC_REG = "TRUE" *) reg [1:0] tx_act, rx_act;
-    always @(posedge txusrclk2 or posedge tx_uclk_rst)
-        if (tx_uclk_rst) tx_act <= 2'b00; else tx_act <= {tx_act[0], 1'b1};
-    always @(posedge rxusrclk2 or posedge rx_uclk_rst)
-        if (rx_uclk_rst) rx_act <= 2'b00; else rx_act <= {rx_act[0], 1'b1};
-
-    gt10g_reset u_reset (
-        .clk               (clk_50),
-        .rst               (gt_rst),
-        .tx_restart        (s50_txr[1]),
-        .rx_restart        (s50_rxr[1]),
-        .gtpowergood       (gtpowergood),
-        .qpll0lock         (qpll0lock),
-        .tx_usrclk_active  (tx_act[1]),
-        .rx_usrclk_active  (rx_act[1]),
-        .txresetdone       (txresetdone),
-        .rxresetdone       (rxresetdone),
-        .qpll0reset        (qpll0reset),
-        .gttxreset         (gttxreset),
-        .gtrxreset         (gtrxreset),
-        .txprogdivreset    (txprogdivreset),
-        .rxprogdivreset    (rxprogdivreset),
-        .txuserrdy         (txuserrdy),
-        .rxuserrdy         (rxuserrdy),
-        .tx_done           (tx_done),
-        .rx_done           (rx_done)
-    );
-
-    // =========================================================================
-    // PCS and test traffic
-    // =========================================================================
-    // Domain resets: async assert, release synchronized to the user clock
-    (* ASYNC_REG = "TRUE" *) reg [2:0] tx_rst_sync, rx_rst_sync;
-    always @(posedge txusrclk2 or negedge tx_done)
-        if (!tx_done) tx_rst_sync <= 3'b000; else tx_rst_sync <= {tx_rst_sync[1:0], 1'b1};
-    always @(posedge rxusrclk2 or negedge rx_done)
-        if (!rx_done) rx_rst_sync <= 3'b000; else rx_rst_sync <= {rx_rst_sync[1:0], 1'b1};
-    wire tx_rst_n = tx_rst_sync[2];
-    wire rx_rst_n = rx_rst_sync[2];
-
-    wire [63:0] xgmii_txd, xgmii_rxd;
-    wire [7:0]  xgmii_txc, xgmii_rxc;
-    wire        xgmii_tx_ready, xgmii_rx_valid;
-    wire        block_lock, hi_ber;
-    wire [15:0] ber_cnt;
-
-    pcs10gbr u_pcs (
-        .tx_clk         (txusrclk2),
-        .tx_rst_n       (tx_rst_n),
-        .xgmii_txd      (xgmii_txd),
-        .xgmii_txc      (xgmii_txc),
-        .xgmii_tx_ready (xgmii_tx_ready),
-        .gt_txdata      (gt_txdata),
-        .rx_clk         (rxusrclk2),
-        .rx_rst_n       (rx_rst_n),
-        .gt_rxdata      (gt_rxdata),
-        .xgmii_rxd      (xgmii_rxd),
-        .xgmii_rxc      (xgmii_rxc),
-        .xgmii_rx_valid (xgmii_rx_valid),
-        .rx_block_lock  (block_lock),
-        .rx_hi_ber      (hi_ber),
-        .rx_ber_cnt     (ber_cnt)
-    );
-
-    // Generator controls into txusrclk2 (static except the inject pulse)
-    (* ASYNC_REG = "TRUE" *) reg [2:0] s_gen_en, s_inj, s_mac_tx;
-    always @(posedge txusrclk2) begin
-        s_gen_en <= {s_gen_en[1:0], ctl_gen_en};
-        s_inj    <= {s_inj[1:0], ctl_inj};
-        s_mac_tx <= {s_mac_tx[1:0], ctl_mac_mode};
-    end
-    wire mac_tx = s_mac_tx[2];
-    wire inj_p  = s_inj[1] && !s_inj[2];
-    wire [63:0] gen_txd, mac_txd;
-    wire [7:0]  gen_txc, mac_txc;
-    // switch modes with the generators off: a frame cut in half is lost
-    assign xgmii_txd = mac_tx ? mac_txd : gen_txd;
-    assign xgmii_txc = mac_tx ? mac_txc : gen_txc;
-    wire [7:0] len_words = ctl_len + 8'd8;   // EIO 0 -> 8 words (64 bytes)
-
-    wire [31:0] gen_frames;
-    xgmii_test_gen u_gen (
-        .clk            (txusrclk2),
-        .rst_n          (tx_rst_n),
-        .enable         (s_gen_en[2] && !mac_tx),
-        .len_words      (len_words),
-        .ipg_words      (ctl_ipg),
-        .inj_err        (inj_p && !mac_tx),
-        .xgmii_tx_ready (xgmii_tx_ready),
-        .xgmii_txd      (gen_txd),
-        .xgmii_txc      (gen_txc),
-        .frames         (gen_frames)
-    );
-
-    (* ASYNC_REG = "TRUE" *) reg [2:0] s_clr;
-    always @(posedge rxusrclk2) s_clr <= {s_clr[1:0], ctl_clear};
-
-    wire [31:0] good_frames, bad_frames, seq_gaps, bad_words, lf_words;
-    wire        good_pulse, bad_pulse;
-    xgmii_test_chk u_chk (
-        .clk            (rxusrclk2),
-        .rst_n          (rx_rst_n),
-        .clear          (s_clr[2]),
-        .len_words      (len_words),
-        .xgmii_rxd      (xgmii_rxd),
-        .xgmii_rxc      (xgmii_rxc),
-        .xgmii_rx_valid (xgmii_rx_valid),
-        .good_frames    (good_frames),
-        .bad_frames     (bad_frames),
-        .seq_gaps       (seq_gaps),
-        .bad_words      (bad_words),
-        .lf_words       (lf_words),
-        .good_pulse     (good_pulse),
-        .bad_pulse      (bad_pulse)
-    );
-
-    // =========================================================================
-    // MAC mode: test frames through eth_mac_sys_10g; generator, checker and
-    // CSRs on clk_app
-    // =========================================================================
-    (* ASYNC_REG = "TRUE" *) reg [2:0] a_gen_en, a_inj, a_mac, a_clr;
-    always @(posedge clk_app) begin
-        a_gen_en <= {a_gen_en[1:0], ctl_gen_en};
-        a_inj    <= {a_inj[1:0], ctl_inj};
-        a_mac    <= {a_mac[1:0], ctl_mac_mode};
-        a_clr    <= {a_clr[1:0], ctl_clear};
-    end
-    wire mac_app = a_mac[2];
-
-    wire [63:0] mg_tdata, mr_tdata;
-    wire [7:0]  mg_tkeep, mr_tkeep;
-    wire        mg_tvalid, mg_tlast, mg_tready;
-    wire        mr_tvalid, mr_tlast, mr_tuser;
-    wire [31:0] mac_gen_frames;
-    axis_test_gen64 u_mgen (
-        .clk           (clk_app),
-        .rst_n         (app_rst_n),
-        .enable        (a_gen_en[2] && mac_app),
-        .len           (ctl_mac_len),
-        .sweep         (ctl_sweep),
-        .ipg           (ctl_ipg),
-        .inj_err       (a_inj[1] && !a_inj[2] && mac_app),
-        .m_axis_tdata  (mg_tdata),
-        .m_axis_tkeep  (mg_tkeep),
-        .m_axis_tvalid (mg_tvalid),
-        .m_axis_tlast  (mg_tlast),
-        .m_axis_tready (mg_tready),
-        .frames        (mac_gen_frames)
-    );
-
-    wire [7:0]  csr_awaddr, csr_araddr;
-    wire [31:0] csr_wdata, csr_rdata_bus, csr_rdata;
-    wire [3:0]  csr_wstrb;
-    wire [1:0]  csr_bresp, csr_rresp;
-    wire        csr_awvalid, csr_awready, csr_wvalid, csr_wready;
-    wire        csr_bvalid, csr_bready, csr_arvalid, csr_arready;
-    wire        csr_rvalid, csr_rready, csr_ack;
-
-    axil_cmd_master u_csr_cmd (
-        .clk           (clk_app),
-        .rst_n         (app_rst_n),
-        .go            (ctl_csr_go),
-        .write         (ctl_csr_write),
-        .addr          (ctl_csr_addr),
-        .wdata         (ctl_csr_wdata),
-        .ack           (csr_ack),
-        .rdata         (csr_rdata),
-        .m_axi_awaddr  (csr_awaddr),
-        .m_axi_awvalid (csr_awvalid),
-        .m_axi_awready (csr_awready),
-        .m_axi_wdata   (csr_wdata),
-        .m_axi_wstrb   (csr_wstrb),
-        .m_axi_wvalid  (csr_wvalid),
-        .m_axi_wready  (csr_wready),
-        .m_axi_bvalid  (csr_bvalid),
-        .m_axi_bready  (csr_bready),
-        .m_axi_araddr  (csr_araddr),
-        .m_axi_arvalid (csr_arvalid),
-        .m_axi_arready (csr_arready),
-        .m_axi_rdata   (csr_rdata_bus),
-        .m_axi_rvalid  (csr_rvalid),
-        .m_axi_rready  (csr_rready)
-    );
-
-    // No CPU on this board design: TX/RX and jumbo frames are on from reset
-    // and the station address is the test frames' destination.
-    eth_mac_sys_10g #(
-        .TX_FIFO_ADDR_WIDTH (12),
-        .RX_FIFO_ADDR_WIDTH (12),
-        .TXRX_EN_AT_RESET   (1),
-        .JUMBO_AT_RESET     (1),
-        .MAC_ADDR_AT_RESET  (48'h020000000001)
-    ) u_sys (
-        .clk            (clk_app),
-        .rst_n          (app_rst_n),
-        .s_axi_awaddr   (csr_awaddr),
-        .s_axi_awvalid  (csr_awvalid),
-        .s_axi_awready  (csr_awready),
-        .s_axi_wdata    (csr_wdata),
-        .s_axi_wstrb    (csr_wstrb),
-        .s_axi_wvalid   (csr_wvalid),
-        .s_axi_wready   (csr_wready),
-        .s_axi_bresp    (csr_bresp),
-        .s_axi_bvalid   (csr_bvalid),
-        .s_axi_bready   (csr_bready),
-        .s_axi_araddr   (csr_araddr),
-        .s_axi_arvalid  (csr_arvalid),
-        .s_axi_arready  (csr_arready),
-        .s_axi_rdata    (csr_rdata_bus),
-        .s_axi_rresp    (csr_rresp),
-        .s_axi_rvalid   (csr_rvalid),
-        .s_axi_rready   (csr_rready),
-        .s_axis_tdata   (mg_tdata),
-        .s_axis_tkeep   (mg_tkeep),
-        .s_axis_tvalid  (mg_tvalid),
-        .s_axis_tready  (mg_tready),
-        .s_axis_tlast   (mg_tlast),
-        .s_axis_tuser   (1'b0),
-        .m_axis_tdata   (mr_tdata),
-        .m_axis_tkeep   (mr_tkeep),
-        .m_axis_tvalid  (mr_tvalid),
-        .m_axis_tready  (1'b1),
-        .m_axis_tlast   (mr_tlast),
-        .m_axis_tuser   (mr_tuser),
-        .xgmii_tx_clk   (txusrclk2),
-        .xgmii_tx_rst_n (tx_rst_n),
-        .xgmii_txd      (mac_txd),
-        .xgmii_txc      (mac_txc),
-        .xgmii_tx_ready (xgmii_tx_ready),
-        .xgmii_rx_clk   (rxusrclk2),
-        .xgmii_rx_rst_n (rx_rst_n),
-        .xgmii_rxd      (xgmii_rxd),
-        .xgmii_rxc      (xgmii_rxc),
-        .xgmii_rx_valid (xgmii_rx_valid),
-        .pcs_block_lock (block_lock),
-        .pcs_hi_ber     (hi_ber)
-    );
-
-    wire [31:0] mac_good, mac_bad, mac_tuser, mac_seq_gaps;
-    wire        mac_good_pulse, mac_bad_pulse;
-    axis_test_chk64 u_mchk (
-        .clk           (clk_app),
-        .rst_n         (app_rst_n),
-        .clear         (a_clr[2]),
-        .s_axis_tdata  (mr_tdata),
-        .s_axis_tkeep  (mr_tkeep),
-        .s_axis_tvalid (mr_tvalid),
-        .s_axis_tlast  (mr_tlast),
-        .s_axis_tuser  (mr_tuser),
-        .good_frames   (mac_good),
-        .bad_frames    (mac_bad),
-        .tuser_frames  (mac_tuser),
-        .seq_gaps      (mac_seq_gaps),
-        .good_pulse    (mac_good_pulse),
-        .bad_pulse     (mac_bad_pulse)
-    );
-
-    // Block lock losses (rxusrclk2)
-    reg        lock_d;
-    reg [31:0] lock_losses;
-    always @(posedge rxusrclk2 or negedge rx_rst_n) begin
-        if (!rx_rst_n) begin
-            lock_d      <= 1'b0;
-            lock_losses <= 32'd0;
-        end else begin
-            lock_d <= block_lock;
-            if (s_clr[2])                   lock_losses <= 32'd0;
-            else if (lock_d && !block_lock) lock_losses <= lock_losses + 32'd1;
-        end
-    end
-
     // =========================================================================
     // Frequency meters: cycles per 2^22 clk_50 cycles (83.9 ms window).
     // 161.13 MHz reads about 13,516,800; 156.25 MHz about 13,107,200.
@@ -545,19 +164,18 @@ module zcu106_10g_top (
         if (fm_div == 22'h3FFFFF) fm_tog <= ~fm_tog;
     end
 
-    wire [23:0] fm_tx, fm_rx, fm_ref;
-    freq_meter_10g u_fm_tx  (.clk (txusrclk2),  .tog (fm_tog), .meas (fm_tx));
-    freq_meter_10g u_fm_rx  (.clk (rxusrclk2),  .tog (fm_tog), .meas (fm_rx));
+    wire [23:0] fm_ref;
     freq_meter_10g u_fm_ref (.clk (refclk_fab), .tog (fm_tog), .meas (fm_ref));
 
     // =========================================================================
     // fcapz EIO (USER3)
-    // eio-write [79:0]:
+    // eio-write [255:0]: port p's controls are [128p+127:128p], each:
     //   [2:0] LOOPBACK (0 normal, 2 near-end PMA)   [3] TX polarity
     //   [4] RX polarity    [5] RX LPM (0 = DFE)      [6] TX path restart
     //   [7] RX path restart (do it after a LOOPBACK change)
     //   [8] generator on   [9] inject one payload bit error (rising edge)
-    //   [10] clear checker counters   [11] full GT reset   [12] laser off
+    //   [10] clear checker counters
+    //   [11] full GT reset (port 0: QPLL0 too, so both ports)   [12] laser off
     //   [13] MAC mode (frames through the 10G MAC)   [14] MAC length sweep
     //   [23:16] frame words - 8   [31:24] idle words between frames
     //   [36:32] TXDIFFCTRL ^ 0x18   [44:40] TXPOSTCURSOR   [52:48] TXPRECURSOR
@@ -566,84 +184,98 @@ module zcu106_10g_top (
     //   gap, in clk_app cycles.
     //   [87:80] CSR address  [119:88] CSR write data  [120] CSR go (toggle:
     //   set the other fields first)  [121] CSR write (0 = read)
-    // eio-read [639:0]: see the probe_in concatenation; the low 32 bits are
-    //   the status bits, the top 16 bits a layout marker (0x10F0). Counters
-    //   cross from their clock domains unsynchronized: read twice if a value
-    //   must be exact. [544] equals CSR go once the access is done, and
-    //   [607:576] then holds the read data.
+    // eio-read [1279:0]: port p's status is [640p+639:640p], laid out in
+    //   zcu106_10g_port.v: the low 32 bits are the status bits, the top 32
+    //   bits {marker 0x10F0, layout 4, port}. Counters cross from their clock
+    //   domains unsynchronized: read twice if a value must be exact. [544]
+    //   equals CSR go once the access is done, and [607:576] then holds the
+    //   read data.
     // =========================================================================
-    reg [3:0] bad_seen;
-    always @(posedge rxusrclk2 or negedge rx_rst_n)
-        if (!rx_rst_n)       bad_seen <= 4'd0;
-        else if (s_clr[2])   bad_seen <= 4'd0;
-        else if (bad_pulse)  bad_seen <= 4'hF;
-    reg mac_bad_seen;
-    always @(posedge clk_app or negedge app_rst_n)
-        if (!app_rst_n)         mac_bad_seen <= 1'b0;
-        else if (a_clr[2])      mac_bad_seen <= 1'b0;
-        else if (mac_bad_pulse) mac_bad_seen <= 1'b1;
-    // the mode bit picks which checker the LEDs and status follow (static)
-    wire sel_bad_seen = ctl_mac_mode ? mac_bad_seen : bad_seen[0];
-
-    wire [31:0] status = {
-        8'd0,
-        sel_bad_seen, (ctl_mac_mode ? mac_good : good_frames) != 32'd0, // [23:22]
-        rxcdrlock, hi_ber,                                          // [21:20]
-        block_lock, qpll0refclklost, txbufstatus,                   // [19:16]
-        1'b0, rxbufstatus, txprgdivresetdone, rxprgdivresetdone,    // [15:10]
-        txpmaresetdone, rxpmaresetdone,                             // [9:8]
-        txresetdone, rxresetdone, tx_done, rx_done,                 // [7:4]
-        rxuserrdy, txuserrdy, gtpowergood, qpll0lock                // [3:0]
-    };
+    wire [255:0]  ctrl;
+    wire [639:0]  probe0, probe1;
 
     fcapz_eio_xilinxus #(
-        .IN_W  (640),
-        .OUT_W (128),
+        .IN_W  (1280),
+        .OUT_W (256),
         .CHAIN (3)
     ) u_eio (
-        .probe_in  ({16'h10F0, 8'd3, 8'd0,                // [639:608] marker, layout
-                     csr_rdata,                           // [607:576] (clk_app)
-                     31'd0, csr_ack,                      // [575:544] (clk_app)
-                     mac_seq_gaps,                        // [543:512]
-                     mac_tuser,                           // [511:480]
-                     mac_bad,                             // [479:448]
-                     mac_good,                            // [447:416]
-                     mac_gen_frames,                      // [415:384] (clk_app)
-                     gen_frames,                          // [383:352] (TX domain)
-                     fm_ref, 8'd0,                        // [351:320]
-                     fm_rx, 8'd0,                         // [319:288]
-                     fm_tx, 8'd0,                         // [287:256]
-                     lock_losses,                         // [255:224]
-                     16'd0, ber_cnt,                      // [223:192]
-                     lf_words,                            // [191:160]
-                     bad_words,                           // [159:128]
-                     seq_gaps,                            // [127:96]
-                     bad_frames,                          // [95:64]
-                     good_frames,                         // [63:32]
-                     status}),                            // [31:0]
+        .probe_in  ({probe1, probe0}),
         .probe_out (ctrl)
     );
 
     // =========================================================================
-    // LEDs and laser
+    // Ports
     // =========================================================================
-    reg [27:0] hb = 28'd0;
-    always @(posedge txusrclk2) hb <= hb + 28'd1;
+    wire tx_done0, rx_done0, lock0, hi_ber0, bad0, good0, laser_off0;
+    wire tx_done1, rx_done1, lock1, hi_ber1, bad1, good1, laser_off1;
 
-    reg [23:0] good_led = 24'd0;
-    always @(posedge rxusrclk2)
-        if (good_pulse)            good_led <= 24'hFFFFFF;
-        else if (good_led != 0)    good_led <= good_led - 24'd1;
-    reg [23:0] mac_good_led = 24'd0;
-    always @(posedge clk_app)
-        if (mac_good_pulse)        mac_good_led <= 24'hFFFFFF;
-        else if (mac_good_led != 0) mac_good_led <= mac_good_led - 24'd1;
-    wire sel_good_led = ctl_mac_mode ? (mac_good_led != 24'd0) : (good_led != 24'd0);
+    zcu106_10g_port #(.PORT(8'd0)) u_port0 (
+        .clk_50          (clk_50),
+        .rst_50          (rst_50),
+        .clk_app         (clk_app),
+        .app_rst_n       (app_rst_n),
+        .ctrl            (ctrl[127:0]),
+        .fm_tog          (fm_tog),
+        .fm_ref          (fm_ref),
+        .qpll0clk        (qpll0outclk),
+        .qpll0refclk     (qpll0outrefclk),
+        .qpll0lock       (qpll0lock),
+        .qpll0refclklost (qpll0refclklost),
+        .qpll0reset      (qpll0reset),
+        .gthrxp          (SFP0_RX_P),
+        .gthrxn          (SFP0_RX_N),
+        .gthtxp          (SFP0_TX_P),
+        .gthtxn          (SFP0_TX_N),
+        .probe           (probe0),
+        .tx_done         (tx_done0),
+        .rx_done         (rx_done0),
+        .block_lock      (lock0),
+        .hi_ber          (hi_ber0),
+        .sel_bad_seen    (bad0),
+        .sel_good_led    (good0),
+        .laser_off       (laser_off0)
+    );
 
-    assign LED = {hb[27], sel_bad_seen, sel_good_led, !hi_ber,
-                  block_lock, rx_done, tx_done, qpll0lock};
+    zcu106_10g_port #(.PORT(8'd1)) u_port1 (
+        .clk_50          (clk_50),
+        .rst_50          (rst_50),
+        .clk_app         (clk_app),
+        .app_rst_n       (app_rst_n),
+        .ctrl            (ctrl[255:128]),
+        .fm_tog          (fm_tog),
+        .fm_ref          (fm_ref),
+        .qpll0clk        (qpll0outclk),
+        .qpll0refclk     (qpll0outrefclk),
+        .qpll0lock       (qpll0lock),
+        .qpll0refclklost (qpll0refclklost),
+        .qpll0reset      (),                 // port 0 owns QPLL0
+        .gthrxp          (SFP1_RX_P),
+        .gthrxn          (SFP1_RX_N),
+        .gthtxp          (SFP1_TX_P),
+        .gthtxn          (SFP1_TX_N),
+        .probe           (probe1),
+        .tx_done         (tx_done1),
+        .rx_done         (rx_done1),
+        .block_lock      (lock1),
+        .hi_ber          (hi_ber1),
+        .sel_bad_seen    (bad1),
+        .sel_good_led    (good1),
+        .laser_off       (laser_off1)
+    );
 
-    assign SFP0_TX_DISABLE_B = !ctl_laser_off;
+    // =========================================================================
+    // LEDs and lasers
+    // =========================================================================
+    reg [25:0] hb = 26'd0;
+    always @(posedge clk_50) hb <= hb + 26'd1;
+
+    // block-lock LEDs also show a high BER: they blink
+    assign LED = {hb[25], bad0 || bad1, good0 || good1,
+                  lock1 && (!hi_ber1 || hb[22]), lock0 && (!hi_ber0 || hb[22]),
+                  tx_done1 && rx_done1, tx_done0 && rx_done0, qpll0lock};
+
+    assign SFP0_TX_DISABLE_B = !laser_off0;
+    assign SFP1_TX_DISABLE_B = !laser_off1;
 
 endmodule
 
