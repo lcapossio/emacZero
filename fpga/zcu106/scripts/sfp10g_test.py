@@ -23,7 +23,9 @@ mac      the same through the 10G MAC (MAC mode): Ethernet frames of --len
          frame), --ipg idle cycles between frames, every byte checked after
          the RX MAC. Prints the frame rate against the line rate for that
          length. --inject must give exactly one bad frame (sent with a good
-         FCS, caught by the payload compare).
+         FCS, caught by the payload compare). Above 9014 bytes every frame
+         must come back flagged oversize; --sweep and --inject need
+         --len <= 9014.
 
 The `loop` test frames are not Ethernet frames (no FCS); the `mac` frames
 are, but go to a made-up unicast address. Run traffic only in a loopback or
@@ -226,6 +228,12 @@ def cmd_loop(b, args):
 def cmd_mac(b, args):
     if not 60 <= args.len <= 16000:
         raise SystemExit("--len must be 60..16000")
+    if args.len > 9014 and (args.sweep or args.inject):
+        # how many swept frames are oversize depends on where the sweep is
+        # when the run starts, and an injected error hides in a frame that
+        # is flagged anyway: neither can be checked
+        raise SystemExit("--sweep and --inject need --len <= 9014 "
+                         "(the RX MAC's jumbo limit)")
     b.set_bit(B_GEN, False)
     time.sleep(0.01)
     b.set_bit(B_MAC, True)
@@ -265,7 +273,7 @@ def cmd_mac(b, args):
              "%.0f" % avg_len, line / 1e6, 100 * pps / line))
     want_bad = 1 if args.inject else 0
     want_tuser = 0
-    if args.len > 9014 and not args.sweep:
+    if args.len > 9014:
         # above the RX MAC's jumbo limit (9018 bytes with the FCS): every
         # frame must come back flagged oversize
         want_bad = want_tuser = sent

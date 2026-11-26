@@ -24,6 +24,14 @@ module pcs10gbr_ber_mon #(
 );
 
     reg [15:0] timer;
+    // timer is 16 bits: a longer window would never end and hi_ber would
+    // never clear. Unsupported values instantiate a module that does not exist.
+    generate
+        if ((TIMER_CYCLES < 1) || (TIMER_CYCLES > 65536)) begin : gen_timer_check
+            EMACZERO_CONFIG_ERROR_pcs10gbr_ber_mon_timer_cycles_must_be_1_to_65536
+                u_timer_cycles_out_of_range ();
+        end
+    endgenerate
     reg [4:0]  win_cnt;
 
     wire       bad     = valid && block_lock && !(hdr[0] ^ hdr[1]);

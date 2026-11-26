@@ -358,7 +358,8 @@ async def tx_line_rate_min(dut):
     span = got[-1]["start"] - got[0]["start"]
     per = span / (len(got) - 1)
     assert abs(per - 84) < 0.1, f"{per:.2f} line bytes per 64-byte frame (want 84)"
-    assert sum(gaps) / len(gaps) - 12 < 0.1
+    avg = sum(gaps) / len(gaps)
+    assert abs(avg - 12) < 0.1, f"average gap {avg:.2f} bytes (want 12)"
 
 
 @cocotb.test(timeout_time=10, timeout_unit="ms")

@@ -398,7 +398,8 @@ bad frame). `mac` does the same through the MAC: frames of `--len` bytes
 before the FCS (`--sweep` steps the length from 60 up to it frame by
 frame), every byte checked after the RX MAC, and prints the frame rate
 against the line rate for that length. Frames longer than the RX MAC's
-9018-byte jumbo limit must all come back flagged. Neither generator's
+9018-byte jumbo limit must all come back flagged (so `--sweep` and
+`--inject` take `--len` up to 9014). Neither generator's
 traffic is meant for a switch (the raw frames have no FCS, the MAC frames
 go to a made-up address at line rate): use a loopback, or a fibre between
 two cages.

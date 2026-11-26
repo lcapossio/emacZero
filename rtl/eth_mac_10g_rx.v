@@ -84,6 +84,7 @@ module eth_mac_10g_rx #(
     reg [31:0] def_d;               // terminate was in lanes 4..7)
     reg [2:0]  def_n;
     reg        def_err;
+    reg        def_skip;            // the next valid word follows that end word
 
     reg        it_v;
     reg [1:0]  it_k;
@@ -149,6 +150,7 @@ module eth_mac_10g_rx #(
             def_d   <= 32'd0;
             def_n   <= 3'd0;
             def_err <= 1'b0;
+            def_skip <= 1'b0;
             it_v    <= 1'b0;
             it_k    <= K_DATA;
             it_d    <= 64'd0;
@@ -169,13 +171,16 @@ module eth_mac_10g_rx #(
                 def_v  <= 1'b0;
             end
             if (xgmii_rx_valid) begin
+                def_skip <= 1'b0;
                 case (n_st)
                     N_IDLE, N_DISCARD: begin
-                        // a lane-0 start right after an owed end word would be
-                        // a gap of 4 bytes or less: not a frame, ignored.
+                        // a lane-0 start in the word right after an owed end
+                        // word would be a gap of 4 bytes or less: not a
+                        // frame, always ignored (def_skip, not def_v, so a
+                        // PCS empty cycle in between changes nothing).
                         // N_DISCARD (after a runaway frame was cut) also
                         // waits here, for a terminate, idles or a start.
-                        if (start0 && !def_v) begin
+                        if (start0 && !def_skip) begin
                             it_v   <= 1'b1;
                             it_k   <= K_START;
                             it_d   <= xgmii_rxd;
@@ -209,6 +214,7 @@ module eth_mac_10g_rx #(
                             // a frame of 0 to 3 bytes ends in this word (or
                             // the preamble itself is cut short: an error)
                             def_v   <= 1'b1;
+                            def_skip <= 1'b1;
                             def_d   <= xgmii_rxd[63:32];
                             def_n   <= t_lane[2] ? {1'b0, t_lane[1:0]} : 3'd0;
                             def_err <= !t_lane[2] || t_bad || (|ctl_below[7:4]);
@@ -252,6 +258,7 @@ module eth_mac_10g_rx #(
                                 wcnt   <= wcnt + 11'd1;
                                 if (t_any) begin       // terminate in lanes 4..7
                                     def_v   <= 1'b1;
+                                    def_skip <= 1'b1;
                                     def_d   <= xgmii_rxd[63:32];
                                     def_n   <= {1'b0, t_lane[1:0]};
                                     def_err <= (|ctl_below[7:4]) || t_bad;
@@ -293,13 +300,25 @@ module eth_mac_10g_rx #(
     // end-word checks
     wire [14:0] e_len   = {1'b0, cnt} + {11'd0, it_n};
     wire [13:0] e_len_s = e_len[14] ? 14'h3FFF : e_len[13:0];
-    wire [13:0] e_max   = jumbo_en ? MAX_FRAME_JUMBO[13:0]
-                        : vlan     ? MAX_FRAME_STD[13:0] + 14'd4
-                        :            MAX_FRAME_STD[13:0];
+    // as eth_mac_rx: oversize means over the standard limit (+4 tagged) and,
+    // with jumbo_en, also over MAX_FRAME_JUMBO - jumbo_en only ever raises it
+    wire [13:0] e_std   = vlan ? MAX_FRAME_STD[13:0] + 14'd4 : MAX_FRAME_STD[13:0];
     wire        e_fcs   = crc_next != RESIDUE;
     wire        e_ctl   = err_acc || it_err;
     wire        e_under = e_len_s < 14'd64;
-    wire        e_over  = e_len_s > e_max;
+    wire        e_over  = (e_len_s > e_std) &&
+                          (!jumbo_en || e_len_s > MAX_FRAME_JUMBO[13:0]);
+
+    // the length saturates at 16383, so a limit of 16383 or more could never
+    // be exceeded (and [13:0] would truncate it). Verilog-2001 has no
+    // elaboration-time $error: an unsupported limit instantiates a module that
+    // does not exist; its name is the error message.
+    generate
+        if ((MAX_FRAME_JUMBO > 16382) || (MAX_FRAME_STD + 4 > 16382)) begin : gen_limit_check
+            EMACZERO_CONFIG_ERROR_eth_mac_10g_rx_frame_limit_must_be_at_most_16382
+                u_frame_limit_too_large ();
+        end
+    endgenerate
     // destination address for a frame with no data word before its end word
     wire [47:0] e_dst   = (cnt == 14'd0) ? it_d[47:0] : 48'd0;
 

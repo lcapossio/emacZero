@@ -258,6 +258,8 @@ LINT_SOURCES = [
     "fpga/zcu106/rtl/gt10g_reset.v",
     "fpga/zcu106/rtl/xgmii_test_gen.v",
     "fpga/zcu106/rtl/xgmii_test_chk.v",
+    "fpga/zcu106/rtl/axis_test_gen64.v",
+    "fpga/zcu106/rtl/axis_test_chk64.v",
 ]
 
 LINT_SUPPRESS = [
