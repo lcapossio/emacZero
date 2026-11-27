@@ -303,6 +303,35 @@ async def chk_seq_gap(dut):
 
 
 @cocotb.test()
+async def gen_sweep(dut):
+    """A sweep starts at 60 after fixed-length frames and never exceeds a lowered len."""
+    if dut._name != "h_axis_test64":
+        return
+    rng = random.Random(23)
+    await setup(dut)
+    seq = 0
+
+    async def run(length, sweep, n):
+        nonlocal seq
+        dut.g_len.value = length
+        dut.g_sweep.value = sweep
+        await ClockCycles(dut.clk, 2)
+        frames = await gen_collect(dut, n, 1.0, rng)
+        for fr in frames:
+            assert fr == ref_frame(len(fr), seq, 0), f"len {len(fr)} seq {seq}"
+            seq += 1
+        return [len(fr) for fr in frames]
+
+    assert await run(100, 0, 3) == [100] * 3
+    assert await run(60, 1, 3) == [60] * 3
+    assert await run(200, 1, 50) == list(range(60, 110))
+    # the sweep stands at 110: a lower len restarts it at 60
+    assert await run(80, 1, 25) == list(range(60, 81)) + list(range(60, 64))
+    assert await run(300, 0, 2) == [300] * 2
+    assert await run(64, 1, 7) == [60, 61, 62, 63, 64, 60, 61]
+
+
+@cocotb.test()
 async def gen_inject(dut):
     """inj_err flips bit 0 of exactly one payload word; the checker sees it."""
     if dut._name != "h_axis_test64":

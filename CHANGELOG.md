@@ -47,7 +47,9 @@ This project does not yet maintain long-lived release branches.
   checksum, UDP checksum 0), every header field checked at the far end:
   over the fibre, 8972-byte datagrams carry 9.93 Gb/s of UDP payload each
   way, the most the link can carry. cocotb suite `axis_test64` checks the
-  generator and checker alone.
+  generator and checker alone. The constraints bound the FIFO crossings
+  between the application clock and the GT clocks to 4 ns instead of
+  cutting them, so Gray pointers and bundled data stay in order.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
   with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while

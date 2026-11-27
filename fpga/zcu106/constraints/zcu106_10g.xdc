@@ -78,24 +78,34 @@ create_clock -name rxoutclk1 -period 3.103 \
     [get_pins -hierarchical -filter {NAME =~ u_port1/*u_gthe4_channel/RXOUTCLK}]
 
 # ---- Clock domains ----
-# The 50 MHz control clock, the refclk meter clock, the TX user clocks, the
-# RX recovered clock and TCK are unrelated. Only resets, static settings and
-# status cross, through synchronizers, plus EIO status counters read as
-# debug values.
+# The 50 MHz control clock, the refclk meter clock, TCK, and each port's TX
+# user clock and RX recovered clock are unrelated. Between those only resets,
+# static settings and status cross, through synchronizers, plus EIO status
+# counters read as debug values: cut as asynchronous groups.
 create_clock -name tck_bscan -period 100.0 \
     [get_pins -of_objects [get_cells -hierarchical -filter {REF_NAME == BSCANE2}] \
               -filter {REF_PIN_NAME == TCK}]
 create_waiver -type METHODOLOGY -id TIMING-2 -user emacZero \
     -objects [get_clocks tck_bscan] \
     -description "fcapz BSCANE2 TCK is the intended JTAG clock source"
+set clk_app [get_clocks -of_objects [get_pins u_app_mmcm/CLKOUT0]]
+set clk_50  [get_clocks -of_objects [get_pins u_clk_50_buf/O]]
+set gt_usr  [get_clocks -include_generated_clocks {txoutclk0 rxoutclk0 txoutclk1 rxoutclk1}]
+set_clock_groups -asynchronous -group [get_clocks tck_bscan]
+set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks sfp_refclk]
+set_clock_groups -asynchronous -group $clk_50
 set_clock_groups -asynchronous \
-    -group [get_clocks -include_generated_clocks sysclk_300] \
-    -group [get_clocks -include_generated_clocks sfp_refclk] \
     -group [get_clocks -include_generated_clocks txoutclk0] \
     -group [get_clocks -include_generated_clocks rxoutclk0] \
     -group [get_clocks -include_generated_clocks txoutclk1] \
-    -group [get_clocks -include_generated_clocks rxoutclk1] \
-    -group [get_clocks tck_bscan]
+    -group [get_clocks -include_generated_clocks rxoutclk1]
+# clk_app <-> the GT user clocks carry the MAC frame FIFOs, the statistics
+# FIFOs and the event counters: Gray pointers, and data words or snapshots
+# that a synchronized request or pointer qualifies. Not cut: bound every such
+# path to 4 ns, under the 5 ns clk_app period, so a Gray pointer's bits
+# cannot arrive out of order and bundled data settles before its qualifier.
+set_max_delay -datapath_only -from $clk_app -to $gt_usr 4.0
+set_max_delay -datapath_only -from $gt_usr -to $clk_app 4.0
 
 # Static / slow board inputs and LED outputs
 set_false_path -from [get_ports CPU_RESET]

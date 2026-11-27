@@ -37,9 +37,9 @@ mac      the same through the 10G MAC system eth_mac_sys_10g (MAC mode):
 dual     MAC mode on both ports at once over a fibre from SFP0 to SFP1 (no
          loopback): each port sends --len byte frames (port 1 --len1 if
          given; --sweep makes both sweep 60..their length) and checks every
-         byte of the other's. Passes when every frame sent each way arrived
-         good and in order and both MACs' counters agree (TX_FRAMES and
-         TX_BYTES of one = RX_FRAMES and RX_BYTES of the other, no error,
+         byte of the other's. Passes when frames went each way, every one
+         arrived good and in order and both MACs' counters agree (TX_FRAMES
+         and TX_BYTES of one = RX_FRAMES and RX_BYTES of the other, no error,
          drop or underrun). --inject puts one bad frame in port 0's stream,
          which port 1 must count once. Lengths up to 9014.
 --udp    (mac, dual) the frames are IPv4 / UDP datagrams instead (10.0.0.2
@@ -359,7 +359,8 @@ def cmd_loop(b, args):
     print("  sent %d frames in %.2f s: %.3f Gb/s of XGMII words (10.000 max)"
           % (sent, secs, rate))
     want_bad = 1 if args.inject else 0
-    ok = (f["good_frames"] + f["bad_frames"] == sent and f["bad_frames"] == want_bad
+    ok = (sent > 0
+          and f["good_frames"] + f["bad_frames"] == sent and f["bad_frames"] == want_bad
           and f["seq_gaps"] == 0 and f["lock_losses"] == 0
           and f["bad_words"] == want_bad and f["block_lock"])
     print("PASS" if ok else "FAIL")
@@ -418,7 +419,8 @@ def cmd_mac(b, args):
         # frame is counted oversize and dropped, none reaches the checker
         print("  frames over 9018 bytes: expecting every one dropped (oversize)")
     delivered = 0 if over else sent
-    ok = (f["mac_good"] + f["mac_bad"] == delivered and f["mac_bad"] == want_bad
+    ok = (sent > 0
+          and f["mac_good"] + f["mac_bad"] == delivered and f["mac_bad"] == want_bad
           and f["mac_tuser"] == 0 and f["mac_seq_gaps"] == 0
           and c["TX_FRAMES"] == sent and c["TX_UNDERRUN"] == 0
           and c["RX_ERR_FCS"] == 0 and c["RX_DROP"] == 0
@@ -486,7 +488,8 @@ def cmd_dual(b, args):
                  cr["RX_ERR_CTL"], cr["RX_ERR_OVERSIZE"], cr["RX_DROP"],
                  cr["RX_DISCARD"], fr["lock_losses"]))
         want_bad = 1 if (args.inject and tx == 0) else 0
-        good = (fr["mac_good"] + fr["mac_bad"] == sent and fr["mac_bad"] == want_bad
+        good = (sent > 0
+                and fr["mac_good"] + fr["mac_bad"] == sent and fr["mac_bad"] == want_bad
                 and fr["mac_tuser"] == 0 and fr["mac_seq_gaps"] == 0
                 and ct["TX_FRAMES"] == sent and cr["RX_FRAMES"] == sent
                 and ct["TX_BYTES"] == cr["RX_BYTES"]

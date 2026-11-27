@@ -125,7 +125,9 @@ module axis_test_gen64 (
         end
     endfunction
 
-    wire [15:0] next_len = sweep ? swp : len_c;
+    // a sweep value above a lowered len restarts at 60, before it is used
+    wire [15:0] swp_n    = (swp > len_c) ? 16'd60 : swp;
+    wire [15:0] next_len = sweep ? swp_n : len_c;
     wire [12:0] next_nb  = next_len[15:3] + {12'd0, |next_len[2:0]};
     wire [12:0] seq_beat = fudp ? 13'd5 : 13'd2;   // last header beat
     wire [12:0] nxt      = beat + 13'd1;
@@ -166,7 +168,8 @@ module axis_test_gen64 (
                     m_axis_tkeep  <= 8'hFF;
                     m_axis_tlast  <= 1'b0;
                     m_axis_tvalid <= 1'b1;
-                    swp           <= (swp >= len_c) ? 16'd60 : swp + 16'd1;
+                    // each sweep starts at 60; fixed-length frames hold it there
+                    swp           <= (!sweep || swp_n >= len_c) ? 16'd60 : swp_n + 16'd1;
                 end
             end else if (take) begin
                 if (m_axis_tlast) begin

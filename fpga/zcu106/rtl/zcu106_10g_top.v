@@ -177,12 +177,14 @@ module zcu106_10g_top (
     //   [10] clear checker counters
     //   [11] full GT reset (port 0: QPLL0 too, so both ports)   [12] laser off
     //   [13] MAC mode (frames through the 10G MAC)   [14] MAC length sweep
-    //   [15] MAC mode frames are IPv4 / UDP datagrams (set it before [8])
+    //   [15] MAC mode frames are IPv4 / UDP datagrams
     //   [23:16] frame words - 8   [31:24] idle words between frames
     //   [36:32] TXDIFFCTRL ^ 0x18   [44:40] TXPOSTCURSOR   [52:48] TXPRECURSOR
     //   [79:64] MAC mode frame length in bytes, no FCS (60..16000; with the
     //   sweep, the top of the 60..len sweep). [31:24] is also the MAC mode
-    //   gap, in clk_app cycles.
+    //   gap, in clk_app cycles. [79:64], [31:24], [23:16], [15] and [14] are
+    //   static settings (only [15] passes a synchronizer; a multi-bit value
+    //   has none): change them only while [8] is low.
     //   [87:80] CSR address  [119:88] CSR write data  [120] CSR go (toggle:
     //   set the other fields first)  [121] CSR write (0 = read)
     // eio-read [1279:0]: port p's status is [640p+639:640p], laid out in
