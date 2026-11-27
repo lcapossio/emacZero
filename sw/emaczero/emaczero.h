@@ -144,6 +144,9 @@ extern "C" {
 #define EMZ_CAPS_AUTO_PAUSE      (1u << 3)
 #define EMZ_CAPS_RX_FIFO_AW_SHIFT 4          /* RX FIFO = 2**AW bytes */
 #define EMZ_CAPS_RX_FIFO_AW_MASK (0x1Fu << EMZ_CAPS_RX_FIFO_AW_SHIFT)
+#define EMZ_CAPS_CORE_10G        (1u << 9)   /* eth_mac_sys_10g: a different map
+                                                (docs/registers.md); this
+                                                driver is for the 1G core */
 #define EMZ_CAPS_MAX_FRAME_SHIFT 16
 #define EMZ_CAPS_MAX_FRAME_MASK  (0xFFFFu << EMZ_CAPS_MAX_FRAME_SHIFT)
 

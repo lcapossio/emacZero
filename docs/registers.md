@@ -339,7 +339,8 @@ so a driver need not be told them separately. Writes are ignored.
 | `[2]` | rx_csum | `RX_CSUM_OFFLOAD=1`: `CTRL[9]` turns the RX checksum checker on |
 | `[3]` | auto_pause | Automatic PAUSE (`PAUSE_CTRL[2]`, PAUSE_XOFF / XON / REFRESH) exists |
 | `[8:4]` | rx_fifo_aw | `RX_AXIS_ADDR_WIDTH`: the RX FIFO holds `2**rx_fifo_aw` bytes |
-| `[15:9]` | reserved | `0` |
+| `[9]` | core_10g | `0` here; `1` on `eth_mac_sys_10g`, whose map is in [10G core](#10g-core-eth_mac_sys_10g) |
+| `[15:10]` | reserved | `0` |
 | `[31:16]` | max_frame | `MAX_FRAME`, in bytes (low 16 bits) |
 
 `CTRL[7]` and `CTRL[9]` read back as written whether or not the logic behind
@@ -424,6 +425,48 @@ for the receive path to keep up with back-to-back frames: 125 MHz at 1G,
 50 MHz or more at 100M (the MII path takes three clocks a byte before the
 FIFO; at 25 MHz it refuses bytes upstream however low PAUSE_XOFF is).
 `RX_DROP` and `RX_ERR_OVERFLOW` show when the headroom was not enough.
+
+## 10G core (eth_mac_sys_10g)
+
+`rtl/eth_mac_sys_10g.v` has its own, smaller map in the same 256-byte
+space. Offsets it shares with the 1G core keep their meaning; everything else
+reads 0. CAPS `[9]` = 1 identifies it. There is no MDIO, IRQ or PAUSE yet.
+
+| Offset | Name | Access | Description |
+|-------:|------|--------|-------------|
+| `0x00` | VERSION | RO | As the 1G core |
+| `0x04` | CTRL | RW | `[0]` tx_en `[1]` rx_en `[2]` promisc `[6]` jumbo_en `[8]` passthrough (every address, bad frames delivered with tuser). tx_en / rx_en act between frames. |
+| `0x08` | STATUS | RO | `[0]` PCS block lock `[1]` PCS high BER `[2]` TX FIFO not empty |
+| `0x0C` / `0x10` | MAC_LO / MAC_HI | RW | Station address, as the 1G core |
+| `0x3C` | SCRATCH | RW | |
+| `0x44` / `0x48` | MCAST_LO / MCAST_HI | RW | Multicast hash table, `MCAST_HASH_FILTER=1` only (same hash as the 1G core); without it every multicast frame is accepted |
+| `0x98` | CAPS | RO | `[0]` mcast_hash `[8:4]` RX FIFO size, log2 bytes `[9]` = 1 `[31:16]` MAX_FRAME_JUMBO |
+| `0xB0` / `0xB4` | TX_FRAMES | RO/WC | Frames sent with a good FCS (64-bit) |
+| `0xB8` / `0xBC` | TX_BYTES | RO/WC | Their bytes, padding and FCS included (64-bit) |
+| `0xC0` / `0xC4` | RX_FRAMES | RO/WC | Good frames received, before the filter and the FIFO (64-bit) |
+| `0xC8` / `0xCC` | RX_BYTES | RO/WC | Their bytes, FCS included (64-bit) |
+| `0xD0` | RX_ERR_FCS | RO/WC | |
+| `0xD4` | RX_ERR_CTL | RO/WC | Control character in the frame or bad SFD |
+| `0xD8` | RX_ERR_OVERSIZE | RO/WC | Over 1518 (1522 tagged), or MAX_FRAME_JUMBO with jumbo_en |
+| `0xDC` | RX_ERR_UNDERSIZE | RO/WC | Under 64 bytes |
+| `0xE0` / `0xE4` | RX_BCAST / RX_MCAST | RO/WC | Good broadcast / multicast frames |
+| `0xE8` | RX_DROP | RO/WC | Frames lost because the RX FIFO was full |
+| `0xEC` | RX_DISCARD | RO/WC | Frames dropped on purpose: filter, RX disabled, or bad without passthrough |
+| `0xF0` | TX_UNDERRUN | RO/WC | Cannot happen with the store-and-forward TX FIFO; kept as a check |
+| `0xF4` | TX_DROP | RO/WC | Frames too long for the TX FIFO, or thrown away while a transceiver reset held the TX path |
+| `0xF8` | TX_ERR | RO/WC | Frames sent with a bad FCS on purpose (`s_axis_tuser`) |
+| `0xFC` | LOCK_LOSS | RO/WC | Times PCS block lock was lost |
+
+A write of any value clears the counter it addresses. For the 64-bit
+counters, reading the low word latches the high word; read the high word
+next.
+
+A transceiver reset (`xgmii_tx_rst_n` or `xgmii_rx_rst_n`) resets that
+direction's FIFO on both sides and loses the frames in it; the registers
+and counters keep their values. While the TX side is held in reset,
+`s_axis` beats are taken and thrown away (each frame counts in TX_DROP). An
+RX frame part-way out on `m_axis` when the reset comes is ended with one
+extra beat carrying `tlast` and `tuser`.
 
 ## Arty UDP Demo Sideband Ports
 

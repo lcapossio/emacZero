@@ -7,6 +7,49 @@ This project does not yet maintain long-lived release branches.
 
 ### Added
 
+- 10GBASE-R, work in progress: a clean-room PCS
+  (`rtl/pcs10gbr*.v`, IEEE 802.3 clause 49: 64b/66b encoder and decoder with
+  the receive state machine, scrambler, 66:64 gearboxes, block lock, BER
+  monitor) with cocotb suites against a reference model, and a ZCU106 SFP0
+  bring-up design (`fpga/zcu106/`, `build_zcu106_10g.tcl`) that drives the
+  GTH primitives directly with its own reset sequencer, no AMD IP, and runs
+  test frames through the PCS and the GT: block lock to a 10G switch and
+  error-free near-end PMA loopback at full rate on the board. A 64-bit
+  transmit MAC (`rtl/eth_mac_10g_tx.v`: start in lane 0 or 4, padding, FCS
+  over 8 bytes per cycle with `rtl/crc32_d64.v`, deficit idle count for line
+  rate at every length; tuser sends a wrong FCS) and receive MAC
+  (`rtl/eth_mac_10g_rx.v`: lane-4 realignment, FCS check and strip; tuser on
+  a bad FCS, runt, oversize frame with VLAN and jumbo limits, error
+  character, frame cut short, or unqualified start) for the PCS's XGMII. On
+  the ZCU106 (MAC mode of the bring-up design, near-end PMA loopback) they
+  carry 64-byte frames at the full 14.88 Mpps and 1514 to 9000-byte frames
+  at line rate with every frame checked. Verilog only.
+- 10G MAC system `rtl/eth_mac_sys_10g.v` (filelist `rtl/eth_mac_sys_10g.f`):
+  64-bit AXI4-Stream in an application clock domain (200 MHz for line rate)
+  to and from the PCS's XGMII, through store-and-forward frame FIFOs
+  (`rtl/axis_async_frame_fifo.v`; the TX MAC only starts whole frames, so it
+  never underruns; the RX side drops whole frames that fail the address
+  filter, arrive while RX is disabled, are bad, or find the FIFO full), and
+  AXI4-Lite CSRs that keep the 1G core's offsets where they overlap (CTRL,
+  station address, multicast hash, SCRATCH, CAPS with a 10G bit) plus TX/RX
+  frame and byte counters (64-bit) and error, drop and lock-loss counters.
+  A transceiver TX or RX reset resets that direction's FIFO on both sides,
+  so no stale FIFO memory is read after it; the AXIS ports stay well formed
+  through it. The ZCU106 10G design's MAC mode now runs through it, with
+  its CSRs reached over the fcapz EIO. Verilog only.
+- ZCU106 10G design on two ports: SFP0 and SFP1 share QPLL0, each with its
+  own channel, reset sequencer, PCS, MAC system, test traffic and EIO block;
+  `sfp10g_test.py dual` runs MAC-mode traffic both ways over a fibre between
+  the cages and checks every frame and both MACs' counters. On the board
+  both directions run at once at line rate, 64 to 9018 bytes with the FCS,
+  with no error. cocotb suite `mac10g_dual` simulates the two ports' logic
+  crossed. `--udp` makes the test traffic IPv4 / UDP datagrams (header
+  checksum, UDP checksum 0), every header field checked at the far end:
+  over the fibre, 8972-byte datagrams carry 9.93 Gb/s of UDP payload each
+  way, the most the link can carry. cocotb suite `axis_test64` checks the
+  generator and checker alone. The constraints bound the FIFO crossings
+  between the application clock and the GT clocks to 4 ns instead of
+  cutting them, so Gray pointers and bundled data stay in order.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
   with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while

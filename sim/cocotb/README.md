@@ -288,6 +288,113 @@ frame after the first; hard-wiring `gmii_tx_er_out` to 0 fails the error
 passthrough; closing out the paced frame one cycle early shortens the last
 byte's span from `len*period` to `(len-1)*period+1`.
 
+## 10GBASE-R
+
+Verilog only for now (the suites skip the VHDL run).
+
+- `pcs10gbr_enc`, `pcs10gbr_dec`, `pcs10gbr`: the PCS in `rtl/pcs10gbr*.v`
+  against a reference model written from the IEEE 802.3 clause 49 tables
+  (`lib/pcs10gbr_model.py`). The encoder and decoder are compared block by
+  block with the model on every block type, junk and broken sequences; the
+  whole PCS's TX stream is aligned and decoded by the model, and looped back
+  to RX at several bit offsets; sync header errors drop and regain block
+  lock and raise hi_ber.
+- `gt10g_reset`: the ZCU106 GT reset sequencer
+  (`fpga/zcu106/rtl/gt10g_reset.v`) against a model of the QPLL0 and channel
+  reset handshakes: bring-up order (USERRDY never before the user clock runs,
+  never while the path is in reset), an RX restart that leaves TX alone,
+  recovery from a QPLL0 lock loss and a retry after an RX reset done that
+  never comes.
+- `xgmii_test_loop`, `xgmii_test_loop_o63`: the ZCU106 10G test generator,
+  the PCS twice and the checker, the line looped back at bit offset 17 / 63:
+  frames of 1 to 255 words with and without gaps all good and in sequence,
+  back-to-back minimum frames at the full rate the PCS accepts, and injected
+  payload and line bit errors counted.
+- `crc32_d64`: the 8-byte CRC step (`rtl/crc32_d64.v`) against zlib for
+  every byte count, and chained over random messages.
+- `eth_mac_10g_tx`: the 64-bit transmit MAC's XGMII output parsed by the
+  test (not by the RTL's rules): start lane, preamble, payload padded to 60
+  bytes, FCS by zlib, terminate, idles; back-to-back frames must start
+  exactly where the clause 46 deficit idle count puts them (84 line bytes
+  per 64-byte frame), with ce always on, in the PCS's 32-of-33 pattern and
+  random; a beat missing mid-frame corrupts only that frame with error
+  characters, and tuser sends the frame with its payload and a wrong FCS.
+  Removing the deficit idle count or the lane-4 start each fails it.
+- `eth_mac_10g_rx`: the receive MAC against XGMII streams built by the test,
+  starts in both lanes, gaps down to the 5-byte receive minimum, the
+  decoder's valid gaps and random ones: payload with preamble and FCS
+  removed, and tuser on a bad FCS, an error character, a bad SFD, a runt,
+  an oversize frame (1518, 1522 tagged, jumbo), a runaway frame cut at
+  16376 bytes, a frame cut short by idles, a fault ordered set or a new
+  start, a start not preceded by idles or a sequence ordered set; frames of
+  0 to 12 bytes in either lane never swallow the next frame; stats (length,
+  error kind, broadcast, multicast). Ending frames only at a terminate, or
+  accepting any start, each fails it.
+- `eth_mac_10g_tx_loop`, `eth_mac_10g_loop`: the transmit MAC through the PCS
+  and a line loopback at a bit offset, first checked on the received XGMII
+  (frames and deficit idle count gaps intact), then through the receive MAC
+  back to AXIS: every frame of a line-rate mix (minimum frames back to back,
+  every short length, random up to 1500, a 9000-byte jumbo) comes back in
+  order, padded, clean, and the tuser frames flagged, including tuser on the
+  last beat of a short frame followed by a minimum frame at every end lane.
+- `axis_async_frame_fifo`, `axis_async_frame_fifo_bp`: the store-and-forward
+  frame FIFO behind and ahead of the 10G MACs (`rtl/axis_async_frame_fifo.v`),
+  32 words, in drop mode and in backpressure mode: random frames, s_drop and
+  reader stalls with the write clock faster, slower and nearly equal. Every
+  frame is reported once (ok, drop or overflow), exactly the ok frames come
+  out, whole, in order, and none before its last word was written; a stalled
+  reader overflows the drop-mode FIFO at exactly the expected frame and holds
+  off the writer in backpressure mode, where only frames longer than the
+  FIFO are dropped. Letting the read side see uncommitted words fails it.
+- `eth_mac_sys_10g_loop`: the 10G MAC system (`rtl/eth_mac_sys_10g.v`) with
+  the PCS and a line loopback, the application clock (200 MHz) unrelated to
+  the transceiver clock (161.13 MHz): the CSRs; 500 back-to-back 64-byte
+  frames through both clock crossings at line rate (within 0.5%); every
+  length 14..160, random ones to 1514 and jumbo frames, padded and counted;
+  tuser frames dropped as bad, then delivered flagged with passthrough;
+  oversize frames dropped; the address filter (station address, other
+  unicast, broadcast, multicast in and out of the hash table), promisc and
+  rx_en; RX FIFO overflow under m_axis backpressure, where what is delivered
+  is whole and in order and every frame is either delivered or counted
+  dropped; a TX frame too long for its FIFO dropped without blocking the
+  next ones; a 111 MHz application clock, where the TX MAC must still never
+  run dry; 64-bit counter reads and clears; a transceiver TX or RX reset
+  alone, idle and in the middle of traffic, after which exactly the frames
+  sent come out (none stale from the FIFO memory), nothing corrupt is
+  delivered unflagged, and no counter jumps. An always-open filter, a TX
+  FIFO that publishes words before their frame is whole, or an RX FIFO
+  reset on one side only, each fails it.
+- `mac10g_test_loop`: the ZCU106 MAC-mode test path through the board's own
+  port logic (`zcu106_10g_lane`, everything but the GT), `axis_test_gen64`
+  (200 MHz) -> `eth_mac_sys_10g` -> PCS -> line loopback -> PCS ->
+  `eth_mac_sys_10g` -> `axis_test_chk64`, with the board's settings:
+  minimum frames at line rate, a 60..400 length sweep, 9000-byte frames, an
+  injected payload error counted once, and the MAC's counters read and
+  cleared through `axil_cmd_master` as the board's EIO does.
+- `mac10g_dual`: two `zcu106_10g_lane`s crossed, each one's line output into
+  the other's input (with different bit offsets, and each direction on its
+  own transceiver clock), as SFP0 and SFP1 with a fibre between them:
+  minimum frames at line rate both ways at once; port 0 sweeping 60..1514
+  while port 1 sends 9014-byte frames, then port 0 sending 9000-byte frames
+  with 5 idle cycles between them while port 1 sweeps 60..300; and an
+  injected error counted only on the port that received it; IPv4 / UDP
+  datagrams both ways, 1472-byte datagrams at line rate against a
+  60..400-byte sweep. Each direction passes when every frame arrived good
+  and in order and the sender's TX_FRAMES / TX_BYTES equal the receiver's
+  RX_FRAMES / RX_BYTES.
+- `axis_test64`: the ZCU106 test traffic blocks alone, `axis_test_gen64`
+  and `axis_test_chk64`, in both formats (test frames and IPv4 / UDP
+  datagrams). The generator's frames, under random backpressure, against a
+  reference built in the test (IPv4 header checksum by RFC 1071 over the
+  header bytes); the checker takes reference frames as good and in order,
+  and counts as bad each frame with a bit flipped in any header byte or in
+  the payload, an IPv4 identification other than its seq (checksum still
+  right), a byte too few or too many, or tuser; a missing seq is one gap,
+  and a frame with a broken header or seq byte is not taken as the next
+  seq reference. A generator with a wrong checksum constant, or a checker
+  without the IPv4 checksum, UDP length, identification or seq-complement
+  check, or one that takes a broken-header frame's seq, each fails it.
+
 ## Reset defaults
 
 `eth_mac_sys_reset_txrx_off` builds `eth_mac_sys` (MII, MII TX looped back to
