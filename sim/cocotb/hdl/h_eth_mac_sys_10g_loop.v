@@ -6,6 +6,8 @@
 // user clock); clk is unrelated, so both frame FIFOs cross clock domains.
 // tx_rst_n / rx_rst_n reset one direction of the transceiver side alone (PCS
 // and the system's XGMII side), as a transceiver TX or RX reset does.
+// cut replaces the received serial data with zeros (a broken fibre): the PCS
+// loses block lock and sends local fault sequences up to the system.
 module h_eth_mac_sys_10g_loop #(
     parameter OFFSET             = 37,
     parameter BER_TIMER_CYCLES   = 4000,
@@ -18,6 +20,7 @@ module h_eth_mac_sys_10g_loop #(
     input  wire        gt_rst_n,
     input  wire        tx_rst_n,
     input  wire        rx_rst_n,
+    input  wire        cut,
 
     input  wire [7:0]  s_axi_awaddr,
     input  wire        s_axi_awvalid,
@@ -66,7 +69,7 @@ module h_eth_mac_sys_10g_loop #(
     reg  [63:0] prev;
     always @(posedge gt_clk) prev <= gt_txdata;
     wire [127:0] two = {gt_txdata, prev};
-    wire [63:0]  gt_rxdata = two[OFFSET +: 64];
+    wire [63:0]  gt_rxdata = cut ? 64'd0 : two[OFFSET +: 64];
 
     eth_mac_sys_10g #(
         .TX_FIFO_ADDR_WIDTH (TX_FIFO_ADDR_WIDTH),
@@ -95,7 +98,8 @@ module h_eth_mac_sys_10g_loop #(
         .xgmii_rx_clk (gt_clk), .xgmii_rx_rst_n (x_rx_rst_n),
         .xgmii_rxd (xgmii_rxd), .xgmii_rxc (xgmii_rxc),
         .xgmii_rx_valid (xgmii_rx_valid),
-        .pcs_block_lock (block_lock), .pcs_hi_ber (hi_ber)
+        .pcs_block_lock (block_lock), .pcs_hi_ber (hi_ber),
+        .cfg_ip_addr    ()
     );
 
     pcs10gbr #(.BER_TIMER_CYCLES(BER_TIMER_CYCLES)) u_pcs (

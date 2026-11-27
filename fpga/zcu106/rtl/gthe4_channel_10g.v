@@ -71,6 +71,7 @@ module gthe4_channel_10g (
     // Controls and status
     input  wire [2:0]   loopback,
     input  wire         txpolarity,
+    input  wire         txinhibit,         // 1: TX held at a constant level
     input  wire         rxpolarity,
     input  wire         rxlpmen,           // 0: DFE, 1: LPM
     input  wire [4:0]   txdiffctrl,        // TX swing
@@ -526,7 +527,7 @@ module gthe4_channel_10g (
         .TXDLYUPDOWN           (1'h0),
         .TXELECIDLE            (1'h0),
         .TXHEADER              (6'h0),
-        .TXINHIBIT             (1'h0),
+        .TXINHIBIT             (txinhibit),
         .TXLATCLK              (1'h0),
         .TXLFPSTRESET          (1'h0),
         .TXLFPSU2LPEXIT        (1'h0),

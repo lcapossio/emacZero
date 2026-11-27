@@ -5,8 +5,8 @@
 (zcu106_10g_top, build_zcu106_10g.tcl) over its fcapz EIO on USER3.
 
 Needs the bitstream on the board and a hw_server on :3121. The design has two
-ports, SFP0 and SFP1; --sfp picks the one loop, mac, csr and the resets act on
-(default 0).
+ports, SFP0 and SFP1; --sfp picks the one loop, mac, service, csr and the
+resets act on (default 0).
 
     python fpga/zcu106/scripts/sfp10g_test.py status
     python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
@@ -15,6 +15,8 @@ ports, SFP0 and SFP1; --sfp picks the one loop, mac, csr and the resets act on
     python fpga/zcu106/scripts/sfp10g_test.py dual --len 60 --seconds 10
     python fpga/zcu106/scripts/sfp10g_test.py dual --sweep --len 1514 --len1 9000
     python fpga/zcu106/scripts/sfp10g_test.py dual --udp --len 9014 --seconds 10
+    python fpga/zcu106/scripts/sfp10g_test.py fault --len 60
+    python fpga/zcu106/scripts/sfp10g_test.py service --ip 192.168.10.200
     python fpga/zcu106/scripts/sfp10g_test.py csr 0xC0          # read a MAC CSR
     python fpga/zcu106/scripts/sfp10g_test.py csr 0x04 0x43     # write one
 
@@ -42,19 +44,35 @@ dual     MAC mode on both ports at once over a fibre from SFP0 to SFP1 (no
          and TX_BYTES of one = RX_FRAMES and RX_BYTES of the other, no error,
          drop or underrun). --inject puts one bad frame in port 0's stream,
          which port 1 must count once. Lengths up to 9014.
+fault    link fault signalling over the same fibre: dual traffic of --len
+         bytes, then SFP1's transmitter inhibited (held at a constant level)
+         for --off seconds, which darkens SFP1 -> SFP0 (neither laser can be
+         turned off on this board). SFP0 must report a local fault and send
+         remote fault sequences, SFP1 must report the remote fault, and both
+         MACs must stop starting frames, holding the generators off. With
+         the transmitter back on, both faults must clear and traffic resume.
+         SFP0 -> SFP1 must be lossless (every frame sent arrives, in order);
+         SFP1 -> SFP0 may lose only the frames on the fibre before SFP1 saw
+         the remote fault: one sequence gap, no bad frame.
 --udp    (mac, dual) the frames are IPv4 / UDP datagrams instead (10.0.0.2
          -> 10.0.0.1, port 5001 -> 5001, UDP payload --len - 42 bytes, UDP
          checksum 0), and the checker checks every IPv4 / UDP header field
          and the IPv4 header checksum too. Also prints the UDP payload rate
          against the most a 10 Gb/s link carries in datagrams of that size:
          payload / (payload + 66 bytes of headers, FCS, preamble and gap).
+service  puts the --sfp port in service mode: its MAC carries the demo L3
+         stack (ARP, ping, UDP echo on port 9999) at MAC 02:00:00:00:00:01
+         and --ip (written to IP_ADDR), instead of the test traffic, so a PC
+         can reach it through a 10G switch. --watch prints the MAC's frame
+         counters every second for that many seconds; --off returns the port
+         to the test traffic.
 csr      reads (one argument) or writes (two) an eth_mac_sys_10g CSR; see
          the register map in rtl/eth_mac_sys_10g.v.
 
 The `loop` test frames are not Ethernet frames (no FCS); the `mac` frames
 are, but go to a made-up unicast address. Run traffic only in a loopback or
 over a fibre between two cages / boards running this design, not toward a
-switch.
+switch (service mode is the one meant for a switch).
 """
 
 import argparse
@@ -122,7 +140,7 @@ LOOPBACK = {"none": 0, "pcs": 1, "pma": 2}
 B_TXPOL, B_RXPOL, B_LPM, B_TXRST, B_RXRST = 3, 4, 5, 6, 7
 B_GEN, B_INJ, B_CLEAR, B_GTRST, B_LASER_OFF = 8, 9, 10, 11, 12
 B_MAC, B_SWEEP, B_UDP = 13, 14, 15
-B_CSR_GO, B_CSR_WRITE = 120, 121
+B_CSR_GO, B_CSR_WRITE, B_SERVICE, B_TX_INHIBIT = 120, 121, 122, 123
 
 # eth_mac_sys_10g CSRs (rtl/eth_mac_sys_10g.v)
 R_TX_FRAMES, R_TX_BYTES, R_RX_FRAMES, R_RX_BYTES = 0xB0, 0xB8, 0xC0, 0xC8
@@ -134,7 +152,10 @@ MAC_COUNTERS = [  # (name, address, 64-bit)
     ("RX_DROP", 0xE8, False), ("RX_DISCARD", 0xEC, False),
     ("TX_UNDERRUN", 0xF0, False), ("TX_DROP", 0xF4, False),
     ("TX_ERR", 0xF8, False), ("LOCK_LOSS", 0xFC, False),
+    ("LOCAL_FAULTS", 0xA8, False), ("REMOTE_FAULTS", 0xAC, False),
 ]
+R_STATUS, R_IP_ADDR = 0x08, 0x40
+ST_LOCAL_FAULT, ST_REMOTE_FAULT = 1 << 3, 1 << 4
 WINDOW_S = (1 << 22) / 50e6     # frequency meter window
 
 
@@ -265,6 +286,16 @@ class Board:
     def mac_clear(self):
         for _, addr, _ in MAC_COUNTERS:
             self.csr(addr, 0)
+
+    def mac_status(self, q):
+        """Port q's eth_mac_sys_10g STATUS register."""
+        self.sfp = q
+        return self.csr(R_STATUS)
+
+
+def faults(st):
+    return " ".join(n for n, m in (("local_fault", ST_LOCAL_FAULT),
+                                   ("remote_fault", ST_REMOTE_FAULT)) if st & m) or "-"
 
 
 def mhz(count):
@@ -541,6 +572,139 @@ def cmd_dual(b, args):
     return 0 if ok else 1
 
 
+def cmd_fault(b, args):
+    if not 60 <= args.len <= 9014:
+        raise SystemExit("--len must be 60..9014")
+    both = list(range(PORTS))
+    b.set_bit(B_GEN, False, both)
+    b.set_bit(B_TX_INHIBIT, False, both)
+    time.sleep(0.01)
+    b.set_bit(B_MAC, True, both)
+    b.set_bit(B_SWEEP, False, both)
+    b.set_bit(B_UDP, False, both)
+    b.set_field(0, 3, LOOPBACK["none"], both)
+    b.set_field(24, 8, 0, both)
+    b.set_field(64, 16, args.len, both)
+    b.pulse(B_RXRST, sfps=both)
+    if wait_lock(b, sfps=both) is None:
+        print("FAIL: no block lock on both ports (is the fibre SFP0 <-> SFP1 in?)")
+        return 1
+    time.sleep(0.05)
+    b.pulse(B_CLEAR, sfps=both)
+    for q in both:
+        b.sfp = q
+        b.mac_clear()
+    st0 = [b.mac_status(q) for q in both]
+    ok = all(not st & (ST_LOCAL_FAULT | ST_REMOTE_FAULT) for st in st0)
+    print("before: SFP0 %s, SFP1 %s" % (faults(st0[0]), faults(st0[1])))
+
+    last = {q: gen_count(b, q, "mac_gen_frames") for q in both}
+    b.set_bit(B_GEN, True, both)
+    time.sleep(args.seconds)
+    # SFP1's transmitter inhibited: SFP1 -> SFP0 goes dark
+    b.set_bit(B_TX_INHIBIT, True, [1])
+    time.sleep(0.1)
+    g0 = [gen_count(b, q, "mac_gen_frames") for q in both]
+    time.sleep(args.off)
+    g1 = [gen_count(b, q, "mac_gen_frames") for q in both]
+    st_off = [b.mac_status(q) for q in both]
+    print("SFP1 TX off: SFP0 %s, SFP1 %s; generators %d and %d frames in %.1f s"
+          % (faults(st_off[0]), faults(st_off[1]), (g1[0] - g0[0]) & M32,
+             (g1[1] - g0[1]) & M32, args.off))
+    held = all(((g1[q] - g0[q]) & M32) == 0 for q in both)
+    ok = ok and bool(st_off[0] & ST_LOCAL_FAULT) and bool(st_off[1] & ST_REMOTE_FAULT) \
+        and not st_off[1] & ST_LOCAL_FAULT and held
+    # transmitter on again
+    b.set_bit(B_TX_INHIBIT, False, [1])
+    if wait_lock(b, timeout=5.0, sfps=both) is None:
+        print("FAIL: no block lock after SFP1's transmitter came back")
+        return 1
+    time.sleep(0.1)
+    g2 = [gen_count(b, q, "mac_gen_frames") for q in both]
+    time.sleep(args.seconds)
+    g3 = [gen_count(b, q, "mac_gen_frames") for q in both]
+    b.set_bit(B_GEN, False, both)
+    time.sleep(0.05)
+    sents = {q: (gen_count(b, q, "mac_gen_frames") - last[q]) & M32 for q in both}
+    resumed = all(((g3[q] - g2[q]) & M32) > 1000 for q in both)
+    st_on = [b.mac_status(q) for q in both]
+    print("SFP1 TX on: SFP0 %s, SFP1 %s; traffic %s"
+          % (faults(st_on[0]), faults(st_on[1]), "resumed" if resumed else "STOPPED"))
+    ok = ok and resumed and all(not st & (ST_LOCAL_FAULT | ST_REMOTE_FAULT) for st in st_on)
+
+    fs = b.read_all()
+    cs = []
+    for q in both:
+        b.sfp = q
+        cs.append(b.mac_counters())
+    for q in both:
+        print("  SFP%d LOCAL_FAULTS %d REMOTE_FAULTS %d LOCK_LOSS %d TX_UNDERRUN %d "
+              "TX_DROP %d RX_ERR_FCS %d" % (q, cs[q]["LOCAL_FAULTS"],
+                                           cs[q]["REMOTE_FAULTS"], cs[q]["LOCK_LOSS"],
+                                           cs[q]["TX_UNDERRUN"], cs[q]["TX_DROP"],
+                                           cs[q]["RX_ERR_FCS"]))
+    ok = ok and cs[0]["LOCAL_FAULTS"] >= 1 and cs[1]["REMOTE_FAULTS"] >= 1 \
+        and cs[1]["LOCAL_FAULTS"] == 0
+    for tx, rx in ((0, 1), (1, 0)):
+        fr, ct, cr = fs[rx], cs[tx], cs[rx]
+        sent = sents[tx]
+        lost = sent - ((fr["mac_good"] + fr["mac_bad"]) & M32)
+        print("SFP%d -> SFP%d: sent %d, good %d bad %d tuser %d seq_gaps %d (%d lost); "
+              "TX_FRAMES %d RX_FRAMES %d"
+              % (tx, rx, sent, fr["mac_good"], fr["mac_bad"], fr["mac_tuser"],
+                 fr["mac_seq_gaps"], lost, ct["TX_FRAMES"], cr["RX_FRAMES"]))
+        good = (sent > 0 and fr["mac_bad"] == 0 and fr["mac_tuser"] == 0
+                and ct["TX_FRAMES"] == sent and ct["TX_UNDERRUN"] == 0
+                and ct["TX_DROP"] == 0 and cr["RX_DROP"] == 0)
+        if tx == 0:     # the direction that stayed lit: nothing lost
+            good = good and lost == 0 and fr["mac_seq_gaps"] == 0 \
+                and cr["RX_FRAMES"] == sent and cr["RX_ERR_FCS"] == 0 \
+                and fr["lock_losses"] == 0
+        else:           # the frames on the fibre when it went dark
+            good = good and fr["mac_seq_gaps"] == 1 and 0 < lost < 100000
+        print("  %s" % ("ok" if good else "FAIL"))
+        ok = ok and good
+    print("PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
+def cmd_service(b, args):
+    b.set_bit(B_GEN, False)
+    time.sleep(0.01)
+    if args.off:
+        b.set_bit(B_SERVICE, False)
+        print("SFP%d back on the test traffic" % b.sfp)
+        return 0
+    try:
+        ip = bytes(int(x) for x in args.ip.split("."))
+        assert len(ip) == 4
+    except (ValueError, AssertionError):
+        raise SystemExit("--ip must be a dotted IPv4 address")
+    q = b.sfp
+    b.set_bit(B_MAC, True)
+    b.set_field(0, 3, LOOPBACK["none"])
+    b.set_bit(B_SERVICE, True)
+    b.csr(R_IP_ADDR, int.from_bytes(ip, "big"))
+    got = b.csr(R_IP_ADDR)
+    b.mac_clear()
+    f = wait_lock(b, timeout=1.0)
+    print("SFP%d service mode: ARP, ping, UDP echo on port 9999 at %s, MAC "
+          "02:00:00:00:00:01; block lock %s, link fault %s"
+          % (q, ".".join(str(x) for x in got.to_bytes(4, "big")),
+             "yes" if f else "NO", faults(b.mac_status(q))))
+    if got != int.from_bytes(ip, "big"):
+        print("FAIL: IP_ADDR reads 0x%08x" % got)
+        return 1
+    for _ in range(int(args.watch)):
+        time.sleep(1.0)
+        b.sfp = q
+        c = {n: b.csr(a) for n, a in (("RX_FRAMES", 0xC0), ("TX_FRAMES", 0xB0),
+                                     ("RX_DISCARD", 0xEC), ("RX_DROP", 0xE8),
+                                     ("RX_ERR_FCS", 0xD0))}
+        print("  " + " ".join("%s %d" % kv for kv in c.items()))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -548,7 +712,7 @@ def main():
     ap.add_argument("--port", type=int, default=3121)
     ap.add_argument("--tap", default="xczu7.tap")
     ap.add_argument("--sfp", type=int, choices=range(PORTS), default=0,
-                    help="port for loop, mac, csr and the resets (default 0)")
+                    help="port for loop, mac, service, csr and the resets (default 0)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
     lp = sub.add_parser("loop")
@@ -576,6 +740,16 @@ def main():
     dp.add_argument("--lpm", action="store_true", help="LPM receivers instead of DFE")
     dp.add_argument("--inject", action="store_true")
     dp.add_argument("--udp", action="store_true", help="IPv4 / UDP datagrams")
+    fp = sub.add_parser("fault")
+    fp.add_argument("--seconds", type=float, default=1.0,
+                    help="traffic before and after SFP1's transmitter is off")
+    fp.add_argument("--off", type=float, default=1.0,
+                    help="seconds with SFP1's transmitter off")
+    fp.add_argument("--len", type=int, default=60)
+    sp = sub.add_parser("service")
+    sp.add_argument("--ip", default="192.168.137.200")
+    sp.add_argument("--watch", type=float, default=0)
+    sp.add_argument("--off", action="store_true")
     cp = sub.add_parser("csr")
     cp.add_argument("addr", type=lambda x: int(x, 0))
     cp.add_argument("data", type=lambda x: int(x, 0), nargs="?")
@@ -588,7 +762,13 @@ def main():
         if args.cmd == "status":
             for f in b.read_all():
                 show(f)
+            for q in range(PORTS):
+                print("SFP%d MAC link fault: %s" % (q, faults(b.mac_status(q))))
             return 0
+        if args.cmd == "fault":
+            return cmd_fault(b, args)
+        if args.cmd == "service":
+            return cmd_service(b, args)
         if args.cmd == "dual":
             return cmd_dual(b, args)
         if args.cmd == "loop":

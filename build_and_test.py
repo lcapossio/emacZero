@@ -255,6 +255,7 @@ LINT_SOURCES = [
     "rtl/crc32_d64.v",
     "rtl/eth_mac_10g_tx.v",
     "rtl/eth_mac_10g_rx.v",
+    "rtl/eth_rs_10g.v",
     "rtl/axis_async_frame_fifo.v",
     "rtl/cdc_event_count.v",
     "rtl/eth_mac_sys_10g.v",
@@ -264,6 +265,8 @@ LINT_SOURCES = [
     "fpga/zcu106/rtl/axis_test_gen64.v",
     "fpga/zcu106/rtl/axis_test_chk64.v",
     "fpga/zcu106/rtl/axil_cmd_master.v",
+    "fpga/arty_a7/rtl/arp_responder.v",
+    "fpga/zcu106/rtl/net_service64.v",
     "fpga/zcu106/rtl/zcu106_10g_lane.v",
 ]
 

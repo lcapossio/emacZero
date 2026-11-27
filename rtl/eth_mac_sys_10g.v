@@ -5,8 +5,19 @@
 // application clock domain, XGMII to a 10GBASE-R PCS, AXI4-Lite CSRs
 //
 //   clk domain           | xgmii_tx_clk               | xgmii_rx_clk
-//   s_axis -> TX frame FIFO -> eth_mac_10g_tx -> XGMII TX (to the PCS)
+//   s_axis -> TX frame FIFO -> eth_mac_10g_tx -> RS -> XGMII TX (to the PCS)
 //   m_axis <- RX frame FIFO <- filter <- eth_mac_10g_rx <- XGMII RX
+//                                                     RS <-'
+//
+// Link faults (eth_rs_10g, IEEE 802.3 clause 46.3.4): four local or remote
+// fault sequences within 128 columns on XGMII RX report that fault (STATUS
+// [3] / [4]); a PCS without block lock sends local fault sequences. While a
+// fault is reported the TX MAC starts no new frame: frames wait in the TX
+// FIFO and s_axis backpressures once it is full; the frame part-way out is
+// finished. With a local fault the idle words on XGMII TX become remote
+// fault sequences, so the far end learns that its signal is not arriving;
+// with a remote fault they stay idles. Traffic resumes once the fault clears
+// (128 columns with no fault sequence of its type).
 //
 // Both FIFOs are store-and-forward frame FIFOs (axis_async_frame_fifo):
 //   TX: the MAC starts a frame only once it is whole in the FIFO, so it never
@@ -40,12 +51,15 @@
 //                      tx_en / rx_en act between frames only, as on the 1G
 //                      core: a frame part-way through is finished whole.
 //   0x08 STATUS    RO  [0] PCS block lock  [1] PCS high BER
-//                      [2] TX FIFO not empty
+//                      [2] TX FIFO not empty  [3] local fault  [4] remote
+//                      fault (link fault reported on XGMII RX)
 //   0x0C MAC_LO    RW  station address [31:0]  (bits 47:40 = first byte)
 //   0x10 MAC_HI    RW  station address [47:32]
 //   0x3C SCRATCH   RW
 //   0x44 MCAST_LO  RW  multicast hash table [31:0]  } MCAST_HASH_FILTER=1
 //   0x48 MCAST_HI  RW  multicast hash table [63:32] } only (as axilite_regs)
+//   0x40 IP_ADDR   RW  IPv4 address for a board-level L3 stack (cfg_ip_addr;
+//                      not used by the MAC), as the 1G map
 //   0x98 CAPS      RO  [0] MCAST_HASH_FILTER  [8:4] RX FIFO size, log2 bytes
 //                      [9] 1 = 10G core (64-bit streams, this map)
 //                      [31:16] MAX_FRAME_JUMBO
@@ -66,6 +80,8 @@
 //                      a TX crossing reset
 //   0xF8 TX_ERR        frames sent with a bad FCS on purpose (tuser)
 //   0xFC LOCK_LOSS     times PCS block lock was lost
+//   0xA8 LOCAL_FAULTS  times a local fault was reported
+//   0xAC REMOTE_FAULTS times a remote fault was reported
 //
 // Clock crossings: the FIFOs, the stats FIFOs and cdc_event_count carry their
 // data safely. Each crossing (TX: clk to xgmii_tx_clk, RX: xgmii_rx_clk to
@@ -96,10 +112,12 @@ module eth_mac_sys_10g #(
     parameter RX_FIFO_ADDR_WIDTH = 11,
     parameter MCAST_HASH_FILTER  = 0,
     // Reset values, for designs with no CPU: TXRX_EN_AT_RESET sets CTRL[1:0],
-    // JUMBO_AT_RESET CTRL[6], MAC_ADDR_AT_RESET the station address.
+    // JUMBO_AT_RESET CTRL[6], MAC_ADDR_AT_RESET the station address,
+    // IP_ADDR_AT_RESET IP_ADDR (the 1G core's 192.168.137.200 by default).
     parameter TXRX_EN_AT_RESET   = 0,
     parameter JUMBO_AT_RESET     = 0,
-    parameter [47:0] MAC_ADDR_AT_RESET = 48'h0
+    parameter [47:0] MAC_ADDR_AT_RESET = 48'h0,
+    parameter [31:0] IP_ADDR_AT_RESET  = 32'hC0A8_89C8
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -155,7 +173,10 @@ module eth_mac_sys_10g #(
 
     // PCS status (any domain; synchronized here)
     input  wire        pcs_block_lock,
-    input  wire        pcs_hi_ber
+    input  wire        pcs_hi_ber,
+
+    // IP_ADDR (clk), for a board-level L3 stack
+    output wire [31:0] cfg_ip_addr
 );
 
     // =========================================================================
@@ -165,6 +186,8 @@ module eth_mac_sys_10g #(
     reg  [47:0] mac_addr;
     reg  [63:0] mc_hash;
     reg  [31:0] scratch;
+    reg  [31:0] ip_addr;
+    assign cfg_ip_addr = ip_addr;
 
     wire cfg_tx_en   = ctrl[0];
     wire cfg_rx_en   = ctrl[1];
@@ -188,6 +211,33 @@ module eth_mac_sys_10g #(
         end
     end
     wire lock_lost = lock_d && !lock_s[1];
+
+    // link fault code (eth_rs_10g, rx domain): decoded once it held for two
+    // cycles, so a code passing between none and remote is not miscounted
+    wire [1:0] rx_fault;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] flt_s1;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] flt_s2;
+    reg  [1:0] flt_s3, flt_st, flt_d;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            flt_s1 <= 2'b00;
+            flt_s2 <= 2'b00;
+            flt_s3 <= 2'b00;
+            flt_st <= 2'b00;
+            flt_d  <= 2'b00;
+        end else begin
+            flt_s1 <= rx_fault;
+            flt_s2 <= flt_s1;
+            flt_s3 <= flt_s2;
+            if (flt_s2 == flt_s3)
+                flt_st <= flt_s3;
+            flt_d <= flt_st;
+        end
+    end
+    wire st_lf  = (flt_st == 2'b01);
+    wire st_rf  = (flt_st == 2'b11);
+    wire lf_new = st_lf && (flt_d != 2'b01);
+    wire rf_new = st_rf && (flt_d != 2'b11);
 
     // ---- crossing resets (see header)
     // clk side: catch the transceiver reset (it may be shorter than a clk
@@ -284,7 +334,34 @@ module eth_mac_sys_10g #(
         .m_ready           (txf_m_ready)
     );
 
+    // link fault gate: with a fault reported the MAC is offered no new frame.
+    // It closes only where AXI4-Stream allows tvalid to drop: on the
+    // handshake of a frame's last beat, or between frames with nothing
+    // offered; it opens once the fault is gone.
+    wire tx_fault;
+    reg  t_open, t_mid;
+    wire mac_valid = txf_m_valid && t_open;
+    wire mac_ready;
+    assign txf_m_ready = mac_ready && t_open;
+    wire tx_beat   = mac_valid && mac_ready;
+    always @(posedge xgmii_tx_clk or negedge t_tx_rst_n) begin
+        if (!t_tx_rst_n) begin
+            t_open <= 1'b1;
+            t_mid  <= 1'b0;
+        end else begin
+            if (tx_beat)
+                t_mid <= !txf_m_last;
+            if (t_open)
+                t_open <= !(tx_fault && ((tx_beat && txf_m_last) ||
+                                         (!t_mid && !mac_valid)));
+            else
+                t_open <= !tx_fault;
+        end
+    end
+
     wire tx_underrun;
+    wire [63:0] mac_txd;
+    wire [7:0]  mac_txc;
 
     eth_mac_10g_tx u_mac_tx (
         .clk           (xgmii_tx_clk),
@@ -292,14 +369,31 @@ module eth_mac_sys_10g #(
         .ce            (xgmii_tx_ready),
         .s_axis_tdata  (txf_m_data[63:0]),
         .s_axis_tkeep  (txf_m_data[71:64]),
-        .s_axis_tvalid (txf_m_valid),
+        .s_axis_tvalid (mac_valid),
         .s_axis_tlast  (txf_m_last),
         .s_axis_tuser  (txf_m_data[72]),
-        .s_axis_tready (txf_m_ready),
-        .xgmii_txd     (xgmii_txd),
-        .xgmii_txc     (xgmii_txc),
+        .s_axis_tready (mac_ready),
+        .xgmii_txd     (mac_txd),
+        .xgmii_txc     (mac_txc),
         .stat_tx_frame (),
         .stat_underrun (tx_underrun)
+    );
+
+    eth_rs_10g u_rs (
+        .rx_clk   (xgmii_rx_clk),
+        .rx_rst_n (t_rx_rst_n),
+        .rxd      (xgmii_rxd),
+        .rxc      (xgmii_rxc),
+        .rx_valid (xgmii_rx_valid),
+        .rx_fault (rx_fault),
+        .tx_clk   (xgmii_tx_clk),
+        .tx_rst_n (t_tx_rst_n),
+        .tx_ce    (xgmii_tx_ready),
+        .mac_txd  (mac_txd),
+        .mac_txc  (mac_txc),
+        .txd      (xgmii_txd),
+        .txc      (xgmii_txc),
+        .tx_fault (tx_fault)
     );
 
     // TX per-frame stats, counted as the MAC takes the words: length on the
@@ -318,7 +412,6 @@ module eth_mac_sys_10g #(
     reg         tx_err_acc;
     reg         txs_wr;
     reg  [14:0] txs_data;           // {err, len}
-    wire        tx_beat   = txf_m_valid && txf_m_ready;
     wire [13:0] tx_len_n  = tx_acc + {10'd0, ones8(txf_m_data[71:64])};
     always @(posedge xgmii_tx_clk or negedge t_tx_rst_n) begin
         if (!t_tx_rst_n) begin
@@ -529,7 +622,7 @@ module eth_mac_sys_10g #(
     reg  [31:0] n_rx_drop, n_rx_disc, n_tx_unr;
 
     reg [63:0] n_tx_frames, n_tx_bytes, n_rx_frames, n_rx_bytes;
-    reg [31:0] n_tx_err, n_tx_drop, n_lock_loss;
+    reg [31:0] n_tx_err, n_tx_drop, n_lock_loss, n_lf, n_rf;
     reg [31:0] n_rx_fcs, n_rx_ctl, n_rx_over, n_rx_under, n_rx_bc, n_rx_mc;
     reg [31:0] hi_latch;
 
@@ -574,6 +667,7 @@ module eth_mac_sys_10g #(
             mac_addr  <= MAC_ADDR_AT_RESET;
             mc_hash   <= 64'd0;
             scratch   <= 32'd0;
+            ip_addr   <= IP_ADDR_AT_RESET;
             s_axi_bvalid <= 1'b0;
             s_axi_rvalid <= 1'b0;
             s_axi_rdata  <= 32'd0;
@@ -584,6 +678,7 @@ module eth_mac_sys_10g #(
             n_tx_frames <= 64'd0; n_tx_bytes <= 64'd0;
             n_rx_frames <= 64'd0; n_rx_bytes <= 64'd0;
             n_tx_err  <= 32'd0; n_tx_drop <= 32'd0; n_lock_loss <= 32'd0;
+            n_lf      <= 32'd0; n_rf      <= 32'd0;
             n_rx_fcs  <= 32'd0; n_rx_ctl  <= 32'd0; n_rx_over <= 32'd0;
             n_rx_under <= 32'd0; n_rx_bc  <= 32'd0; n_rx_mc   <= 32'd0;
         end else begin
@@ -613,6 +708,8 @@ module eth_mac_sys_10g #(
             n_tx_unr  <= n_tx_unr  + {24'd0, d_tx_unr};
             if (txf_ovf || tx_dumped) n_tx_drop <= n_tx_drop + 32'd1;
             if (lock_lost) n_lock_loss <= n_lock_loss + 32'd1;
+            if (lf_new) n_lf <= n_lf + 32'd1;
+            if (rf_new) n_rf <= n_rf + 32'd1;
 
             // ---- writes; a write to a counter clears it (and wins over a
             // count in the same cycle)
@@ -623,6 +720,7 @@ module eth_mac_sys_10g #(
                     8'h0C: mac_addr[31:0]  <= wmask(mac_addr[31:0], s_axi_wdata, s_axi_wstrb);
                     8'h10: mac_addr[47:32] <= wd_mac_hi[15:0];
                     8'h3C: scratch  <= wmask(scratch, s_axi_wdata, s_axi_wstrb);
+                    8'h40: ip_addr  <= wmask(ip_addr, s_axi_wdata, s_axi_wstrb);
                     8'h44: if (MCAST_HASH_FILTER != 0)
                                mc_hash[31:0]  <= wmask(mc_hash[31:0], s_axi_wdata, s_axi_wstrb);
                     8'h48: if (MCAST_HASH_FILTER != 0)
@@ -643,6 +741,8 @@ module eth_mac_sys_10g #(
                     8'hF4: n_tx_drop  <= 32'd0;
                     8'hF8: n_tx_err   <= 32'd0;
                     8'hFC: n_lock_loss <= 32'd0;
+                    8'hA8: n_lf <= 32'd0;
+                    8'hAC: n_rf <= 32'd0;
                     default: ;
                 endcase
             end else if (s_axi_bvalid && s_axi_bready) begin
@@ -656,10 +756,12 @@ module eth_mac_sys_10g #(
                     8'h00: s_axi_rdata <= {`EMZ_VERSION_MAJOR, `EMZ_VERSION_MINOR,
                                            `EMZ_VERSION_ID};
                     8'h04: s_axi_rdata <= ctrl;
-                    8'h08: s_axi_rdata <= {29'd0, txf_count != 0, hiber_s[1], lock_s[1]};
+                    8'h08: s_axi_rdata <= {27'd0, st_rf, st_lf, txf_count != 0,
+                                           hiber_s[1], lock_s[1]};
                     8'h0C: s_axi_rdata <= mac_addr[31:0];
                     8'h10: s_axi_rdata <= {16'd0, mac_addr[47:32]};
                     8'h3C: s_axi_rdata <= scratch;
+                    8'h40: s_axi_rdata <= ip_addr;
                     8'h44: s_axi_rdata <= mc_hash[31:0];
                     8'h48: s_axi_rdata <= mc_hash[63:32];
                     8'h98: s_axi_rdata <= CAPS;
@@ -680,6 +782,8 @@ module eth_mac_sys_10g #(
                     8'hF4: s_axi_rdata <= n_tx_drop;
                     8'hF8: s_axi_rdata <= n_tx_err;
                     8'hFC: s_axi_rdata <= n_lock_loss;
+                    8'hA8: s_axi_rdata <= n_lf;
+                    8'hAC: s_axi_rdata <= n_rf;
                     default: s_axi_rdata <= 32'd0;
                 endcase
             end else if (s_axi_rvalid && s_axi_rready) begin

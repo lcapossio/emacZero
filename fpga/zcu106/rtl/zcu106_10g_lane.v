@@ -8,6 +8,9 @@
 //         gt_rxdata -> pcs10gbr RX -> xgmii_test_chk
 //   MAC:  axis_test_gen64 (clk_app) -> eth_mac_sys_10g -> pcs10gbr TX -> ...
 //         ... -> pcs10gbr RX -> eth_mac_sys_10g -> axis_test_chk64 (clk_app)
+//   service (MAC mode with ctrl[122]): net_service64 (ARP, ping, UDP echo on
+//         port 9999, at the station address and IP_ADDR) in place of the
+//         generator and checker, for reaching the port from a PC
 //
 // eth_mac_sys_10g's CSRs are reached through axil_cmd_master. zcu106_10g_top
 // puts one lane on each transceiver; the simulation harnesses connect lanes
@@ -70,6 +73,8 @@ module zcu106_10g_lane #(
     wire [31:0] ctl_csr_wdata = ctrl[119:88];
     wire        ctl_csr_go    = ctrl[120];
     wire        ctl_csr_write = ctrl[121];
+    wire        ctl_service   = ctrl[122];
+    localparam [47:0] OUR_MAC = 48'h020000000001;
 
     // =========================================================================
     // PCS
@@ -165,8 +170,9 @@ module zcu106_10g_lane #(
     // MAC mode: test frames through eth_mac_sys_10g; generator, checker and
     // CSRs on clk_app
     // =========================================================================
-    (* ASYNC_REG = "TRUE" *) reg [2:0] a_gen_en, a_inj, a_mac, a_clr, a_udp;
+    (* ASYNC_REG = "TRUE" *) reg [2:0] a_gen_en, a_inj, a_mac, a_clr, a_udp, a_svc;
     always @(posedge clk_app) begin
+        a_svc    <= {a_svc[1:0], ctl_service};
         a_udp    <= {a_udp[1:0], ctl_udp};
         a_gen_en <= {a_gen_en[1:0], ctl_gen_en};
         a_inj    <= {a_inj[1:0], ctl_inj};
@@ -174,15 +180,18 @@ module zcu106_10g_lane #(
         a_clr    <= {a_clr[1:0], ctl_clear};
     end
     wire mac_app = a_mac[2];
+    // service mode is a static setting: change it only with no traffic
+    wire svc = a_svc[2];
 
     wire [63:0] mg_tdata, mr_tdata;
     wire [7:0]  mg_tkeep, mr_tkeep;
     wire        mg_tvalid, mg_tlast, mg_tready;
+    wire        gen_tready;
     wire        mr_tvalid, mr_tlast, mr_tuser;
     axis_test_gen64 u_mgen (
         .clk           (clk_app),
         .rst_n         (app_rst_n),
-        .enable        (a_gen_en[2] && mac_app),
+        .enable        (a_gen_en[2] && mac_app && !svc),
         .len           (ctl_mac_len),
         .sweep         (ctl_sweep),
         .udp           (a_udp[2]),
@@ -192,8 +201,41 @@ module zcu106_10g_lane #(
         .m_axis_tkeep  (mg_tkeep),
         .m_axis_tvalid (mg_tvalid),
         .m_axis_tlast  (mg_tlast),
-        .m_axis_tready (mg_tready),
+        .m_axis_tready (gen_tready),
         .frames        (mac_gen_frames)
+    );
+
+    // the MAC's streams go to the test traffic or to the service stack
+    wire [63:0] sv_tdata;
+    wire [7:0]  sv_tkeep;
+    wire        sv_tvalid, sv_tlast, sv_tready, svr_tready;
+    assign      gen_tready = mg_tready && !svc;
+    wire [63:0] tx_tdata  = svc ? sv_tdata  : mg_tdata;
+    wire [7:0]  tx_tkeep  = svc ? sv_tkeep  : mg_tkeep;
+    wire        tx_tvalid = svc ? sv_tvalid : mg_tvalid;
+    wire        tx_tlast  = svc ? sv_tlast  : mg_tlast;
+    assign      sv_tready = mg_tready && svc;
+    wire        mr_tready = svc ? svr_tready : 1'b1;
+    wire [31:0] cfg_ip_addr;
+
+    net_service64 u_svc (
+        .clk           (clk_app),
+        .rst_n         (app_rst_n),
+        .our_mac       (OUR_MAC),
+        .our_ip        (cfg_ip_addr),
+        .s_axis_tdata  (mr_tdata),
+        .s_axis_tkeep  (mr_tkeep),
+        .s_axis_tvalid (mr_tvalid && svc),
+        .s_axis_tready (svr_tready),
+        .s_axis_tlast  (mr_tlast),
+        .s_axis_tuser  (mr_tuser),
+        .m_axis_tdata  (sv_tdata),
+        .m_axis_tkeep  (sv_tkeep),
+        .m_axis_tvalid (sv_tvalid),
+        .m_axis_tready (sv_tready),
+        .m_axis_tlast  (sv_tlast),
+        .rx_frame      (),
+        .tx_frame      ()
     );
 
     wire [7:0]  csr_awaddr, csr_araddr;
@@ -237,7 +279,7 @@ module zcu106_10g_lane #(
         .RX_FIFO_ADDR_WIDTH (12),
         .TXRX_EN_AT_RESET   (1),
         .JUMBO_AT_RESET     (1),
-        .MAC_ADDR_AT_RESET  (48'h020000000001)
+        .MAC_ADDR_AT_RESET  (OUR_MAC)
     ) u_sys (
         .clk            (clk_app),
         .rst_n          (app_rst_n),
@@ -258,16 +300,16 @@ module zcu106_10g_lane #(
         .s_axi_rresp    (csr_rresp),
         .s_axi_rvalid   (csr_rvalid),
         .s_axi_rready   (csr_rready),
-        .s_axis_tdata   (mg_tdata),
-        .s_axis_tkeep   (mg_tkeep),
-        .s_axis_tvalid  (mg_tvalid),
+        .s_axis_tdata   (tx_tdata),
+        .s_axis_tkeep   (tx_tkeep),
+        .s_axis_tvalid  (tx_tvalid),
         .s_axis_tready  (mg_tready),
-        .s_axis_tlast   (mg_tlast),
+        .s_axis_tlast   (tx_tlast),
         .s_axis_tuser   (1'b0),
         .m_axis_tdata   (mr_tdata),
         .m_axis_tkeep   (mr_tkeep),
         .m_axis_tvalid  (mr_tvalid),
-        .m_axis_tready  (1'b1),
+        .m_axis_tready  (mr_tready),
         .m_axis_tlast   (mr_tlast),
         .m_axis_tuser   (mr_tuser),
         .xgmii_tx_clk   (tx_clk),
@@ -281,7 +323,8 @@ module zcu106_10g_lane #(
         .xgmii_rxc      (xgmii_rxc),
         .xgmii_rx_valid (xgmii_rx_valid),
         .pcs_block_lock (block_lock),
-        .pcs_hi_ber     (hi_ber)
+        .pcs_hi_ber     (hi_ber),
+        .cfg_ip_addr    (cfg_ip_addr)
     );
 
     wire mac_good_pulse, mac_bad_pulse;
@@ -292,7 +335,7 @@ module zcu106_10g_lane #(
         .udp           (a_udp[2]),
         .s_axis_tdata  (mr_tdata),
         .s_axis_tkeep  (mr_tkeep),
-        .s_axis_tvalid (mr_tvalid),
+        .s_axis_tvalid (mr_tvalid && !svc),
         .s_axis_tlast  (mr_tlast),
         .s_axis_tuser  (mr_tuser),
         .good_frames   (mac_good),

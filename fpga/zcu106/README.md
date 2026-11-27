@@ -388,9 +388,9 @@ SFPn -> GTHE4 -> pcs10gbr RX -> xgmii_test_chk
   both of `eth_mac_sys_10g`'s FIFOs really cross clock domains.
 - An fcapz EIO on USER3 has a control block and a status block for each
   port. It sets the loopback (none, near-end PCS, near-end PMA), polarities,
-  DFE or LPM receiver, TX swing and emphasis, the test path (raw XGMII or
-  MAC mode), the generators and their frame length / gap, the laser and
-  resets; it reads the GT and PCS state, block lock, BER counter, lock
+  DFE or LPM receiver, TX swing and emphasis, the test path (raw XGMII,
+  MAC mode or service mode), the generators and their frame length / gap,
+  the laser and resets; it reads the GT and PCS state, block lock, BER counter, lock
   losses, both checkers' counters and frequency meters for TXUSRCLK2,
   RXUSRCLK2 and the reference clock. It also reaches each port's
   `eth_mac_sys_10g` AXI4-Lite CSRs, one access at a time, through
@@ -408,6 +408,8 @@ python fpga/zcu106/scripts/sfp10g_test.py mac --loopback pma --len 60 --seconds 
 python fpga/zcu106/scripts/sfp10g_test.py --sfp 1 mac --loopback pma --len 1514
 python fpga/zcu106/scripts/sfp10g_test.py dual --len 60 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py dual --udp --len 9014 --seconds 10
+python fpga/zcu106/scripts/sfp10g_test.py fault --len 60
+python fpga/zcu106/scripts/sfp10g_test.py service --ip 192.168.10.200 --watch 30
 python fpga/zcu106/scripts/sfp10g_test.py csr 0xC0      # read a MAC CSR
 ```
 
@@ -433,6 +435,29 @@ error, drop or underrun). Neither generator's traffic is meant for a switch
 (the raw frames have no FCS, the MAC frames go to a made-up address at line
 rate): use a loopback, or a fibre between the two cages.
 
+`fault` checks link fault signalling over the same fibre. It runs dual
+traffic, then inhibits SFP1's transmitter (the GT holds a constant level,
+EIO bit `[123]`) for `--off` seconds, darkening SFP1 -> SFP0: neither laser
+can be turned off on this board. SFP0 must then report a local fault and
+SFP1 a remote fault (STATUS `[3]` / `[4]`), and both generators must be
+held off. With the transmitter back on, both faults must clear, the
+counters must have counted them
+(LOCAL_FAULTS, REMOTE_FAULTS) and traffic must resume. SFP0 -> SFP1, the
+direction that stayed lit, must lose nothing. SFP1 -> SFP0 may lose only the
+frames on the fibre before SFP1 saw the remote fault: one sequence gap and
+no bad frame. `status` also prints each MAC's link fault state.
+
+`service` puts the `--sfp` port in service mode, for a fibre to a 10G
+switch with a PC on it. The port's `eth_mac_sys_10g` then carries the demo
+L3 stack (`net_service64.v`: ARP responder, ping, UDP echo on port 9999)
+instead of the test traffic, at MAC 02:00:00:00:00:01 and the `--ip`
+address, which the script writes to the MAC's IP_ADDR register. From the
+PC: `ping 192.168.10.200`, or send UDP datagrams to port 9999 and get them
+back. `--watch N` prints the MAC's frame counters every second for N
+seconds, and `--off` returns the port to the test traffic. Both ports use
+the same MAC address, so put only one of them on a switch. The stack runs
+one byte per 200 MHz clock; it is a service path, not a throughput test.
+
 `--udp` (with `mac` or `dual`) makes the MAC-mode frames IPv4 / UDP
 datagrams: 10.0.0.2 port 5001 to 10.0.0.1 port 5001, `--len` - 42 bytes of
 UDP payload, IPv4 header checksum filled in, UDP checksum 0 (none, as RFC
@@ -450,7 +475,7 @@ with a "fibre" between them, traffic both ways at once (the `gt10g_reset`,
 `xgmii_test_loop*`, `mac10g_test_loop` and `mac10g_dual` cocotb suites; the
 last two simulate `zcu106_10g_lane` itself).
 The GT itself is only tested on the board. The two-port design meets
-timing (WNS +0.371 ns, WHS +0.010 ns).
+timing (WNS +0.513 ns, WHS +0.011 ns).
 
 Tested on the board, two ports (2026-11-27, 10GBASE-SR SFP+ in cages 0
 and 1, one duplex fibre between them), every run checked frame by frame by
@@ -477,6 +502,13 @@ underrun counter 0, no lock loss):
   payload in 8972-byte datagrams.
 - Each port alone, near-end PMA loopback: raw test frames at full rate and
   MAC mode at line rate, 64 to 9000 bytes.
+- `fault --len 60`, `--len 1514` and `--len 9000`: with SFP1's transmitter
+  inhibited, SFP0 reports a local fault and SFP1 a remote fault, and
+  neither generator gets a frame out (0 in 1-2 s); both clear and traffic
+  resumes when it comes back, each fault counted once. SFP0 -> SFP1 loses
+  nothing (60,120,048 of 60,120,048 64-byte frames); SFP1 -> SFP0 loses 2
+  to 8 frames in one gap, the ones on the fibre before SFP1 saw the remote
+  fault (one cut short, counted as an FCS error).
 
 Tested on the board, one port (2026-11-26, 10GBASE-SR SFP+ in cage 0,
 fibre to a switch):

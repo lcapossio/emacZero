@@ -52,6 +52,7 @@ module zcu106_10g_port #(
     wire       ctl_tx_restart = ctrl[6];
     wire       ctl_rx_restart = ctrl[7];
     wire       ctl_gt_reset   = ctrl[11];
+    wire       ctl_tx_inhibit = ctrl[123];
     wire [4:0] ctl_txdiff     = ctrl[36:32];
     wire [4:0] ctl_txpost     = ctrl[44:40];
     wire [4:0] ctl_txpre      = ctrl[52:48];
@@ -84,6 +85,8 @@ module zcu106_10g_port #(
     (* ASYNC_REG = "TRUE" *) reg [1:0] s_txpol;
     (* ASYNC_REG = "TRUE" *) reg [1:0] s_rxpol;
     always @(posedge txusrclk2) s_txpol <= {s_txpol[0], ctl_txpol};
+    (* ASYNC_REG = "TRUE" *) reg [1:0] s_txinh;
+    always @(posedge txusrclk2) s_txinh <= {s_txinh[0], ctl_tx_inhibit};
     always @(posedge rxusrclk2) s_rxpol <= {s_rxpol[0], ctl_rxpol};
 
     gthe4_channel_10g u_channel (
@@ -117,6 +120,7 @@ module zcu106_10g_port #(
         .rxdata            (gt_rxdata),
         .loopback          (ctl_loopback),
         .txpolarity        (s_txpol[1]),
+        .txinhibit         (s_txinh[1]),
         .rxpolarity        (s_rxpol[1]),
         .rxlpmen           (ctl_lpm),
         .txdiffctrl        (ctl_txdiff ^ 5'h18),   // EIO 0 = reference swing

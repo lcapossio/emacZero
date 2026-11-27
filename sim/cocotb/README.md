@@ -361,9 +361,35 @@ Verilog only for now (the suites skip the VHDL run).
   run dry; 64-bit counter reads and clears; a transceiver TX or RX reset
   alone, idle and in the middle of traffic, after which exactly the frames
   sent come out (none stale from the FIFO memory), nothing corrupt is
-  delivered unflagged, and no counter jumps. An always-open filter, a TX
-  FIFO that publishes words before their frame is whole, or an RX FIFO
-  reset on one side only, each fails it.
+  delivered unflagged, and no counter jumps; a cut in the line in the
+  middle of traffic: STATUS reports a local fault, remote fault sequences
+  replace idles, no frame starts after the fault is seen and `s_axis` is
+  held off; when the line returns the system reads its own remote fault,
+  counts it and clears it, and traffic resumes in order with only the
+  frames that were on the line at the cut missing. An always-open filter, a
+  TX FIFO that publishes words before their frame is whole, an RX FIFO
+  reset on one side only, or a TX gate that never closes, each fails it.
+- `net_service64`: the demo L3 stack behind a 64-bit MAC stream
+  (`fpga/zcu106/rtl/net_service64.v`): ARP requests for its address
+  answered and others ignored; pings of 0 to 1472 payload bytes, every
+  width of a frame's last beat, echoed with both checksums right and
+  identifier, sequence and payload kept; UDP datagrams to the echo port
+  echoed with the ports swapped, others ignored; no reply to a frame
+  flagged bad. Input with random gaps and the output stalled at random. A
+  burst of back-to-back pings: those arriving while a reply goes out are
+  dropped (one reply buffer, as on the 1G demo), the replies stay whole and
+  in order. An unpacker that loses the start of the frame after a 1-byte
+  last beat fails it.
+- `eth_rs_10g`: 10G link fault signalling (`rtl/eth_rs_10g.v`, IEEE 802.3
+  clause 46) against a model of the rules kept as sequence positions:
+  directed boundaries (four sequences at column 127 versus 128 of the
+  count, the 128-column clear, both column positions in a word, the other
+  type, reserved and malformed sequences, rx_valid gaps) and random column
+  streams, checked word by word; on TX, the MAC's words with one word of
+  latency, and remote fault sequences only in all-idle words and only with
+  a local fault. A sequence late in a count's window that stretches it, a
+  threshold of three, a clear one column early, or remote fault sequences
+  over frame words, each fails it.
 - `mac10g_test_loop`: the ZCU106 MAC-mode test path through the board's own
   port logic (`zcu106_10g_lane`, everything but the GT), `axis_test_gen64`
   (200 MHz) -> `eth_mac_sys_10g` -> PCS -> line loopback -> PCS ->

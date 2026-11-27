@@ -14,6 +14,7 @@ rtl/axis_async_frame_fifo.v
 rtl/cdc_event_count.v
 rtl/eth_mac_10g_tx.v
 rtl/eth_mac_10g_rx.v
+rtl/eth_rs_10g.v
 rtl/eth_mac_sys_10g.v
 rtl/pcs10gbr_enc.v
 rtl/pcs10gbr_dec.v

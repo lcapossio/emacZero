@@ -19,12 +19,16 @@
                             promisc, multicast hash, rx_en and passthrough;
                             RX FIFO overflow under backpressure; a TX frame
                             too long for the FIFO; a slow app clock (the TX
-                            MAC must never run dry); the counters; and a
-                            transceiver TX or RX reset alone.
+                            MAC must never run dry); the counters; a
+                            transceiver TX or RX reset alone; and a cut in
+                            the line during traffic (local fault reported,
+                            remote fault sequences sent instead of idles, no
+                            new frame started, the app side held off; when
+                            the line comes back, its own remote fault is
+                            seen and cleared and traffic resumes in order).
 """
 import os
 import random
-import zlib
 
 import cocotb
 from cocotb.clock import Clock
@@ -51,7 +55,7 @@ SUITES = {
         "toplevel": "h_eth_mac_sys_10g_loop",
         "sources": ["rtl/crc32_d64.v", "rtl/async_fifo.v", "rtl/axis_async_frame_fifo.v",
                     "rtl/cdc_event_count.v", "rtl/eth_mac_10g_tx.v",
-                    "rtl/eth_mac_10g_rx.v", "rtl/eth_mac_sys_10g.v",
+                    "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v", "rtl/eth_mac_sys_10g.v",
                     "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
                     "rtl/pcs10gbr_scrambler.v", "rtl/pcs10gbr_gearbox_tx.v",
                     "rtl/pcs10gbr_gearbox_rx.v", "rtl/pcs10gbr_block_lock.v",
@@ -287,13 +291,16 @@ SRC_MAC = bytes.fromhex("020000000002")
 
 R_VERSION, R_CTRL, R_STATUS, R_MAC_LO, R_MAC_HI = 0x00, 0x04, 0x08, 0x0C, 0x10
 R_SCRATCH, R_MC_LO, R_MC_HI, R_CAPS = 0x3C, 0x44, 0x48, 0x98
+R_IP_ADDR = 0x40
 R_TX_FRAMES, R_TX_BYTES, R_RX_FRAMES, R_RX_BYTES = 0xB0, 0xB8, 0xC0, 0xC8
 R_RX_FCS, R_RX_CTL, R_RX_OVER, R_RX_UNDER = 0xD0, 0xD4, 0xD8, 0xDC
 R_RX_BC, R_RX_MC, R_RX_DROP, R_RX_DISC = 0xE0, 0xE4, 0xE8, 0xEC
 R_TX_UNR, R_TX_DROP, R_TX_ERR, R_LOCK_LOSS = 0xF0, 0xF4, 0xF8, 0xFC
+R_LOCAL_F, R_REMOTE_F = 0xA8, 0xAC
 C_TX, C_RX, C_PROMISC, C_JUMBO, C_PASS = 1, 2, 4, 0x40, 0x100
 COUNTERS32 = [R_RX_FCS, R_RX_CTL, R_RX_OVER, R_RX_UNDER, R_RX_BC, R_RX_MC,
-              R_RX_DROP, R_RX_DISC, R_TX_UNR, R_TX_DROP, R_TX_ERR, R_LOCK_LOSS]
+              R_RX_DROP, R_RX_DISC, R_TX_UNR, R_TX_DROP, R_TX_ERR, R_LOCK_LOSS,
+              R_LOCAL_F, R_REMOTE_F]
 COUNTERS64 = [R_TX_FRAMES, R_TX_BYTES, R_RX_FRAMES, R_RX_BYTES]
 
 
@@ -337,6 +344,7 @@ class SysBench:
         d.gt_rst_n.value = 0
         d.tx_rst_n.value = 1
         d.rx_rst_n.value = 1
+        d.cut.value = 0
         self.tasks.append(cocotb.start_soon(Clock(d.clk, self.app_ns, "ns").start()))
         self.tasks.append(cocotb.start_soon(Clock(d.gt_clk, GT_NS, "ns").start()))
         await ClockCycles(d.gt_clk, 5)
@@ -503,7 +511,7 @@ def wire_len(f):
 
 @cocotb.test()
 async def sys_csr(dut):
-    """VERSION, CAPS, SCRATCH, CTRL and MAC registers."""
+    """VERSION, CAPS, SCRATCH, IP_ADDR, CTRL and MAC registers."""
     if not is_sys(dut):
         return
     tb = SysBench(dut)
@@ -516,6 +524,10 @@ async def sys_csr(dut):
     assert await tb.read(R_CTRL) == 0
     await tb.write(R_SCRATCH, 0xA5A5_5A5A)
     assert await tb.read(R_SCRATCH) == 0xA5A5_5A5A
+    assert await tb.read(R_IP_ADDR) == 0xC0A889C8, "IP_ADDR reset value"
+    await tb.write(R_IP_ADDR, 0x0A00_0001)
+    assert await tb.read(R_IP_ADDR) == 0x0A00_0001
+    assert int(dut.u_sys.cfg_ip_addr.value) == 0x0A00_0001
     await tb.write(R_MAC_HI, 0xFFFF_1234)
     assert await tb.read(R_MAC_HI) == 0x1234
     st = await tb.read(R_STATUS)
@@ -773,7 +785,13 @@ async def sys_side_reset(dut):
         await ClockCycles(dut.clk, 1500)
         await tb.side_reset(sig, cycles=25)
         await sender
-        await ClockCycles(dut.clk, 3000)
+        # the reset is a link fault too (lost lock, then the loop's own
+        # remote fault): the TX gate holds frames back until it clears, so
+        # wait until the output goes quiet
+        n = -1
+        while n != len(tb.got):
+            n = len(tb.got)
+            await ClockCycles(dut.clk, 3000)
         sent = set(frames)
         for data, tuser, _ in tb.got:
             assert tuser or data in sent, "corrupt frame delivered as good"
@@ -787,4 +805,105 @@ async def sys_side_reset(dut):
         await tb.send(frames)
         await tb.wait_frames(10)
         assert [g[0] for g in tb.got] == frames
+    tb.stop()
+
+
+RF_WORD = 0x0200009C0200009C
+
+
+@cocotb.test()
+async def sys_link_fault(dut):
+    """The line is cut in the middle of traffic: STATUS reports a local fault,
+    remote fault sequences go out in place of idles, no new frame starts and
+    the app side is held off by backpressure (nothing is dropped). When the
+    line comes back, the system reads back its own remote fault sequences:
+    a remote fault, counted, which clears once they stop. Traffic resumes:
+    every frame out is one sent, in order, and only frames that were on the
+    line around the cut are missing."""
+    if not is_sys(dut):
+        return
+    tb = SysBench(dut, seed=9)
+    await tb.start()
+    await tb.setup()
+    await tb.clear_counters()
+    rng = tb.rng
+    rs = dut.u_sys.u_rs
+    frames = [make_frame(rng, rng.randint(60, 300), seq=i) for i in range(400)]
+    mon = {"cyc": 0, "rise": None, "late": [], "rf": 0, "rf_bad": 0, "held": False,
+           "f_st": 0}
+
+    async def watch():
+        d = dut
+        while True:
+            await RisingEdge(d.gt_clk)
+            await ReadOnly()
+            mon["cyc"] += 1
+            f = int(rs.tx_fault.value)
+            if f and mon["rise"] is None:
+                mon["rise"] = mon["cyc"]
+            elif not f:
+                mon["rise"] = None
+            txd, txc = int(d.xgmii_txd.value), int(d.xgmii_txc.value)
+            start = ((txc & 1) and (txd & 0xFF) == 0xFB) or \
+                    ((txc & 0x10) and ((txd >> 32) & 0xFF) == 0xFB)
+            # a start more than a few clocks after tx_fault rose: a frame
+            # begun after the fault was seen
+            if start and mon["rise"] is not None and mon["cyc"] - mon["rise"] > 12:
+                mon["late"].append(mon["cyc"])
+            # the output word was chosen with last clock's settled fault
+            if txd == RF_WORD and txc == 0x11:
+                mon["rf"] += 1
+                if mon["f_st"] != 1:
+                    mon["rf_bad"] += 1
+            mon["f_st"] = int(rs.f_st.value)
+            if f and int(d.s_axis_tvalid.value) and not int(d.s_axis_tready.value):
+                mon["held"] = True
+
+    w = cocotb.start_soon(watch())
+    sender = cocotb.start_soon(tb.send(frames))
+    await ClockCycles(dut.gt_clk, 1500)
+    assert 0 < len(tb.got) < len(frames)
+    dut.cut.value = 1
+    for _ in range(200):
+        await ClockCycles(dut.clk, 20)
+        if (await tb.read(R_STATUS)) & 0x8:
+            break
+    st = await tb.read(R_STATUS)
+    assert st & 0x8 and not st & 0x10 and not st & 1, f"STATUS {st:02x} with the line cut"
+    n_cut = len(tb.got)
+    await ClockCycles(dut.gt_clk, 3000)
+    assert mon["rf"] > 1000, f"{mon['rf']} remote fault words with the line cut"
+    assert len(tb.got) == n_cut, "frames received with the line cut"
+    assert mon["held"], "the app side was not held off"
+    assert not sender.done()
+    dut.cut.value = 0
+    rf_seen = False
+    for _ in range(400):
+        await ClockCycles(dut.clk, 20)
+        st = await tb.read(R_STATUS)
+        rf_seen |= bool(st & 0x10)
+        if rf_seen and not st & 0x18:
+            break
+    assert rf_seen and not st & 0x18 and st & 1, f"STATUS {st:02x} after the line came back"
+    await sender
+    await tb.wait_frames(len(frames) - 20, limit_ns=4_000_000)
+    await ClockCycles(dut.clk, 2000)
+    w.cancel()
+    assert not mon["late"], f"frames started with a fault seen: {mon['late'][:4]}"
+    assert mon["rf_bad"] == 0, "remote fault words without a local fault"
+    idx = {f: i for i, f in enumerate(frames)}
+    for g in tb.got:
+        assert g[1] or g[0] in idx, "corrupt frame delivered as good"
+    good = [idx[g[0]] for g in tb.got if not g[1]]
+    assert good == sorted(good), "frames out of order"
+    assert good[-1] == len(frames) - 1, "last frame missing"
+    missing = sorted(set(range(len(frames))) - set(good))
+    dut._log.info("missing frames around the cut: %s", missing)
+    assert missing and missing[-1] - missing[0] == len(missing) - 1, \
+        f"missing frames not one run: {missing}"
+    assert len(missing) <= 4, f"{len(missing)} frames lost"
+    c = await tb.counters()
+    assert c[R_LOCAL_F] == 1 and c[R_REMOTE_F] == 1, (c[R_LOCAL_F], c[R_REMOTE_F])
+    assert c[R_TX_FRAMES] == len(frames) and c[R_TX_DROP] == 0 and c[R_TX_UNR] == 0
+    assert c[R_LOCK_LOSS] >= 1
     tb.stop()

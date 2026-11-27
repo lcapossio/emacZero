@@ -50,6 +50,23 @@ This project does not yet maintain long-lived release branches.
   generator and checker alone. The constraints bound the FIFO crossings
   between the application clock and the GT clocks to 4 ns instead of
   cutting them, so Gray pointers and bundled data stay in order.
+- 10G link fault signalling (`rtl/eth_rs_10g.v`, IEEE 802.3 clause 46) in
+  `eth_mac_sys_10g`: local and remote faults reported in STATUS `[3]` /
+  `[4]` and counted (`0xA8` LOCAL_FAULTS, `0xAC` REMOTE_FAULTS); remote
+  fault sequences sent in place of idles during a local fault; with either
+  fault, no new frame starts and `s_axis` is held off until it clears.
+  `sfp10g_test.py fault` inhibits SFP1's transmitter during dual traffic
+  (new EIO bit; the board cannot turn its lasers off) and checks both
+  ends' reports and that the lit direction loses nothing.
+  cocotb suite `eth_rs_10g` checks it against a model of the clause 46
+  rules; `eth_mac_sys_10g_loop` cuts the line in the middle of traffic.
+- 10G service path: `fpga/zcu106/rtl/net_service64.v` puts the demo L3
+  stack (ARP responder, ping, UDP echo) behind a 64-bit MAC stream, one
+  byte per clock, and the ZCU106 10G design's service mode (EIO
+  `ctrl[122]`, `sfp10g_test.py service --ip`) connects it to a port's
+  `eth_mac_sys_10g` in place of the test traffic, so a PC can reach the
+  port through a 10G switch. `eth_mac_sys_10g` gains the 1G map's IP_ADDR
+  register (`0x40`, `cfg_ip_addr`). cocotb suite `net_service64`.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
   with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while

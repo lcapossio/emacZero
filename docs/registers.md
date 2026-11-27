@@ -436,11 +436,14 @@ reads 0. CAPS `[9]` = 1 identifies it. There is no MDIO, IRQ or PAUSE yet.
 |-------:|------|--------|-------------|
 | `0x00` | VERSION | RO | As the 1G core |
 | `0x04` | CTRL | RW | `[0]` tx_en `[1]` rx_en `[2]` promisc `[6]` jumbo_en `[8]` passthrough (every address, bad frames delivered with tuser). tx_en / rx_en act between frames. |
-| `0x08` | STATUS | RO | `[0]` PCS block lock `[1]` PCS high BER `[2]` TX FIFO not empty |
+| `0x08` | STATUS | RO | `[0]` PCS block lock `[1]` PCS high BER `[2]` TX FIFO not empty `[3]` local fault `[4]` remote fault (link fault, see below) |
 | `0x0C` / `0x10` | MAC_LO / MAC_HI | RW | Station address, as the 1G core |
 | `0x3C` | SCRATCH | RW | |
+| `0x40` | IP_ADDR | RW | IPv4 address for a board-level L3 stack (`cfg_ip_addr`), as the 1G core; reset value `IP_ADDR_AT_RESET` (default 192.168.137.200) |
 | `0x44` / `0x48` | MCAST_LO / MCAST_HI | RW | Multicast hash table, `MCAST_HASH_FILTER=1` only (same hash as the 1G core); without it every multicast frame is accepted |
 | `0x98` | CAPS | RO | `[0]` mcast_hash `[8:4]` RX FIFO size, log2 bytes `[9]` = 1 `[31:16]` MAX_FRAME_JUMBO |
+| `0xA8` | LOCAL_FAULTS | RO/WC | Times a local fault was reported (STATUS `[3]` set) |
+| `0xAC` | REMOTE_FAULTS | RO/WC | Times a remote fault was reported (STATUS `[4]` set) |
 | `0xB0` / `0xB4` | TX_FRAMES | RO/WC | Frames sent with a good FCS (64-bit) |
 | `0xB8` / `0xBC` | TX_BYTES | RO/WC | Their bytes, padding and FCS included (64-bit) |
 | `0xC0` / `0xC4` | RX_FRAMES | RO/WC | Good frames received, before the filter and the FIFO (64-bit) |
@@ -467,6 +470,17 @@ and counters keep their values. While the TX side is held in reset,
 `s_axis` beats are taken and thrown away (each frame counts in TX_DROP). An
 RX frame part-way out on `m_axis` when the reset comes is ended with one
 extra beat carrying `tlast` and `tuser`.
+
+Link fault (IEEE 802.3 clause 46, `rtl/eth_rs_10g.v`): four local or remote
+fault sequences within 128 columns of the received XGMII report that fault
+in STATUS; it clears after 128 columns with none of its type. The PCS sends
+local fault sequences while it has no block lock, so a dark or cut fibre
+shows as a local fault, and the far end, which then receives remote fault
+sequences, as a remote fault. With a local fault, idle time on the
+transmitted XGMII carries remote fault sequences instead. With either fault,
+the TX MAC finishes the frame it is sending and starts no new one: frames
+wait in the TX FIFO and `s_axis` is held off (no frame is dropped), until
+the fault clears.
 
 ## Arty UDP Demo Sideband Ports
 

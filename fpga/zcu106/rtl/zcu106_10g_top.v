@@ -187,6 +187,10 @@ module zcu106_10g_top (
     //   has none): change them only while [8] is low.
     //   [87:80] CSR address  [119:88] CSR write data  [120] CSR go (toggle:
     //   set the other fields first)  [121] CSR write (0 = read)
+    //   [122] service mode (with [13]): the MAC carries the ARP / ping / UDP
+    //   echo stack (net_service64) instead of the test traffic; static
+    //   [123] TX inhibit: the transmitter holds a constant level, so the far
+    //   end sees a dark line (the lasers cannot be turned off on this board)
     // eio-read [1279:0]: port p's status is [640p+639:640p], laid out in
     //   zcu106_10g_port.v: the low 32 bits are the status bits, the top 32
     //   bits {marker 0x10F0, layout 4, port}. Counters cross from their clock
