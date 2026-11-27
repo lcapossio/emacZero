@@ -50,12 +50,14 @@ fault    link fault signalling over the same fibre: dual traffic of --len
          turned off on this board). SFP0 must report a local fault and send
          remote fault sequences, SFP1 must report the remote fault, and both
          MACs must stop starting frames, holding the generators off. With
-         the transmitter back on, both faults must clear and traffic resume.
-         SFP0 -> SFP1 must be lossless (every frame sent arrives, in order);
-         SFP1 -> SFP0 may lose only the frames on the fibre before SFP1 saw
-         the remote fault: one sequence gap of at most CUT_LOST_MAX frames,
-         no bad frame. After the recovery, the second traffic window must
-         be clean both ways: no bad frame, sequence gap or FCS error.
+         the transmitter back on, both faults must clear; the traffic is
+         stopped and drained, and up to there SFP0 -> SFP1 must be lossless
+         (every frame sent arrives, in order) while SFP1 -> SFP0 may lose
+         only the frames on the fibre before SFP1 saw the remote fault: one
+         sequence gap of at most CUT_LOST_MAX frames, no bad frame. Then a
+         second traffic window, started and ended idle, must deliver every
+         frame sent, both ways (generator, TX_FRAMES, RX_FRAMES and checker
+         counts equal; no bad frame, sequence gap or FCS error).
 --udp    (mac, dual) the frames are IPv4 / UDP datagrams instead (10.0.0.2
          -> 10.0.0.1, port 5001 -> 5001, UDP payload --len - 42 bytes, UDP
          checksum 0), and the checker checks every IPv4 / UDP header field
@@ -623,39 +625,28 @@ def cmd_fault(b, args):
         print("FAIL: no block lock after SFP1's transmitter came back")
         return 1
     time.sleep(0.1)
-    # counters at the start of the window after the recovery
+    # stop and drain: the cut phase's accounting is final here
+    b.set_bit(B_GEN, False, both)
+    time.sleep(0.05)
+    sents = {q: (gen_count(b, q, "mac_gen_frames") - last[q]) & M32 for q in both}
     fa = b.read_all()
     ca = []
     for q in both:
         b.sfp = q
         ca.append(b.mac_counters())
-    g2 = [gen_count(b, q, "mac_gen_frames") for q in both]
-    time.sleep(args.seconds)
-    g3 = [gen_count(b, q, "mac_gen_frames") for q in both]
-    b.set_bit(B_GEN, False, both)
-    time.sleep(0.05)
-    sents = {q: (gen_count(b, q, "mac_gen_frames") - last[q]) & M32 for q in both}
-    resumed = all(((g3[q] - g2[q]) & M32) > 1000 for q in both)
     st_on = [b.mac_status(q) for q in both]
-    print("SFP1 TX on: SFP0 %s, SFP1 %s; traffic %s"
-          % (faults(st_on[0]), faults(st_on[1]), "resumed" if resumed else "STOPPED"))
-    ok = ok and resumed and all(not st & (ST_LOCAL_FAULT | ST_REMOTE_FAULT) for st in st_on)
-
-    fs = b.read_all()
-    cs = []
-    for q in both:
-        b.sfp = q
-        cs.append(b.mac_counters())
+    print("SFP1 TX on: SFP0 %s, SFP1 %s"
+          % (faults(st_on[0]), faults(st_on[1])))
+    ok = ok and all(not st & (ST_LOCAL_FAULT | ST_REMOTE_FAULT) for st in st_on)
     for q in both:
         print("  SFP%d LOCAL_FAULTS %d REMOTE_FAULTS %d LOCK_LOSS %d TX_UNDERRUN %d "
-              "TX_DROP %d RX_ERR_FCS %d" % (q, cs[q]["LOCAL_FAULTS"],
-                                           cs[q]["REMOTE_FAULTS"], cs[q]["LOCK_LOSS"],
-                                           cs[q]["TX_UNDERRUN"], cs[q]["TX_DROP"],
-                                           cs[q]["RX_ERR_FCS"]))
-    ok = ok and cs[0]["LOCAL_FAULTS"] >= 1 and cs[1]["REMOTE_FAULTS"] >= 1 \
-        and cs[1]["LOCAL_FAULTS"] == 0
+              "TX_DROP %d RX_ERR_FCS %d" % (q, ca[q]["LOCAL_FAULTS"],
+                                           ca[q]["REMOTE_FAULTS"], ca[q]["LOCK_LOSS"],
+                                           ca[q]["TX_UNDERRUN"], ca[q]["TX_DROP"],
+                                           ca[q]["RX_ERR_FCS"]))
+    ok = ok and ca[0]["LOCAL_FAULTS"] >= 1 and ca[1]["REMOTE_FAULTS"] >= 1         and ca[1]["LOCAL_FAULTS"] == 0
     for tx, rx in ((0, 1), (1, 0)):
-        fr, ct, cr = fs[rx], cs[tx], cs[rx]
+        fr, ct, cr = fa[rx], ca[tx], ca[rx]
         sent = sents[tx]
         lost = sent - ((fr["mac_good"] + fr["mac_bad"]) & M32)
         print("SFP%d -> SFP%d: sent %d, good %d bad %d tuser %d seq_gaps %d (%d lost); "
@@ -666,20 +657,41 @@ def cmd_fault(b, args):
                 and ct["TX_FRAMES"] == sent and ct["TX_UNDERRUN"] == 0
                 and ct["TX_DROP"] == 0 and cr["RX_DROP"] == 0)
         if tx == 0:     # the direction that stayed lit: nothing lost
-            good = good and lost == 0 and fr["mac_seq_gaps"] == 0 \
-                and cr["RX_FRAMES"] == sent and cr["RX_ERR_FCS"] == 0 \
-                and fr["lock_losses"] == 0
+            good = good and lost == 0 and fr["mac_seq_gaps"] == 0                 and cr["RX_FRAMES"] == sent and cr["RX_ERR_FCS"] == 0                 and fr["lock_losses"] == 0
         else:           # the frames on the fibre when it went dark
-            good = good and fr["mac_seq_gaps"] == 1 and 0 < lost <= CUT_LOST_MAX \
-                and cr["RX_FRAMES"] == fr["mac_good"]
-        # after the recovery: a clean window
-        d = {k: (fr[k] - fa[rx][k]) & M32
+            good = good and fr["mac_seq_gaps"] == 1 and 0 < lost <= CUT_LOST_MAX                 and cr["RX_FRAMES"] == fr["mac_good"]
+        print("  %s" % ("ok" if good else "FAIL"))
+        ok = ok and good
+
+    # after the recovery: a window of its own, started and ended idle, in
+    # which every frame sent must arrive (a loss at its very end shows as a
+    # count mismatch, not only as a sequence gap)
+    g2 = [gen_count(b, q, "mac_gen_frames") for q in both]
+    b.set_bit(B_GEN, True, both)
+    time.sleep(args.seconds)
+    b.set_bit(B_GEN, False, both)
+    time.sleep(0.05)
+    g3 = [gen_count(b, q, "mac_gen_frames") for q in both]
+    fb = b.read_all()
+    cb = []
+    for q in both:
+        b.sfp = q
+        cb.append(b.mac_counters())
+    for tx, rx in ((0, 1), (1, 0)):
+        sent = (g3[tx] - g2[tx]) & M32
+        d = {k: (fb[rx][k] - fa[rx][k]) & M32
              for k in ("mac_good", "mac_bad", "mac_tuser", "mac_seq_gaps")}
-        d_fcs = cr["RX_ERR_FCS"] - ca[rx]["RX_ERR_FCS"]
-        print("  after the recovery: good %d bad %d tuser %d seq_gaps %d, RX_ERR_FCS %d"
-              % (d["mac_good"], d["mac_bad"], d["mac_tuser"], d["mac_seq_gaps"], d_fcs))
-        good = good and d["mac_good"] > 1000 and d["mac_bad"] == 0 \
-            and d["mac_tuser"] == 0 and d["mac_seq_gaps"] == 0 and d_fcs == 0
+        dc = {k: cb[c][k] - ca[c][k]
+              for c, k in ((tx, "TX_FRAMES"), (tx, "TX_DROP"), (rx, "RX_FRAMES"),
+                           (rx, "RX_ERR_FCS"), (rx, "RX_DROP"))}
+        print("SFP%d -> SFP%d after the recovery: sent %d, good %d bad %d tuser %d "
+              "seq_gaps %d, TX_FRAMES %d RX_FRAMES %d RX_ERR_FCS %d"
+              % (tx, rx, sent, d["mac_good"], d["mac_bad"], d["mac_tuser"],
+                 d["mac_seq_gaps"], dc["TX_FRAMES"], dc["RX_FRAMES"], dc["RX_ERR_FCS"]))
+        good = (sent > 1000 and d["mac_good"] == sent and d["mac_bad"] == 0
+                and d["mac_tuser"] == 0 and d["mac_seq_gaps"] == 0
+                and dc["TX_FRAMES"] == sent and dc["RX_FRAMES"] == sent
+                and dc["TX_DROP"] == 0 and dc["RX_ERR_FCS"] == 0 and dc["RX_DROP"] == 0)
         print("  %s" % ("ok" if good else "FAIL"))
         ok = ok and good
     print("PASS" if ok else "FAIL")

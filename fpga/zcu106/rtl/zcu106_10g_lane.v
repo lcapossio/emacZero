@@ -207,9 +207,11 @@ module zcu106_10g_lane #(
 
     // the MAC's streams go to the test traffic or to the service stack.
     // Each stream changes hands only between frames (tx_svc / rx_svc follow
-    // svc once a frame's last beat has passed, or with none part-way), so a
-    // mode change never splices two frames; the source left out keeps its
-    // frame, whole, until the stream is handed back.
+    // svc as a frame's last beat passes, or with no frame part-way and no
+    // beat on offer: a first beat offered and not yet taken stays offered),
+    // so a mode change never splices two frames or withdraws a beat; the
+    // source left out keeps its frame, whole, until the stream is handed
+    // back.
     wire [63:0] sv_tdata;
     wire [7:0]  sv_tkeep;
     wire        sv_tvalid, sv_tlast, sv_tready, svr_tready;
@@ -232,11 +234,11 @@ module zcu106_10g_lane #(
         end else begin
             if (tx_take)
                 tx_mid <= !tx_tlast;
-            if (tx_take ? tx_tlast : !tx_mid)
+            if (tx_take ? tx_tlast : (!tx_mid && !tx_tvalid))
                 tx_svc <= svc;
             if (rx_take)
                 rx_mid <= !mr_tlast;
-            if (rx_take ? mr_tlast : !rx_mid)
+            if (rx_take ? mr_tlast : (!rx_mid && !mr_tvalid))
                 rx_svc <= svc;
         end
     end

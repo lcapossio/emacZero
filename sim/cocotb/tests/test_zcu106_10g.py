@@ -566,17 +566,48 @@ async def mac_inject(dut):
     assert mac_counts(dut)["bad_frames"] == 0
 
 
+async def axis_contract(clk, streams, bad):
+    """Every stream (name, tvalid, tready, payload signals): a beat offered
+    and not taken must be offered again, unchanged, on the next clock."""
+    held = {}
+    while True:
+        await RisingEdge(clk)
+        await ReadOnly()
+        for name, v, r, pay in streams:
+            if not (v.value.is_resolvable and r.value.is_resolvable):
+                held.pop(name, None)
+                continue
+            cur = tuple(str(x.value) for x in pay)
+            if name in held:
+                if not int(v.value):
+                    bad.append((name, "tvalid dropped"))
+                elif cur != held[name]:
+                    bad.append((name, "beat changed"))
+            if int(v.value) and not int(r.value):
+                held[name] = cur
+            else:
+                held.pop(name, None)
+
+
 @cocotb.test(timeout_time=40, timeout_unit="ms")
 async def mac_service_switch(dut):
     """Service mode switched on and off at random times during traffic:
     each of the MAC's streams changes hands only between frames, so the
     checker sees no bad or merged frame (frames that arrive while the
-    service stack has the RX stream are lost to it, gaps), and afterwards
-    the traffic runs clean."""
+    service stack has the RX stream are lost to it, gaps), no beat offered
+    on the MAC's TX input or to the service stack is withdrawn or changed
+    before it is taken, and afterwards the traffic runs clean."""
     if dut._name != "h_mac10g_test_loop":
         return
     await mac_setup(dut)
     rng = random.Random(7)
+    ln = dut.u_lane
+    bad = []
+    mon = cocotb.start_soon(axis_contract(dut.app_clk, [
+        ("MAC TX", ln.u_sys.s_axis_tvalid, ln.u_sys.s_axis_tready,
+         (ln.u_sys.s_axis_tdata, ln.u_sys.s_axis_tkeep, ln.u_sys.s_axis_tlast)),
+        ("service RX", ln.u_svc.s_axis_tvalid, ln.u_svc.s_axis_tready,
+         (ln.u_svc.s_axis_tdata, ln.u_svc.s_axis_tkeep, ln.u_svc.s_axis_tlast))], bad))
     dut.sweep.value = 1
     dut.len.value = 400
     dut.enable.value = 1
@@ -587,6 +618,8 @@ async def mac_service_switch(dut):
         dut.service.value = 0
     dut.enable.value = 0
     await ClockCycles(dut.clk, 20000)
+    mon.cancel()
+    assert not bad, f"AXI4-Stream beats withdrawn: {bad[:4]} ({len(bad)})"
     c = mac_counts(dut)
     dut._log.info("after the switching: %s", c)
     assert c["bad_frames"] == 0 and c["tuser_frames"] == 0, c

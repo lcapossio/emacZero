@@ -440,14 +440,15 @@ traffic, then inhibits SFP1's transmitter (the GT holds a constant level,
 EIO bit `[123]`) for `--off` seconds, darkening SFP1 -> SFP0: neither laser
 can be turned off on this board. SFP0 must then report a local fault and
 SFP1 a remote fault (STATUS `[3]` / `[4]`), and both generators must be
-held off. With the transmitter back on, both faults must clear, the
-counters must have counted them
-(LOCAL_FAULTS, REMOTE_FAULTS) and traffic must resume. SFP0 -> SFP1, the
-direction that stayed lit, must lose nothing. SFP1 -> SFP0 may lose only the
-frames on the fibre before SFP1 saw the remote fault: one sequence gap of at
-most 256 frames, and no bad frame. The traffic after the recovery must be
-clean both ways (no bad frame, sequence gap or FCS error). `status` also
-prints each MAC's link fault state.
+held off. With the transmitter back on, both faults must clear and the
+counters must have counted them (LOCAL_FAULTS, REMOTE_FAULTS). The traffic
+is then stopped and drained. Up to there SFP0 -> SFP1, the direction that
+stayed lit, must have lost nothing, and SFP1 -> SFP0 only the frames on the
+fibre before SFP1 saw the remote fault: one sequence gap of at most 256
+frames, and no bad frame. A second traffic window, started and ended idle,
+must then deliver every frame sent both ways: the generator, TX_FRAMES,
+RX_FRAMES and checker counts equal, with no bad frame, sequence gap or FCS
+error. `status` also prints each MAC's link fault state.
 
 `service` puts the `--sfp` port in service mode, for a fibre to a 10G
 switch with a PC on it. The port's `eth_mac_sys_10g` then carries the demo

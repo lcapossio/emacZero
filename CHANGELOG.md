@@ -66,7 +66,7 @@ This project does not yet maintain long-lived release branches.
   `ctrl[122]`, `sfp10g_test.py service --ip`) connects it to a port's
   `eth_mac_sys_10g` in place of the test traffic, so a PC can reach the
   port through a 10G switch; each of the MAC's streams changes over between
-  frames. `eth_mac_sys_10g` gains the 1G map's IP_ADDR register (`0x40`,
+  frames, never while a beat is on offer. `eth_mac_sys_10g` gains the 1G map's IP_ADDR register (`0x40`,
   `cfg_ip_addr`). cocotb suite `net_service64`.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
