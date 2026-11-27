@@ -513,6 +513,16 @@ underrun counter 0, no lock loss):
   remote fault (one cut short, counted as an FCS error); after the
   recovery both directions run clean (no bad frame, gap or FCS error).
 
+Tested on the board, service mode (2026-11-27, SFP0 fibre to a 10G switch,
+a PC on the switch at 2.5 Gb/s): `service --ip` with an address on either
+of the PC's subnets. The PC resolves the port by ARP and pings it (under
+1 ms). UDP echo on port 9999, one datagram at a time and every byte
+compared: 18,000 datagrams of 1 to 1472 bytes, none lost or changed,
+80-140 us per round trip. A sender that bursts at the PC's line rate loses
+datagrams that arrive while a reply is going out (one reply buffer, as on
+the 1G demo); 64-byte datagrams at 4,800 per second lost none. The MAC
+counted no FCS error, drop or discard.
+
 Tested on the board, one port (2026-11-26, 10GBASE-SR SFP+ in cage 0,
 fibre to a switch):
 
