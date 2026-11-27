@@ -12,7 +12,7 @@
 // checksum 0), the IPv4 header checksum, the IPv4 total length against the
 // bytes received and the UDP length against it, seq[15:0] against the
 // identification and seq[31:16] against its complement, then the payload as
-// above. udp is taken at each frame's first beat. good_frames / bad_frames
+// above. udp is taken with each frame's first beat. good_frames / bad_frames
 // count the verdicts; tuser_frames the frames the MAC flagged; seq_gaps the
 // frames whose seq is not one more than the last good-header frame's (one
 // with every check up to and including seq passed; the first frame after
@@ -62,7 +62,7 @@ module axis_test_chk64 (
     // registered input
     reg [63:0] i_tdata;
     reg [7:0]  i_tkeep;
-    reg        i_tvalid, i_tlast, i_tuser;
+    reg        i_tvalid, i_tlast, i_tuser, i_udp;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             i_tdata  <= 64'd0;
@@ -70,12 +70,14 @@ module axis_test_chk64 (
             i_tvalid <= 1'b0;
             i_tlast  <= 1'b0;
             i_tuser  <= 1'b0;
+            i_udp    <= 1'b0;
         end else begin
             i_tdata  <= s_axis_tdata;
             i_tkeep  <= s_axis_tkeep;
             i_tvalid <= s_axis_tvalid;
             i_tlast  <= s_axis_tlast;
             i_tuser  <= s_axis_tuser;
+            i_udp    <= udp;
         end
     end
 
@@ -105,7 +107,7 @@ module axis_test_chk64 (
             nkeep = nkeep + {3'd0, i_tkeep[k]};
     end
 
-    wire        u        = (beat == 13'd0) ? udp : fudp;
+    wire        u        = (beat == 13'd0) ? i_udp : fudp;
     wire [12:0] seq_beat = u ? 13'd5 : 13'd2;
     wire [31:0] r_seq    = u ? i_tdata[47:16] : i_tdata[31:0];
 
@@ -184,7 +186,7 @@ module axis_test_chk64 (
             end
             if (i_tvalid) begin
                 if (beat == 13'd0)
-                    fudp <= udp;
+                    fudp <= i_udp;
                 if (beat == 13'd1 && !u)
                     flen <= rlen;
                 if (beat == 13'd2 && u) begin

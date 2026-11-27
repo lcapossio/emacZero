@@ -303,6 +303,38 @@ async def chk_seq_gap(dut):
 
 
 @cocotb.test()
+async def chk_mode_edge(dut):
+    """The checker takes udp with a frame's first beat, not a cycle later."""
+    if dut._name != "h_axis_test64":
+        return
+    rng = random.Random(29)
+    await setup(dut)
+    for udp in (0, 1):
+        await clear(dut)
+        fr = ref_frame(120, 0x40 + udp, udp)
+        nb = (len(fr) + 7) // 8
+        dut.c_udp.value = udp
+        for b in range(nb):
+            await FallingEdge(dut.clk)
+            chunk = fr[8 * b:8 * b + 8]
+            last = b == nb - 1
+            dut.c_tvalid.value = 1
+            dut.c_tdata.value = int.from_bytes(chunk.ljust(8, b"\0"), "little")
+            dut.c_tkeep.value = (1 << len(chunk)) - 1 if last else 0xFF
+            dut.c_tlast.value = 1 if last else 0
+            if b == 1:
+                dut.c_udp.value = 1 - udp      # flips after the first beat
+        await FallingEdge(dut.clk)
+        dut.c_tvalid.value = 0
+        dut.c_tlast.value = 0
+        await ClockCycles(dut.clk, 3)
+        assert counts(dut)[:2] == (1, 0), (udp, counts(dut))
+        # and the flipped mode holds for the next frame
+        await chk_send(dut, [ref_frame(120, 0x41 + udp, 1 - udp)], rng)
+        assert counts(dut)[:2] == (2, 0), (udp, counts(dut))
+
+
+@cocotb.test()
 async def gen_sweep(dut):
     """A sweep starts at 60 after fixed-length frames and never exceeds a lowered len."""
     if dut._name != "h_axis_test64":

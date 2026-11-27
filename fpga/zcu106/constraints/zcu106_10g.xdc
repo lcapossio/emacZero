@@ -82,9 +82,11 @@ create_clock -name rxoutclk1 -period 3.103 \
 # user clock and RX recovered clock are unrelated. Between those only resets,
 # static settings and status cross, through synchronizers, plus EIO status
 # counters read as debug values: cut as asynchronous groups.
+# TCK is defined on BSCANE2 INTERNAL_TCK, where AMD's timing model starts it,
+# so it reaches the fabric TCK net and the path back into TDO is timed too.
 create_clock -name tck_bscan -period 100.0 \
     [get_pins -of_objects [get_cells -hierarchical -filter {REF_NAME == BSCANE2}] \
-              -filter {REF_PIN_NAME == TCK}]
+              -filter {REF_PIN_NAME == INTERNAL_TCK}]
 create_waiver -type METHODOLOGY -id TIMING-2 -user emacZero \
     -objects [get_clocks tck_bscan] \
     -description "fcapz BSCANE2 TCK is the intended JTAG clock source"

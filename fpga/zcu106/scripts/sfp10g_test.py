@@ -311,22 +311,62 @@ def udp_line(pps, avg_len):
             % (rate / 1e9, payload, best / 1e9, 100 * rate / best))
 
 
-def run_gen(b, seconds, inject=False, sfps=None, inject_sfps=None):
+POLL_S = 30.0     # generator count polls: a 32-bit count wraps in >= ~80 s
+M32 = 0xFFFFFFFF
+
+
+def gen_count(b, q, field):
+    """Port q's 32-bit generator count `field`, read while it runs: two
+    back-to-back reads of its one word must agree to within a few ms of
+    traffic, so a read torn by the unsynchronized crossing is not taken."""
+    word = (q * PORT_IN_W + dict((n, lsb) for n, lsb, _ in FIELDS)[field]) // 32
+    a = b.read_words(word, 1)[0]
+    for _ in range(10):
+        c = b.read_words(word, 1)[0]
+        if (c - a) & M32 < 100000000:
+            return c
+        a = c
+    raise SystemExit("unstable %s reads on port %d" % (field, q))
+
+
+def run_gen(b, seconds, field, inject=False, sfps=None, inject_sfps=None):
     """Run the generators of this port (or of every port in sfps) for about
-    `seconds`, with one injected error halfway if asked; returns the time
+    `seconds`, with one injected error halfway if asked. Returns the time
     they really ran, from the middle of the EIO write that starts them to the
     middle of the one that stops them (a write takes tens of ms, so the
-    requested time alone overstates short runs' rates by a few percent)."""
+    requested time alone overstates short runs' rates by a few percent), and
+    each port's frames sent, from its 32-bit generator count `field` polled
+    every POLL_S so that runs past its wrap count right."""
+    ports = [b.sfp] if sfps is None else list(sfps)
+    last = {q: gen_count(b, q, field) for q in ports}
+    sent = dict.fromkeys(ports, 0)
+
+    def tally():
+        for q in ports:
+            v = gen_count(b, q, field)
+            sent[q] += (v - last[q]) & M32
+            last[q] = v
+
+    def wait(t):
+        end = time.time() + t
+        while end - time.time() > POLL_S:
+            time.sleep(POLL_S)
+            tally()
+        time.sleep(max(0.0, end - time.time()))
+
     b.set_bit(B_GEN, True, sfps)
     t_on = b.t_write
     if inject:
-        time.sleep(seconds / 2)
+        wait(seconds / 2)
         b.pulse(B_INJ, sfps=inject_sfps if inject_sfps is not None else sfps)
-        time.sleep(seconds / 2)
+        wait(seconds / 2)
     else:
-        time.sleep(seconds)
+        wait(seconds)
     b.set_bit(B_GEN, False, sfps)
-    return b.t_write - t_on
+    secs = b.t_write - t_on
+    time.sleep(0.05)
+    tally()
+    return secs, sent
 
 
 def cmd_loop(b, args):
@@ -347,12 +387,10 @@ def cmd_loop(b, args):
         print("FAIL: no block lock")
         return 1
     b.pulse(B_CLEAR)
-    g0 = b.read()["gen_frames"]
-    secs = run_gen(b, args.seconds, args.inject)
-    time.sleep(0.05)
+    secs, sent = run_gen(b, args.seconds, "gen_frames", args.inject)
+    sent = sent[b.sfp]
     f = b.read()
     show(f)
-    sent = (f["gen_frames"] - g0) & 0xFFFFFFFF
     # line rate: (words + 2) words per frame plus ipg, 32 of 33 cycles carry a
     # word at 161.13 MHz -> payload Gb/s of the test frames
     rate = sent * (words + 2 + args.ipg) * 64 / secs / 1e9
@@ -360,7 +398,8 @@ def cmd_loop(b, args):
           % (sent, secs, rate))
     want_bad = 1 if args.inject else 0
     ok = (sent > 0
-          and f["good_frames"] + f["bad_frames"] == sent and f["bad_frames"] == want_bad
+          and (f["good_frames"] + f["bad_frames"]) & M32 == sent & M32
+          and f["bad_frames"] == want_bad
           and f["seq_gaps"] == 0 and f["lock_losses"] == 0
           and f["bad_words"] == want_bad and f["block_lock"])
     print("PASS" if ok else "FAIL")
@@ -394,12 +433,10 @@ def cmd_mac(b, args):
     time.sleep(0.01)
     b.pulse(B_CLEAR)
     b.mac_clear()
-    g0 = b.read()["mac_gen_frames"]
-    secs = run_gen(b, args.seconds, args.inject)
-    time.sleep(0.05)
+    secs, sent = run_gen(b, args.seconds, "mac_gen_frames", args.inject)
+    sent = sent[b.sfp]
     f = b.read()
     show(f)
-    sent = (f["mac_gen_frames"] - g0) & 0xFFFFFFFF
     # line bytes per frame: preamble/SFD 8 + frame + FCS 4 + 12 gap on average
     avg_len = (60 + args.len) / 2 if args.sweep else args.len
     pps = sent / secs
@@ -420,7 +457,8 @@ def cmd_mac(b, args):
         print("  frames over 9018 bytes: expecting every one dropped (oversize)")
     delivered = 0 if over else sent
     ok = (sent > 0
-          and f["mac_good"] + f["mac_bad"] == delivered and f["mac_bad"] == want_bad
+          and (f["mac_good"] + f["mac_bad"]) & M32 == delivered & M32
+          and f["mac_bad"] == want_bad
           and f["mac_tuser"] == 0 and f["mac_seq_gaps"] == 0
           and c["TX_FRAMES"] == sent and c["TX_UNDERRUN"] == 0
           and c["RX_ERR_FCS"] == 0 and c["RX_DROP"] == 0
@@ -457,9 +495,7 @@ def cmd_dual(b, args):
     for q in both:
         b.sfp = q
         b.mac_clear()
-    g0 = [f["mac_gen_frames"] for f in b.read_all()]
-    secs = run_gen(b, args.seconds, args.inject, both, [0])
-    time.sleep(0.05)
+    secs, sents = run_gen(b, args.seconds, "mac_gen_frames", args.inject, both, [0])
     fs = b.read_all()
     cs = []
     for q in both:
@@ -467,8 +503,8 @@ def cmd_dual(b, args):
         cs.append(b.mac_counters())
     ok = True
     for tx, rx in ((0, 1), (1, 0)):
-        ft, fr, ct, cr = fs[tx], fs[rx], cs[tx], cs[rx]
-        sent = (ft["mac_gen_frames"] - g0[tx]) & 0xFFFFFFFF
+        fr, ct, cr = fs[rx], cs[tx], cs[rx]
+        sent = sents[tx]
         avg_len = (60 + lens[tx]) / 2 if args.sweep else lens[tx]
         pps = sent / secs
         line = 10e9 / ((avg_len + 4 + 8 + 12) * 8)
@@ -489,7 +525,8 @@ def cmd_dual(b, args):
                  cr["RX_DISCARD"], fr["lock_losses"]))
         want_bad = 1 if (args.inject and tx == 0) else 0
         good = (sent > 0
-                and fr["mac_good"] + fr["mac_bad"] == sent and fr["mac_bad"] == want_bad
+                and (fr["mac_good"] + fr["mac_bad"]) & M32 == sent & M32
+                and fr["mac_bad"] == want_bad
                 and fr["mac_tuser"] == 0 and fr["mac_seq_gaps"] == 0
                 and ct["TX_FRAMES"] == sent and cr["RX_FRAMES"] == sent
                 and ct["TX_BYTES"] == cr["RX_BYTES"]

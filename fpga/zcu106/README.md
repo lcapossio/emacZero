@@ -450,7 +450,7 @@ with a "fibre" between them, traffic both ways at once (the `gt10g_reset`,
 `xgmii_test_loop*`, `mac10g_test_loop` and `mac10g_dual` cocotb suites; the
 last two simulate `zcu106_10g_lane` itself).
 The GT itself is only tested on the board. The two-port design meets
-timing (WNS +0.544 ns, WHS +0.013 ns).
+timing (WNS +0.371 ns, WHS +0.010 ns).
 
 Tested on the board, two ports (2026-11-27, 10GBASE-SR SFP+ in cages 0
 and 1, one duplex fibre between them), every run checked frame by frame by
