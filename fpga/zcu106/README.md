@@ -409,6 +409,7 @@ python fpga/zcu106/scripts/sfp10g_test.py --sfp 1 mac --loopback pma --len 1514
 python fpga/zcu106/scripts/sfp10g_test.py dual --len 60 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py dual --udp --len 9014 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py fault --len 60
+python fpga/zcu106/scripts/sfp10g_test.py --sfp 1 pause --len 1514 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py service --ip 192.168.10.200 --watch 30
 python fpga/zcu106/scripts/sfp10g_test.py csr 0xC0      # read a MAC CSR
 ```
@@ -449,6 +450,23 @@ frames, and no bad frame. A second traffic window, started and ended idle,
 must then deliver every frame sent both ways: the generator, TX_FRAMES,
 RX_FRAMES and checker counts equal, with no bad frame, sequence gap or FCS
 error. `status` also prints each MAC's link fault state.
+
+`pause` checks 802.3x PAUSE on the `--sfp` port in a loopback (near-end PMA
+by default). It runs MAC mode with `--len` byte frames (60..6000) while the
+checker takes a beat on only 16 - `--throttle` of every 16 `clk_app`
+cycles (EIO `[127:124]`, default 10: 6 in 16, well below line rate). First,
+for 1 s without PAUSE, the RX FIFO must overflow (RX_DROP; a throttle the
+checker keeps up with at that length fails here). Then automatic
+PAUSE is turned on (PAUSE_XOFF leaving room for four frames above it in the
+32 KB RX FIFO, PAUSE_XON half of that, `--quanta`, default 1024): the port's
+own PAUSE frames come back through the loopback and slow its sender, and
+for `--seconds` every frame must arrive good and in order with no RX_DROP.
+PAUSE_TX_CNT must equal PAUSE_RX_CNT and be nonzero, TX_FRAMES and RX_FRAMES
+must count the PAUSE frames too, and RX_DISCARD must equal PAUSE_RX_CNT: the
+lane's MAC has the multicast hash filter with an empty table, so PAUSE
+frames stop at the filter. It prints the frame rate against what the
+throttled checker can take. The transmitter keeps sending during a near-end
+loopback, so run it on a port whose fibre is not on a switch.
 
 `service` puts the `--sfp` port in service mode, for a fibre to a 10G
 switch with a PC on it. The port's `eth_mac_sys_10g` then carries the demo
@@ -523,6 +541,15 @@ compared: 18,000 datagrams of 1 to 1472 bytes, none lost or changed,
 datagrams that arrive while a reply is going out (one reply buffer, as on
 the 1G demo); 64-byte datagrams at 4,800 per second lost none. The MAC
 counted no FCS error, drop or discard.
+
+Tested on the board, PAUSE (2026-11-28, SFP1 near-end PMA loopback):
+`pause` at 60, 1514 and 6000 bytes (throttle 10) and at 1514 bytes with
+throttle 15. Without PAUSE the RX FIFO dropped 37 to 92% of the frames; with
+automatic PAUSE nothing was dropped or out of order, and the sender ran at
+99.8 to 100.1% of the throttled checker's rate (3,961,189 1514-byte frames in
+10 s, 440,130 PAUSE frames sent, received and discarded at the filter). The
+same bitstream ran MAC mode at line rate (60, 1514, 9000 bytes) and service
+mode through the switch (ping, 6,000 UDP echoes, none lost or changed).
 
 Tested on the board, one port (2026-11-26, 10GBASE-SR SFP+ in cage 0,
 fibre to a switch):

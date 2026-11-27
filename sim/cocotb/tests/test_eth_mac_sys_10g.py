@@ -25,7 +25,13 @@
                             remote fault sequences sent instead of idles, no
                             new frame started, the app side held off; when
                             the line comes back, its own remote fault is
-                            seen and cleared and traffic resumes in order).
+                            seen and cleared and traffic resumes in order);
+                            PAUSE: a received PAUSE frame holds data frames
+                            for exactly its quanta from the end of the frames
+                            already committed, invalid ones do not, our own
+                            PAUSE frames go ahead of queued data and are not
+                            held, and automatic PAUSE keeps a slow sink from
+                            losing frames.
 """
 import os
 import random
@@ -55,7 +61,8 @@ SUITES = {
         "toplevel": "h_eth_mac_sys_10g_loop",
         "sources": ["rtl/crc32_d64.v", "rtl/async_fifo.v", "rtl/axis_async_frame_fifo.v",
                     "rtl/cdc_event_count.v", "rtl/eth_mac_10g_tx.v",
-                    "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v", "rtl/eth_mac_sys_10g.v",
+                    "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v", "rtl/eth_pause_10g.v",
+                    "rtl/eth_mac_sys_10g.v",
                     "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
                     "rtl/pcs10gbr_scrambler.v", "rtl/pcs10gbr_gearbox_tx.v",
                     "rtl/pcs10gbr_gearbox_rx.v", "rtl/pcs10gbr_block_lock.v",
@@ -297,10 +304,12 @@ R_RX_FCS, R_RX_CTL, R_RX_OVER, R_RX_UNDER = 0xD0, 0xD4, 0xD8, 0xDC
 R_RX_BC, R_RX_MC, R_RX_DROP, R_RX_DISC = 0xE0, 0xE4, 0xE8, 0xEC
 R_TX_UNR, R_TX_DROP, R_TX_ERR, R_LOCK_LOSS = 0xF0, 0xF4, 0xF8, 0xFC
 R_LOCAL_F, R_REMOTE_F = 0xA8, 0xAC
+R_PAUSE_CTRL, R_PAUSE_Q, R_PAUSE_RX, R_PAUSE_TX = 0x84, 0x88, 0x8C, 0x90
+R_XOFF, R_XON, R_REFRESH = 0x9C, 0xA0, 0xA4
 C_TX, C_RX, C_PROMISC, C_JUMBO, C_PASS = 1, 2, 4, 0x40, 0x100
 COUNTERS32 = [R_RX_FCS, R_RX_CTL, R_RX_OVER, R_RX_UNDER, R_RX_BC, R_RX_MC,
               R_RX_DROP, R_RX_DISC, R_TX_UNR, R_TX_DROP, R_TX_ERR, R_LOCK_LOSS,
-              R_LOCAL_F, R_REMOTE_F]
+              R_LOCAL_F, R_REMOTE_F, R_PAUSE_RX, R_PAUSE_TX]
 COUNTERS64 = [R_TX_FRAMES, R_TX_BYTES, R_RX_FRAMES, R_RX_BYTES]
 
 
@@ -906,4 +915,361 @@ async def sys_link_fault(dut):
     assert c[R_LOCAL_F] == 1 and c[R_REMOTE_F] == 1, (c[R_LOCAL_F], c[R_REMOTE_F])
     assert c[R_TX_FRAMES] == len(frames) and c[R_TX_DROP] == 0 and c[R_TX_UNR] == 0
     assert c[R_LOCK_LOSS] >= 1
+    tb.stop()
+
+
+# ---------------------------------------------------------------------------
+# PAUSE (eth_pause_10g)
+# ---------------------------------------------------------------------------
+PAUSE_DST = bytes.fromhex("0180C2000001")
+P_SEND, P_RX_EN, P_AUTO, P_ACTIVE, P_ERR, P_PEND = 1, 2, 4, 8, 0x10, 0x20
+
+
+def pause_frame(q, src=SRC_MAC, opcode=1, ethertype=0x8808, dst=PAUSE_DST):
+    f = dst + src + ethertype.to_bytes(2, "big") + opcode.to_bytes(2, "big") + \
+        q.to_bytes(2, "big")
+    return padded(f)
+
+
+class TxWords:
+    """The XGMII TX word stream (one word per xgmii_tx_ready), with the
+    word index of every start and terminate, and the pause timer's own
+    events counted in the same words."""
+
+    def __init__(self, dut):
+        self.dut = dut
+        self.n = 0
+        self.starts = []        # word index of each /S/
+        self.terms = []         # word index of each /T/
+        self.loads = []         # (word index, quanta, hold_n after) at a pause load
+        self.release = []       # word index where tx_paused fell
+        self.count_from = []    # word index where the countdown began
+        self.task = cocotb.start_soon(self.run())
+
+    async def run(self):
+        d = self.dut
+        p = d.u_sys.u_pause
+        paused_d = 0
+        load_d = 0
+        hold_d = 0
+        while True:
+            await RisingEdge(d.gt_clk)
+            await ReadOnly()
+            if load_d:
+                self.loads.append((self.n, int(p.remaining.value), int(p.hold_n.value)))
+                if int(p.hold_n.value) == 0 and int(p.remaining.value):
+                    self.count_from.append(self.n)
+            elif hold_d and int(p.hold_n.value) == 0:
+                self.count_from.append(self.n)
+            load_d = int(p.pause_load.value)
+            hold_d = int(p.hold_n.value)
+            pz = int(p.tx_paused.value)
+            if paused_d and not pz:
+                self.release.append(self.n)
+            paused_d = pz
+            if int(d.xgmii_tx_ready.value):
+                txd, txc = int(d.xgmii_txd.value), int(d.xgmii_txc.value)
+                for lane in range(8):
+                    if txc >> lane & 1:
+                        ch = (txd >> (8 * lane)) & 0xFF
+                        if ch == 0xFB:
+                            self.starts.append(self.n)
+                        elif ch == 0xFD:
+                            self.terms.append(self.n)
+                self.n += 1
+
+    def stop(self):
+        self.task.cancel()
+
+
+@cocotb.test()
+async def sys_pause_rx(dut):
+    """A PAUSE frame received (sent by the system itself, looped back) with
+    rx_en: the frames already committed finish, then no frame starts for
+    pause_time quanta: the countdown runs exactly 8 words per quantum from
+    the end of the last of them, and on the line the gap from that terminate
+    to the next start is at least 8 * pause_time words. Then traffic resumes,
+    whole and in order. Repeated for several quanta and frame lengths."""
+    if not is_sys(dut):
+        return
+    tb = SysBench(dut, seed=21)
+    await tb.start()
+    await tb.setup(C_TX | C_RX | C_PROMISC)
+    await tb.write(R_PAUSE_CTRL, P_RX_EN)
+    await tb.clear_counters()
+    rng = tb.rng
+    w = TxWords(dut)
+    sent = []
+    for q, flen in ((1, 1514), (7, 60), (50, 1514), (200, 300), (3, 9000 // 9)):
+        pre = [make_frame(rng, flen, seq=len(sent) + i) for i in range(3)]
+        post = [make_frame(rng, flen, seq=len(sent) + 10 + i) for i in range(6)]
+        n_load = len(w.loads)
+        await tb.send(pre + [pause_frame(q)] + post)
+        sent += pre + [pause_frame(q)] + post
+        for _ in range(400):
+            await ClockCycles(dut.clk, 50)
+            if len(w.release) > n_load and len(tb.got) == len(sent):
+                break
+        assert len(w.loads) == n_load + 1, f"q={q}: {len(w.loads) - n_load} pause loads"
+        at, rem, hold = w.loads[n_load]
+        assert rem == q, f"loaded {rem}, sent {q}"
+        c0 = w.count_from[-1]
+        r = w.release[-1]
+        assert r - c0 == 8 * q, f"q={q}: countdown {r - c0} words, want {8 * q}"
+        # on the line: the terminate the countdown waited for, then the next start
+        t_last = max(t for t in w.terms if t <= c0)
+        s_next = min(s for s in w.starts if s > c0)
+        assert s_next - t_last >= 8 * q, f"q={q}: line gap {s_next - t_last} words"
+        assert s_next - t_last <= 8 * q + 20, f"q={q}: line gap {s_next - t_last} words"
+        # the frames committed when it loaded are the only ones started since
+        n_started = sum(1 for s in w.starts if at - 2 <= s <= c0)
+        assert n_started <= hold + 1, f"q={q}: {n_started} starts in the hold"
+        dut._log.info("q=%d len=%d: hold %d frames, gap %d words", q, flen, hold,
+                      s_next - t_last)
+    w.stop()
+    assert [g[0] for g in tb.got] == sent
+    c = await tb.counters()
+    assert c[R_PAUSE_RX] == 5 and c[R_PAUSE_TX] == 0
+    assert c[R_RX_DROP] == 0 and c[R_TX_UNR] == 0
+    tb.stop()
+
+
+@cocotb.test()
+async def sys_pause_rx_rules(dut):
+    """Received PAUSE frames that must not pause: with rx_en clear (counted
+    only), with a bad FCS, another opcode or EtherType, or another
+    destination (none counted). A long pause is cancelled by a quanta-0
+    PAUSE from the generator, which goes out although data is held."""
+    if not is_sys(dut):
+        return
+    tb = SysBench(dut, seed=22)
+    await tb.start()
+    await tb.setup(C_TX | C_RX | C_PROMISC)
+    await tb.clear_counters()
+    rng = tb.rng
+    p = dut.u_sys.u_pause
+    seen = {"paused": 0}
+
+    async def watch():
+        while True:
+            await RisingEdge(dut.gt_clk)
+            await ReadOnly()
+            seen["paused"] |= int(p.tx_paused.value)
+
+    wt = cocotb.start_soon(watch())
+    # rx_en clear: counted, no pause
+    await tb.send([pause_frame(0xFFFF)] + [make_frame(rng, 200, seq=i) for i in range(5)])
+    await tb.wait_frames(6)
+    assert len(tb.got) == 6 and not seen["paused"]
+    assert await tb.read(R_PAUSE_RX) == 1
+    # rx_en set: frames that are not valid PAUSE frames
+    await tb.write(R_PAUSE_CTRL, P_RX_EN)
+    bad = [(pause_frame(0xFFFF), 1),                      # bad FCS
+           pause_frame(0xFFFF, opcode=2),
+           pause_frame(0xFFFF, ethertype=0x8809),
+           pause_frame(0xFFFF, dst=OUR_MAC)]
+    tb.got.clear()
+    await tb.send(bad + [make_frame(rng, 200, seq=i) for i in range(5)])
+    await tb.wait_frames(8)
+    assert not seen["paused"], "paused by an invalid PAUSE frame"
+    assert await tb.read(R_PAUSE_RX) == 1
+    # a valid long PAUSE holds the data; a quanta-0 PAUSE from the generator
+    # goes out anyway, loops back and cancels it
+    tb.got.clear()
+    data = [make_frame(rng, 200, seq=100 + i) for i in range(5)]
+    await tb.send([pause_frame(0xFFFF)] + data)
+    await ClockCycles(dut.clk, 3000)
+    assert seen["paused"] and int(p.tx_paused.value)
+    # the frames already committed to the MAC when the PAUSE came back finish
+    got = [g[0] for g in tb.got]
+    n_pre = len(got) - 1
+    assert got[0] == pause_frame(0xFFFF) and got[1:] == data[:n_pre]
+    assert n_pre <= 2, f"{n_pre} data frames sent while paused"
+    await tb.write(R_PAUSE_Q, 0)
+    await tb.write(R_PAUSE_CTRL, P_RX_EN | P_SEND)
+    await tb.wait_frames(7)
+    got = [g[0] for g in tb.got]
+    assert got[0] == pause_frame(0xFFFF) and got[1:1 + n_pre] == data[:n_pre]
+    assert got[1 + n_pre] == pause_frame(0, src=OUR_MAC)
+    assert got[2 + n_pre:] == data[n_pre:]
+    dut._log.info("%d data frames were committed when the PAUSE arrived", n_pre)
+    wt.cancel()
+    c = await tb.counters()
+    assert c[R_PAUSE_RX] == 3 and c[R_PAUSE_TX] == 1
+    tb.stop()
+
+
+@cocotb.test()
+async def sys_pause_tx(dut):
+    """tx_send: one PAUSE frame with PAUSE_QUANTA, our station address,
+    padded to 60 bytes, counted in PAUSE_TX_CNT and TX_FRAMES; it goes out
+    ahead of data frames queued but not started. tx_pending reads 0 once it
+    has started. CSR reset values and CAPS[3]."""
+    if not is_sys(dut):
+        return
+    tb = SysBench(dut, seed=23)
+    await tb.start()
+    assert await tb.read(R_XOFF) == 8192 and await tb.read(R_XON) == 4096
+    assert await tb.read(R_REFRESH) == 0 and await tb.read(R_PAUSE_Q) == 0
+    assert (await tb.read(R_CAPS)) & 8, "CAPS[3] automatic PAUSE"
+    await tb.setup(C_TX | C_RX | C_PROMISC)
+    await tb.clear_counters()
+    await tb.write(R_PAUSE_Q, 0x1234)
+    await tb.write(R_PAUSE_CTRL, P_SEND)
+    await tb.wait_frames(1)
+    assert [g[0] for g in tb.got] == [pause_frame(0x1234, src=OUR_MAC)]
+    assert (await tb.read(R_PAUSE_CTRL)) & (P_PEND | P_SEND) == 0
+    c = await tb.counters()
+    assert c[R_PAUSE_TX] == 1 and c[R_PAUSE_RX] == 1
+    assert c[R_TX_FRAMES] == 1 and c[R_TX_BYTES] == 64
+    # ahead of queued data: 30 long frames, the PAUSE asked for after the first
+    tb.got.clear()
+    data = [make_frame(tb.rng, 1514, seq=i) for i in range(30)]
+    sender = cocotb.start_soon(tb.send(data))
+    await ClockCycles(dut.clk, 400)
+    await tb.write(R_PAUSE_Q, 0x0042)
+    await tb.write(R_PAUSE_CTRL, P_SEND)
+    await sender
+    await tb.wait_frames(31)
+    got = [g[0] for g in tb.got]
+    i = got.index(pause_frame(0x42, src=OUR_MAC))
+    assert got[:i] + got[i + 1:] == data
+    assert i <= 4, f"PAUSE frame delivered after {i} data frames"
+    tb.stop()
+
+
+async def _auto_run(tb, frames, ready_p, limit_ns=6_000_000):
+    tb.got.clear()
+    tb.ready_p = ready_p
+    await tb.send(frames)
+    tb.ready_p = 1.0
+    await tb.wait_frames(len(frames), limit_ns=limit_ns)
+
+
+@cocotb.test()
+async def sys_pause_auto(dut):
+    """Automatic PAUSE: the sink takes a beat on 30% of clocks, far below
+    line rate. Without it the RX FIFO overflows; with it (the system's own
+    PAUSE frames loop back and pause its TX) nothing is dropped, every frame
+    arrives whole and in order, XOFF and XON both go out, repeated while the
+    level stays high. An invalid configuration sets auto_cfg_err and sends
+    nothing until auto_en is set again with a valid one."""
+    if not is_sys(dut):
+        return
+    tb = SysBench(dut, seed=24)
+    await tb.start()
+    await tb.setup()
+    await tb.clear_counters()
+    rng = tb.rng
+    frames = [make_frame(rng, 1514, seq=i) for i in range(120)]
+    await _auto_run(tb, frames, 0.3, limit_ns=100_000)
+    c = await tb.counters()
+    assert c[R_RX_DROP] > 0, "the sink is not slow enough to overflow the FIFO"
+    # invalid: XON above XOFF
+    await tb.write(R_XON, 9000)
+    await tb.write(R_PAUSE_CTRL, P_RX_EN | P_AUTO)
+    st = await tb.read(R_PAUSE_CTRL)
+    assert st & P_ERR and not st & P_ACTIVE, f"PAUSE_CTRL {st:02x}"
+    await tb.write(R_PAUSE_CTRL, P_RX_EN)
+    assert not (await tb.read(R_PAUSE_CTRL)) & P_ERR
+    await tb.clear_counters()
+    assert await tb.read(R_PAUSE_TX) == 0
+    # valid
+    await tb.write(R_XOFF, 8192)
+    await tb.write(R_XON, 4096)
+    await tb.write(R_PAUSE_Q, 0x80)
+    await tb.write(R_PAUSE_CTRL, P_RX_EN | P_AUTO)
+    assert not (await tb.read(R_PAUSE_CTRL)) & P_ERR
+    frames = [make_frame(rng, 1514, seq=1000 + i) for i in range(300)]
+    act = {"n": 0}
+
+    async def watch():
+        while True:
+            await ClockCycles(dut.clk, 1)
+            act["n"] += int(dut.u_sys.u_pause.auto_active.value)
+
+    wt = cocotb.start_soon(watch())
+    await _auto_run(tb, frames, 0.3)
+    wt.cancel()
+    assert [g[0] for g in tb.got] == frames, "frames lost or reordered with automatic PAUSE"
+    c = await tb.counters()
+    assert c[R_RX_DROP] == 0, f"{c[R_RX_DROP]} frames dropped"
+    assert c[R_PAUSE_TX] >= 4 and c[R_PAUSE_RX] == c[R_PAUSE_TX], \
+        (c[R_PAUSE_TX], c[R_PAUSE_RX])
+    assert act["n"] > 0
+    assert not (await tb.read(R_PAUSE_CTRL)) & P_ACTIVE
+    dut._log.info("automatic PAUSE: %d PAUSE frames for %d data frames",
+                  c[R_PAUSE_TX], len(frames))
+    # clearing auto_en while active sends an XON: the partner (itself) resumes
+    tb.ready_p = 0.0
+    sender = cocotb.start_soon(tb.send([make_frame(rng, 1514, seq=i) for i in range(40)]))
+    for _ in range(400):
+        await ClockCycles(dut.clk, 50)
+        if (await tb.read(R_PAUSE_CTRL)) & P_ACTIVE and                 (await tb.read(R_STATUS)) & 0x20:
+            break
+    assert int(dut.u_sys.u_pause.tx_paused.value), "not paused by its own XOFF"
+    n_tx = await tb.read(R_PAUSE_TX)
+    await tb.write(R_PAUSE_CTRL, P_RX_EN)
+    await ClockCycles(dut.clk, 2000)
+    assert await tb.read(R_PAUSE_TX) == n_tx + 1
+    assert not int(dut.u_sys.u_pause.tx_paused.value)
+    tb.ready_p = 1.0
+    await sender
+    tb.stop()
+
+
+@cocotb.test()
+async def sys_pause_cfg_edges(dut):
+    """Automatic PAUSE settings are taken at the enable edge: a PAUSE_QUANTA
+    write right after a quick disable / enable does not change them (or
+    raise auto_cfg_err). tx_send requests wait in one slot that a later one
+    replaces: with the generator held by a link fault, requests 11 (taken
+    by the generator), then 22 and 0 send only 11 and 0 once the fault
+    clears, and tx_pending reads 1 until the last one has started."""
+    if not is_sys(dut):
+        return
+    tb = SysBench(dut, seed=25)
+    await tb.start()
+    await tb.setup(C_TX | C_RX | C_PROMISC)
+    p = dut.u_sys.u_pause
+    # settings taken at the enable edge
+    await tb.write(R_PAUSE_Q, 0x80)
+    await tb.write(R_PAUSE_CTRL, P_AUTO)
+    await ClockCycles(dut.clk, 40)
+    assert int(p.auto_run.value) and int(p.a_quanta.value) == 0x80
+    await tb.write(R_PAUSE_CTRL, 0)
+    await tb.write(R_PAUSE_CTRL, P_AUTO)
+    await tb.write(R_PAUSE_Q, 0)
+    await ClockCycles(dut.clk, 40)
+    st = await tb.read(R_PAUSE_CTRL)
+    assert not st & P_ERR, f"auto_cfg_err from a write after the enable ({st:02x})"
+    assert int(p.auto_run.value) and int(p.a_quanta.value) == 0x80, \
+        int(p.a_quanta.value)
+    await tb.write(R_PAUSE_CTRL, 0)
+    await ClockCycles(dut.clk, 40)
+    # one replaceable tx_send slot behind a held generator
+    tb.got.clear()
+    dut.cut.value = 1
+    for _ in range(200):
+        await ClockCycles(dut.clk, 20)
+        if (await tb.read(R_STATUS)) & 0x8:
+            break
+    assert (await tb.read(R_STATUS)) & 0x8, "no local fault with the line cut"
+    for q in (11, 22, 0):
+        await tb.write(R_PAUSE_Q, q)
+        await tb.write(R_PAUSE_CTRL, P_SEND)
+        await ClockCycles(dut.clk, 60)
+        assert (await tb.read(R_PAUSE_CTRL)) & P_PEND or q == 11
+    assert int(p.g_st.value) == 1, "the first request is not held in the generator"
+    dut.cut.value = 0
+    for _ in range(400):
+        await ClockCycles(dut.clk, 20)
+        if not (await tb.read(R_STATUS)) & 0x18 and len(tb.got) >= 2:
+            break
+    await ClockCycles(dut.clk, 2000)
+    got = [g[0] for g in tb.got if not g[1]]
+    want = [pause_frame(11, src=OUR_MAC), pause_frame(0, src=OUR_MAC)]
+    assert got == want, [g.hex()[-8:] for g in got]
+    assert not (await tb.read(R_PAUSE_CTRL)) & P_PEND
+    assert await tb.read(R_PAUSE_TX) == 2
     tb.stop()

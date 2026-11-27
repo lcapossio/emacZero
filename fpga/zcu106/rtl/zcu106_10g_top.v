@@ -191,6 +191,9 @@ module zcu106_10g_top (
     //   echo stack (net_service64) instead of the test traffic; static
     //   [123] TX inhibit: the transmitter holds a constant level, so the far
     //   end sees a dark line (the lasers cannot be turned off on this board)
+    //   [127:124] MAC checker throttle n: the checker takes a beat on 16 - n
+    //   of every 16 clk_app cycles (0: every cycle), so the RX FIFO fills
+    //   and automatic PAUSE has to slow the far sender; static
     // eio-read [1279:0]: port p's status is [640p+639:640p], laid out in
     //   zcu106_10g_port.v: the low 32 bits are the status bits, the top 32
     //   bits {marker 0x10F0, layout 4, port}. Counters cross from their clock

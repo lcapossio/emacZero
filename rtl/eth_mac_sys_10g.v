@@ -20,6 +20,17 @@
 // with a remote fault they stay idles. Traffic resumes once the fault clears
 // (128 columns with no fault sequence of either type).
 //
+// PAUSE (IEEE 802.3 clause 31, Annex 31B; eth_pause_10g): received PAUSE
+// frames are recognized at the RX MAC's output, ahead of the filter (they
+// are still delivered if the filter accepts them, as on the 1G core), and
+// with PAUSE_CTRL[1] they hold data frames that have not started for
+// pause_time quanta, counted from the end of the frames already committed.
+// PAUSE frames of our own (PAUSE_CTRL[0], or automatic from the RX FIFO
+// level, PAUSE_CTRL[2]) go to the MAC ahead of data frames that have not
+// started, and are not held by a received pause or by CTRL[0], only by a
+// link fault. A TX arbiter picks the source of each frame as its first beat
+// is offered to the MAC and keeps it until the last beat is taken.
+//
 // Both FIFOs are store-and-forward frame FIFOs (axis_async_frame_fifo):
 //   TX: the MAC starts a frame only once it is whole in the FIFO, so it never
 //       runs dry mid-frame (an underrun would corrupt the frame on the line),
@@ -54,6 +65,7 @@
 //   0x08 STATUS    RO  [0] PCS block lock  [1] PCS high BER
 //                      [2] TX FIFO not empty  [3] local fault  [4] remote
 //                      fault (link fault reported on XGMII RX)
+//                      [5] TX paused by a received PAUSE frame
 //   0x0C MAC_LO    RW  station address [31:0]  (bits 47:40 = first byte)
 //   0x10 MAC_HI    RW  station address [47:32]
 //   0x3C SCRATCH   RW
@@ -61,7 +73,16 @@
 //   0x48 MCAST_HI  RW  multicast hash table [63:32] } only (as axilite_regs)
 //   0x40 IP_ADDR   RW  IPv4 address for a board-level L3 stack (cfg_ip_addr;
 //                      not used by the MAC), as the 1G map
-//   0x98 CAPS      RO  [0] MCAST_HASH_FILTER  [8:4] RX FIFO size, log2 bytes
+//   0x84 PAUSE_CTRL    RW  [0] tx_send (W1S, reads 0)  [1] rx_en  [2] auto_en
+//                          RO  [3] auto_active  [4] auto_cfg_err  [5] tx_pending
+//   0x88 PAUSE_QUANTA  RW  [15:0] quanta of the PAUSE frames we send
+//   0x8C PAUSE_RX_CNT  valid PAUSE frames received } saturating; a write to
+//   0x90 PAUSE_TX_CNT  PAUSE frames sent           } either clears both
+//   0x9C PAUSE_XOFF    RW  [19:0] automatic PAUSE XOFF level, RX FIFO bytes
+//   0xA0 PAUSE_XON     RW  [19:0] XON level (reset: half / a quarter of the FIFO)
+//   0xA4 PAUSE_REFRESH RW  [15:0] XOFF repeat interval, quanta (0: quanta / 2)
+//   0x98 CAPS      RO  [0] MCAST_HASH_FILTER  [3] automatic PAUSE
+//                      [8:4] RX FIFO size, log2 bytes
 //                      [9] 1 = 10G core (64-bit streams, this map)
 //                      [31:16] MAX_FRAME_JUMBO
 //   Counters (write any value to clear one; 64-bit counters: reading the low
@@ -102,6 +123,10 @@
 // transceiver domains through two-flop synchronizers: they are meant to be
 // set while the link is idle (a frame received while they change may be
 // filtered against a mix of old and new bits).
+// eth_pause_10g also carries multi-bit values between xgmii_rx_clk and
+// xgmii_tx_clk (a received pause_time): when those clocks are unrelated,
+// bound that path like the clk crossings (set_max_delay -datapath_only
+// under a destination clock period), do not cut it.
 // Verilog 2001
 // =============================================================================
 
@@ -189,6 +214,9 @@ module eth_mac_sys_10g #(
     reg  [31:0] scratch;
     reg  [31:0] ip_addr;
     assign cfg_ip_addr = ip_addr;
+    reg         p_rx_en, p_auto_en, p_send;
+    reg  [15:0] p_quanta, p_refresh;
+    reg  [19:0] p_xoff, p_xon;
 
     wire cfg_tx_en   = ctrl[0];
     wire cfg_rx_en   = ctrl[1];
@@ -337,28 +365,42 @@ module eth_mac_sys_10g #(
         .m_ready           (txf_m_ready)
     );
 
-    // link fault gate: with a fault reported the MAC is offered no new frame.
-    // It closes only where AXI4-Stream allows tvalid to drop: on the
-    // handshake of a frame's last beat, or between frames with nothing
-    // offered; it opens once the fault is gone.
-    wire tx_fault;
-    reg  t_open, t_mid;
-    wire mac_valid = txf_m_valid && t_open;
-    wire mac_ready;
-    assign txf_m_ready = mac_ready && t_open;
-    wire tx_beat   = mac_valid && mac_ready;
+    // TX arbiter: PAUSE frames from eth_pause_10g and data frames from the
+    // TX FIFO take turns at the MAC, a whole frame at a time. Between frames
+    // a PAUSE frame goes first; with a link fault reported no frame starts;
+    // a received pause (tx_paused) holds data frames only. The source is
+    // picked when a frame's first beat is offered and kept until its last
+    // beat is taken, so a beat offered to the MAC is never withdrawn.
+    localparam [1:0] A_NONE = 2'd0, A_DATA = 2'd1, A_PAUSE = 2'd2;
+    wire        tx_fault, tx_paused;
+    wire [63:0] p_tdata;
+    wire [7:0]  p_tkeep;
+    wire        p_tvalid, p_tlast;
+    reg  [1:0]  a_sel;              // source of the frame offered or part-way
+    reg         a_mid;              // a beat of that frame was taken
+    wire [1:0]  a_pick = (p_tvalid && !tx_fault)                   ? A_PAUSE :
+                         (txf_m_valid && !tx_fault && !tx_paused) ? A_DATA  :
+                                                                    A_NONE;
+    wire [1:0]  a_cur  = (a_sel != A_NONE) ? a_sel : a_pick;
+    wire        a_p    = (a_cur == A_PAUSE);
+    wire        mac_valid = a_p ? p_tvalid : ((a_cur == A_DATA) && txf_m_valid);
+    wire [72:0] a_data = a_p ? {1'b0, p_tkeep, p_tdata} : txf_m_data;
+    wire        a_last = a_p ? p_tlast : txf_m_last;
+    wire        mac_ready;
+    assign      txf_m_ready = mac_ready && (a_cur == A_DATA);
+    wire        p_tready    = mac_ready && a_p;
+    wire        tx_beat     = mac_valid && mac_ready;
+    wire        f_start     = tx_beat && !a_mid;
+    wire        f_wait      = mac_valid && !mac_ready && !a_mid;
+    wire        f_end;
     always @(posedge xgmii_tx_clk or negedge t_tx_rst_n) begin
         if (!t_tx_rst_n) begin
-            t_open <= 1'b1;
-            t_mid  <= 1'b0;
+            a_sel <= A_NONE;
+            a_mid <= 1'b0;
         end else begin
+            a_sel <= (tx_beat && a_last) ? A_NONE : a_cur;
             if (tx_beat)
-                t_mid <= !txf_m_last;
-            if (t_open)
-                t_open <= !(tx_fault && ((tx_beat && txf_m_last) ||
-                                         (!t_mid && !mac_valid)));
-            else
-                t_open <= !tx_fault;
+                a_mid <= !a_last;
         end
     end
 
@@ -370,15 +412,15 @@ module eth_mac_sys_10g #(
         .clk           (xgmii_tx_clk),
         .rst_n         (t_tx_rst_n),
         .ce            (xgmii_tx_ready),
-        .s_axis_tdata  (txf_m_data[63:0]),
-        .s_axis_tkeep  (txf_m_data[71:64]),
+        .s_axis_tdata  (a_data[63:0]),
+        .s_axis_tkeep  (a_data[71:64]),
         .s_axis_tvalid (mac_valid),
-        .s_axis_tlast  (txf_m_last),
-        .s_axis_tuser  (txf_m_data[72]),
+        .s_axis_tlast  (a_last),
+        .s_axis_tuser  (a_data[72]),
         .s_axis_tready (mac_ready),
         .xgmii_txd     (mac_txd),
         .xgmii_txc     (mac_txc),
-        .stat_tx_frame (),
+        .stat_tx_frame (f_end),
         .stat_underrun (tx_underrun)
     );
 
@@ -415,7 +457,7 @@ module eth_mac_sys_10g #(
     reg         tx_err_acc;
     reg         txs_wr;
     reg  [14:0] txs_data;           // {err, len}
-    wire [13:0] tx_len_n  = tx_acc + {10'd0, ones8(txf_m_data[71:64])};
+    wire [13:0] tx_len_n  = tx_acc + {10'd0, ones8(a_data[71:64])};
     always @(posedge xgmii_tx_clk or negedge t_tx_rst_n) begin
         if (!t_tx_rst_n) begin
             tx_acc     <= 14'd0;
@@ -425,15 +467,15 @@ module eth_mac_sys_10g #(
         end else begin
             txs_wr <= 1'b0;
             if (tx_beat) begin
-                if (txf_m_last) begin
+                if (a_last) begin
                     tx_acc     <= 14'd0;
                     tx_err_acc <= 1'b0;
                     txs_wr     <= 1'b1;
-                    txs_data   <= {tx_err_acc || txf_m_data[72],
+                    txs_data   <= {tx_err_acc || a_data[72],
                                    ((tx_len_n < 14'd60) ? 14'd60 : tx_len_n) + 14'd4};
                 end else begin
                     tx_acc     <= (tx_len_n > 14'h3FF7) ? 14'h3FF7 : tx_len_n;
-                    tx_err_acc <= tx_err_acc || txf_m_data[72];
+                    tx_err_acc <= tx_err_acc || a_data[72];
                 end
             end
         end
@@ -525,6 +567,7 @@ module eth_mac_sys_10g #(
     end
 
     wire rxf_drop, rxf_ovf;
+    wire [RX_FIFO_ADDR_WIDTH:0] rxf_count;
     wire [72:0] rxf_m_data;
     wire        rxf_m_last, rxf_m_valid, rxf_m_ready;
 
@@ -543,7 +586,7 @@ module eth_mac_sys_10g #(
         .wr_frame_ok       (),
         .wr_frame_drop     (rxf_drop),
         .wr_frame_overflow (rxf_ovf),
-        .wr_count          (),
+        .wr_count          (rxf_count),
         .rd_clk            (clk),
         .rd_rst_n          (a_rx_rst_n),
         .m_data            (rxf_m_data),
@@ -590,6 +633,55 @@ module eth_mac_sys_10g #(
     );
 
     // =========================================================================
+    // PAUSE
+    // =========================================================================
+    localparam [19:0] RXF_BYTES = 20'd8 << RX_FIFO_ADDR_WIDTH;
+    wire p_pending, p_cfg_err, p_active, p_paused_sts;
+    wire rx_pause_evt, tx_pause_evt;
+
+    eth_pause_10g #(
+        .LEVEL_W   (RX_FIFO_ADDR_WIDTH + 1),
+        .LEVEL_MAX (RXF_BYTES - 20'd8)      // reached one word before full
+    ) u_pause (
+        .clk              (clk),
+        .c_rst_n          (rst_n),
+        .c_tx_rst_n       (a_tx_rst_n),
+        .cfg_tx_send      (p_send),
+        .cfg_quanta       (p_quanta),
+        .cfg_rx_en        (p_rx_en),
+        .cfg_auto_en      (p_auto_en),
+        .cfg_auto_xoff    (p_xoff),
+        .cfg_auto_xon     (p_xon),
+        .cfg_auto_refresh (p_refresh),
+        .our_mac          (mac_addr),
+        .tx_pending       (p_pending),
+        .auto_cfg_err     (p_cfg_err),
+        .auto_active      (p_active),
+        .paused_sts       (p_paused_sts),
+        .rx_clk           (xgmii_rx_clk),
+        .rx_rst_n         (t_rx_rst_n),
+        .rx_tdata         (mrx_tdata),
+        .rx_tvalid        (mrx_tvalid),
+        .rx_tlast         (mrx_tlast),
+        .rx_tuser         (mrx_tuser),
+        .rx_level         (rxf_count),
+        .rx_pause_evt     (rx_pause_evt),
+        .tx_clk           (xgmii_tx_clk),
+        .tx_rst_n         (t_tx_rst_n),
+        .tx_ce            (xgmii_tx_ready),
+        .f_start          (f_start),
+        .f_wait           (f_wait),
+        .f_end            (f_end),
+        .tx_paused        (tx_paused),
+        .p_tdata          (p_tdata),
+        .p_tkeep          (p_tkeep),
+        .p_tvalid         (p_tvalid),
+        .p_tready         (p_tready),
+        .p_tlast          (p_tlast),
+        .tx_pause_evt     (tx_pause_evt)
+    );
+
+    // =========================================================================
     // Counters (clk)
     // =========================================================================
     // Events from the transceiver domains: a small wrapping count crosses,
@@ -597,8 +689,14 @@ module eth_mac_sys_10g #(
     // Both ends of a count reset with their crossing, together with the
     // last value seen, so a crossing reset loses events in flight but never
     // makes a counter jump.
-    wire [7:0] c_rx_drop, c_rx_disc, c_tx_unr;
-    reg  [7:0] p_rx_drop, p_rx_disc, p_tx_unr;  // count at the last clk cycle
+    wire [7:0] c_rx_drop, c_rx_disc, c_tx_unr, c_prx, c_ptx;
+    reg  [7:0] p_rx_drop, p_rx_disc, p_tx_unr, p_prx, p_ptx;  // at the last clk cycle
+    cdc_event_count #(.WIDTH(8)) u_cnt_pause_rx (
+        .src_clk (xgmii_rx_clk), .src_rst_n (t_rx_rst_n), .inc (rx_pause_evt),
+        .dst_clk (clk), .dst_rst_n (a_rx_rst_n), .count (c_prx));
+    cdc_event_count #(.WIDTH(8)) u_cnt_pause_tx (
+        .src_clk (xgmii_tx_clk), .src_rst_n (t_tx_rst_n), .inc (tx_pause_evt),
+        .dst_clk (clk), .dst_rst_n (a_tx_rst_n), .count (c_ptx));
     cdc_event_count #(.WIDTH(8)) u_cnt_rx_drop (
         .src_clk (xgmii_rx_clk), .src_rst_n (t_rx_rst_n), .inc (rxf_ovf),
         .dst_clk (clk), .dst_rst_n (a_rx_rst_n), .count (c_rx_drop));
@@ -617,12 +715,25 @@ module eth_mac_sys_10g #(
             p_rx_disc <= c_rx_disc;
         end
     end
-    always @(posedge clk or negedge a_tx_rst_n)
-        if (!a_tx_rst_n) p_tx_unr <= 8'd0; else p_tx_unr <= c_tx_unr;
+    always @(posedge clk or negedge a_rx_rst_n)
+        if (!a_rx_rst_n) p_prx <= 8'd0; else p_prx <= c_prx;
+    always @(posedge clk or negedge a_tx_rst_n) begin
+        if (!a_tx_rst_n) begin
+            p_tx_unr <= 8'd0;
+            p_ptx    <= 8'd0;
+        end else begin
+            p_tx_unr <= c_tx_unr;
+            p_ptx    <= c_ptx;
+        end
+    end
     wire [7:0] d_rx_drop = c_rx_drop - p_rx_drop;
     wire [7:0] d_rx_disc = c_rx_disc - p_rx_disc;
     wire [7:0] d_tx_unr  = c_tx_unr  - p_tx_unr;
-    reg  [31:0] n_rx_drop, n_rx_disc, n_tx_unr;
+    wire [7:0] d_prx     = c_prx - p_prx;
+    wire [7:0] d_ptx     = c_ptx - p_ptx;
+    reg  [31:0] n_rx_drop, n_rx_disc, n_tx_unr, n_pause_rx, n_pause_tx;
+    wire [32:0] s_prx = {1'b0, n_pause_rx} + {25'd0, d_prx};
+    wire [32:0] s_ptx = {1'b0, n_pause_tx} + {25'd0, d_ptx};
 
     reg [63:0] n_tx_frames, n_tx_bytes, n_rx_frames, n_rx_bytes;
     reg [31:0] n_tx_err, n_tx_drop, n_lock_loss, n_lf, n_rf;
@@ -659,10 +770,14 @@ module eth_mac_sys_10g #(
     localparam [31:0] CTRL_RST = ((TXRX_EN_AT_RESET != 0) ? 32'h3 : 32'h0) |
                                  ((JUMBO_AT_RESET   != 0) ? 32'h40 : 32'h0);
     localparam [31:0] CAPS = {MAX_FRAME_JUMBO[15:0], 6'd0, 1'b1,
-                              RX_FIFO_ADDR_WIDTH[4:0] + 5'd3, 3'd0,
+                              RX_FIFO_ADDR_WIDTH[4:0] + 5'd3, 1'b1, 2'd0,
                               (MCAST_HASH_FILTER != 0) ? 1'b1 : 1'b0};
 
     wire [31:0] wd_mac_hi = wmask({16'd0, mac_addr[47:32]}, s_axi_wdata, s_axi_wstrb);
+    wire [31:0] wd_quanta  = wmask({16'd0, p_quanta},  s_axi_wdata, s_axi_wstrb);
+    wire [31:0] wd_refresh = wmask({16'd0, p_refresh}, s_axi_wdata, s_axi_wstrb);
+    wire [31:0] wd_xoff    = wmask({12'd0, p_xoff},    s_axi_wdata, s_axi_wstrb);
+    wire [31:0] wd_xon     = wmask({12'd0, p_xon},     s_axi_wdata, s_axi_wstrb);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -671,6 +786,15 @@ module eth_mac_sys_10g #(
             mc_hash   <= 64'd0;
             scratch   <= 32'd0;
             ip_addr   <= IP_ADDR_AT_RESET;
+            p_rx_en   <= 1'b0;
+            p_auto_en <= 1'b0;
+            p_send    <= 1'b0;
+            p_quanta  <= 16'd0;
+            p_refresh <= 16'd0;
+            p_xoff    <= RXF_BYTES >> 1;
+            p_xon     <= RXF_BYTES >> 2;
+            n_pause_rx <= 32'd0;
+            n_pause_tx <= 32'd0;
             s_axi_bvalid <= 1'b0;
             s_axi_rvalid <= 1'b0;
             s_axi_rdata  <= 32'd0;
@@ -713,6 +837,9 @@ module eth_mac_sys_10g #(
             if (lock_lost) n_lock_loss <= n_lock_loss + 32'd1;
             if (lf_new) n_lf <= n_lf + 32'd1;
             if (rf_new) n_rf <= n_rf + 32'd1;
+            n_pause_rx <= s_prx[32] ? 32'hFFFF_FFFF : s_prx[31:0];
+            n_pause_tx <= s_ptx[32] ? 32'hFFFF_FFFF : s_ptx[31:0];
+            p_send     <= 1'b0;
 
             // ---- writes; a write to a counter clears it (and wins over a
             // count in the same cycle)
@@ -728,6 +855,19 @@ module eth_mac_sys_10g #(
                                mc_hash[31:0]  <= wmask(mc_hash[31:0], s_axi_wdata, s_axi_wstrb);
                     8'h48: if (MCAST_HASH_FILTER != 0)
                                mc_hash[63:32] <= wmask(mc_hash[63:32], s_axi_wdata, s_axi_wstrb);
+                    8'h84: if (s_axi_wstrb[0]) begin
+                               p_send    <= s_axi_wdata[0];
+                               p_rx_en   <= s_axi_wdata[1];
+                               p_auto_en <= s_axi_wdata[2];
+                           end
+                    8'h88: p_quanta  <= wd_quanta[15:0];
+                    8'h8C, 8'h90: begin
+                               n_pause_rx <= 32'd0;
+                               n_pause_tx <= 32'd0;
+                           end
+                    8'h9C: p_xoff    <= wd_xoff[19:0];
+                    8'hA0: p_xon     <= wd_xon[19:0];
+                    8'hA4: p_refresh <= wd_refresh[15:0];
                     8'hB0, 8'hB4: n_tx_frames <= 64'd0;
                     8'hB8, 8'hBC: n_tx_bytes  <= 64'd0;
                     8'hC0, 8'hC4: n_rx_frames <= 64'd0;
@@ -759,14 +899,22 @@ module eth_mac_sys_10g #(
                     8'h00: s_axi_rdata <= {`EMZ_VERSION_MAJOR, `EMZ_VERSION_MINOR,
                                            `EMZ_VERSION_ID};
                     8'h04: s_axi_rdata <= ctrl;
-                    8'h08: s_axi_rdata <= {27'd0, st_rf, st_lf, txf_count != 0,
-                                           hiber_s[1], lock_s[1]};
+                    8'h08: s_axi_rdata <= {26'd0, p_paused_sts, st_rf, st_lf,
+                                           txf_count != 0, hiber_s[1], lock_s[1]};
                     8'h0C: s_axi_rdata <= mac_addr[31:0];
                     8'h10: s_axi_rdata <= {16'd0, mac_addr[47:32]};
                     8'h3C: s_axi_rdata <= scratch;
                     8'h40: s_axi_rdata <= ip_addr;
                     8'h44: s_axi_rdata <= mc_hash[31:0];
                     8'h48: s_axi_rdata <= mc_hash[63:32];
+                    8'h84: s_axi_rdata <= {26'd0, p_pending, p_cfg_err, p_active,
+                                           p_auto_en, p_rx_en, 1'b0};
+                    8'h88: s_axi_rdata <= {16'd0, p_quanta};
+                    8'h8C: s_axi_rdata <= n_pause_rx;
+                    8'h90: s_axi_rdata <= n_pause_tx;
+                    8'h9C: s_axi_rdata <= {12'd0, p_xoff};
+                    8'hA0: s_axi_rdata <= {12'd0, p_xon};
+                    8'hA4: s_axi_rdata <= {16'd0, p_refresh};
                     8'h98: s_axi_rdata <= CAPS;
                     8'hB0: begin s_axi_rdata <= n_tx_frames[31:0]; hi_latch <= n_tx_frames[63:32]; end
                     8'hB8: begin s_axi_rdata <= n_tx_bytes[31:0];  hi_latch <= n_tx_bytes[63:32];  end

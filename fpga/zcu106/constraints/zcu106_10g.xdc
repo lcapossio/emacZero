@@ -81,7 +81,8 @@ create_clock -name rxoutclk1 -period 3.103 \
 # The 50 MHz control clock, the refclk meter clock, TCK, and each port's TX
 # user clock and RX recovered clock are unrelated. Between those only resets,
 # static settings and status cross, through synchronizers, plus EIO status
-# counters read as debug values: cut as asynchronous groups.
+# counters read as debug values: cut as asynchronous groups. The exception
+# is a port's own TX and RX clocks (below).
 # TCK is defined on BSCANE2 INTERNAL_TCK, where AMD's timing model starts it,
 # so it reaches the fabric TCK net and the path back into TDO is timed too.
 create_clock -name tck_bscan -period 100.0 \
@@ -97,10 +98,19 @@ set_clock_groups -asynchronous -group [get_clocks tck_bscan]
 set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks sfp_refclk]
 set_clock_groups -asynchronous -group $clk_50
 set_clock_groups -asynchronous \
-    -group [get_clocks -include_generated_clocks txoutclk0] \
-    -group [get_clocks -include_generated_clocks rxoutclk0] \
-    -group [get_clocks -include_generated_clocks txoutclk1] \
-    -group [get_clocks -include_generated_clocks rxoutclk1]
+    -group [get_clocks -include_generated_clocks {txoutclk0 rxoutclk0}] \
+    -group [get_clocks -include_generated_clocks {txoutclk1 rxoutclk1}]
+# A port's own TX and RX clocks: eth_mac_sys_10g's PAUSE logic carries a
+# received pause_time (16 bits, read a few TX clocks after its synchronized
+# toggle) from RX to TX, beside single-bit synchronizers (link fault, PAUSE
+# events). Not cut: bounded under the 3.103 ns period, so the value has
+# settled when it is read.
+foreach p {0 1} {
+    set txc [get_clocks -include_generated_clocks txoutclk$p]
+    set rxc [get_clocks -include_generated_clocks rxoutclk$p]
+    set_max_delay -datapath_only -from $rxc -to $txc 3.0
+    set_max_delay -datapath_only -from $txc -to $rxc 3.0
+}
 # clk_app <-> the GT user clocks carry the MAC frame FIFOs, the statistics
 # FIFOs and the event counters: Gray pointers, and data words or snapshots
 # that a synchronized request or pointer qualifies. Not cut: bound every such

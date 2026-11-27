@@ -74,6 +74,7 @@ module zcu106_10g_lane #(
     wire        ctl_csr_go    = ctrl[120];
     wire        ctl_csr_write = ctrl[121];
     wire        ctl_service   = ctrl[122];
+    wire [3:0]  ctl_rx_thr    = ctrl[127:124];
     localparam [47:0] OUR_MAC = 48'h020000000001;
 
     // =========================================================================
@@ -180,6 +181,15 @@ module zcu106_10g_lane #(
         a_clr    <= {a_clr[1:0], ctl_clear};
     end
     wire mac_app = a_mac[2];
+    // checker throttle (ctrl[127:124], set before traffic starts, like the
+    // length): with n > 0 the checker takes a beat on 16 - n of every 16
+    // clk_app cycles, so the RX FIFO fills and automatic PAUSE must slow the
+    // far sender
+    reg  [3:0] thr_cnt;
+    always @(posedge clk_app or negedge app_rst_n)
+        if (!app_rst_n) thr_cnt <= 4'd0;
+        else            thr_cnt <= thr_cnt + 4'd1;
+    wire chk_ready = (thr_cnt >= ctl_rx_thr);
     // service mode; each of the MAC's streams follows it between frames
     wire svc = a_svc[2];
 
@@ -222,7 +232,7 @@ module zcu106_10g_lane #(
     wire        tx_tvalid = tx_svc ? sv_tvalid : mg_tvalid;
     wire        tx_tlast  = tx_svc ? sv_tlast  : mg_tlast;
     assign      sv_tready = mg_tready && tx_svc;
-    wire        mr_tready = rx_svc ? svr_tready : 1'b1;
+    wire        mr_tready = rx_svc ? svr_tready : chk_ready;
     wire        tx_take   = tx_tvalid && mg_tready;
     wire        rx_take   = mr_tvalid && mr_tready;
     always @(posedge clk_app or negedge app_rst_n) begin
@@ -305,6 +315,10 @@ module zcu106_10g_lane #(
         .RX_FIFO_ADDR_WIDTH (12),
         .TXRX_EN_AT_RESET   (1),
         .JUMBO_AT_RESET     (1),
+        // with the hash table left empty no multicast frame is delivered:
+        // received PAUSE frames (01:80:C2:00:00:01) are dropped at the
+        // filter (RX_DISCARD) instead of reaching the checker
+        .MCAST_HASH_FILTER  (1),
         .MAC_ADDR_AT_RESET  (OUR_MAC)
     ) u_sys (
         .clk            (clk_app),
@@ -361,7 +375,7 @@ module zcu106_10g_lane #(
         .udp           (a_udp[2]),
         .s_axis_tdata  (mr_tdata),
         .s_axis_tkeep  (mr_tkeep),
-        .s_axis_tvalid (mr_tvalid && !rx_svc),
+        .s_axis_tvalid (mr_tvalid && !rx_svc && chk_ready),
         .s_axis_tlast  (mr_tlast),
         .s_axis_tuser  (mr_tuser),
         .good_frames   (mac_good),

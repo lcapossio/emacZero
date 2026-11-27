@@ -68,6 +68,15 @@ This project does not yet maintain long-lived release branches.
   port through a 10G switch; each of the MAC's streams changes over between
   frames, never while a beat is on offer. `eth_mac_sys_10g` gains the 1G map's IP_ADDR register (`0x40`,
   `cfg_ip_addr`). cocotb suite `net_service64`.
+- 10G PAUSE (`rtl/eth_pause_10g.v`, in `eth_mac_sys_10g`): the 1G map's
+  PAUSE_CTRL, PAUSE_QUANTA, PAUSE counters and automatic PAUSE registers
+  (CAPS `[3]`), STATUS `[5]` TX paused. Received PAUSE frames are recognized
+  ahead of the filter and hold data frames for exactly 8 XGMII words per
+  quantum, counted from the end of the frames already committed; our own
+  PAUSE frames go ahead of queued data frames and are held only by a link
+  fault. Automatic PAUSE runs from the RX FIFO level. The ZCU106 10G design
+  gets a checker throttle (EIO `ctrl[127:124]`) and `sfp10g_test.py pause`.
+  The XDC bounds each port's RX to TX clock paths instead of cutting them.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
   with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while

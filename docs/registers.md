@@ -430,18 +430,23 @@ FIFO; at 25 MHz it refuses bytes upstream however low PAUSE_XOFF is).
 
 `rtl/eth_mac_sys_10g.v` has its own, smaller map in the same 256-byte
 space. Offsets it shares with the 1G core keep their meaning; everything else
-reads 0. CAPS `[9]` = 1 identifies it. There is no MDIO, IRQ or PAUSE yet.
+reads 0. CAPS `[9]` = 1 identifies it. There is no MDIO or IRQ.
 
 | Offset | Name | Access | Description |
 |-------:|------|--------|-------------|
 | `0x00` | VERSION | RO | As the 1G core |
 | `0x04` | CTRL | RW | `[0]` tx_en `[1]` rx_en `[2]` promisc `[6]` jumbo_en `[8]` passthrough (every address, bad frames delivered with tuser). tx_en / rx_en act between frames. |
-| `0x08` | STATUS | RO | `[0]` PCS block lock `[1]` PCS high BER `[2]` TX FIFO not empty `[3]` local fault `[4]` remote fault (link fault, see below) |
+| `0x08` | STATUS | RO | `[0]` PCS block lock `[1]` PCS high BER `[2]` TX FIFO not empty `[3]` local fault `[4]` remote fault (link fault, see below) `[5]` TX paused by a received PAUSE frame |
 | `0x0C` / `0x10` | MAC_LO / MAC_HI | RW | Station address, as the 1G core |
 | `0x3C` | SCRATCH | RW | |
 | `0x40` | IP_ADDR | RW | IPv4 address for a board-level L3 stack (`cfg_ip_addr`), as the 1G core; reset value `IP_ADDR_AT_RESET` (default 192.168.137.200) |
 | `0x44` / `0x48` | MCAST_LO / MCAST_HI | RW | Multicast hash table, `MCAST_HASH_FILTER=1` only (same hash as the 1G core); without it every multicast frame is accepted |
-| `0x98` | CAPS | RO | `[0]` mcast_hash `[8:4]` RX FIFO size, log2 bytes `[9]` = 1 `[31:16]` MAX_FRAME_JUMBO |
+| `0x84` | PAUSE_CTRL | RW | As the 1G core: `[0]` tx_send (W1S) `[1]` rx_en `[2]` auto_en; RO `[3]` auto_active `[4]` auto_cfg_err `[5]` tx_pending |
+| `0x88` | PAUSE_QUANTA | RW | `[15:0]` quanta of the PAUSE frames sent |
+| `0x8C` / `0x90` | PAUSE_RX_CNT / PAUSE_TX_CNT | RO/WC | Valid PAUSE frames received / PAUSE frames sent; saturating, a write to either clears both |
+| `0x98` | CAPS | RO | `[0]` mcast_hash `[3]` = 1 (automatic PAUSE) `[8:4]` RX FIFO size, log2 bytes `[9]` = 1 `[31:16]` MAX_FRAME_JUMBO |
+| `0x9C` / `0xA0` | PAUSE_XOFF / PAUSE_XON | RW | `[19:0]` automatic PAUSE levels, RX FIFO bytes; reset half and a quarter of the FIFO |
+| `0xA4` | PAUSE_REFRESH | RW | `[15:0]` XOFF repeat interval, quanta (0: half of PAUSE_QUANTA, at least 1) |
 | `0xA8` | LOCAL_FAULTS | RO/WC | Times a local fault was reported (STATUS `[3]` set) |
 | `0xAC` | REMOTE_FAULTS | RO/WC | Times a remote fault was reported (STATUS `[4]` set) |
 | `0xB0` / `0xB4` | TX_FRAMES | RO/WC | Frames sent with a good FCS (64-bit) |
@@ -483,6 +488,46 @@ transmitted XGMII carries remote fault sequences instead. With either fault,
 the TX MAC finishes the frame it is sending and starts no new one: frames
 wait in the TX FIFO and `s_axis` is held off (no frame is dropped), until
 the fault clears.
+
+PAUSE (`rtl/eth_pause_10g.v`) works as on the 1G core (PAUSE_CTRL and the
+automatic PAUSE rules above), with these differences:
+
+- A received PAUSE frame is recognized at the RX MAC's output, ahead of the
+  address filter and the RX FIFO: destination `01:80:C2:00:00:01`, EtherType
+  `0x8808`, opcode `0x0001`, and a good frame (good FCS, at least 64 bytes,
+  no control or error character). It is also delivered on `m_axis` when the
+  filter accepts it, as on the 1G core (a multicast frame: with
+  `MCAST_HASH_FILTER=1` and its hash bit clear it is dropped and counted in
+  RX_DISCARD).
+- One quantum is 512 bit times, exactly 8 XGMII words, so the pause timer
+  counts 8 transmit clock enables per quantum, with no rounding. With
+  `rx_en`, data frames that have not started are held as soon as the frame
+  is recognized; the frames already committed to the TX MAC (the one on the
+  line and one whose first beat was already offered to it) finish, and the
+  countdown starts when the last of them has sent its terminate, so no data
+  frame starts for the full pause_time after it. A quanta of 0 cancels the
+  pause at once. In simulation (`sys_pause_rx`), the gap on the line from
+  that terminate to the next start was 8 * pause_time words plus at most 4.
+- Our own PAUSE frames (tx_send and automatic) go to the TX MAC ahead of
+  data frames that have not started, are not held by a received pause or by
+  `CTRL[0]`, and are counted in TX_FRAMES and TX_BYTES (64 bytes each). A
+  link fault holds them like data frames.
+- The automatic PAUSE level is the RX FIFO's write-side count in bytes (8
+  per word), including the frame being written. PAUSE_XOFF may be at most
+  the FIFO size minus 8. The refresh interval counts quanta of transmit
+  clock enables from the moment an automatic XOFF left the generator.
+- Headroom: after the level reaches XOFF, the rest of the frame being
+  received, our frame already going out (the XOFF waits for it), the PAUSE
+  frame, the partner's reaction (802.3 allows a 10 Gb/s partner 60 quanta,
+  3840 bytes) and the partner's frame already started can still arrive:
+  about `H = 3 * (F + 24) + 3840 + 200` bytes, `F` the largest frame with
+  its FCS. Loss-free when `PAUSE_XOFF + H` is at most the FIFO size: with
+  the default 16 KB RX FIFO and standard frames, PAUSE_XOFF up to about
+  7600; for 9018-byte frames a 64 KB FIFO (`RX_FIFO_ADDR_WIDTH=13`).
+- `xgmii_rx_clk` to `xgmii_tx_clk` carries the received pause_time as a
+  multi-bit value: when the two clocks are unrelated, bound that path
+  (`set_max_delay -datapath_only` under a TX clock period) instead of
+  cutting it, as `fpga/zcu106/constraints/zcu106_10g.xdc` does.
 
 ## Arty UDP Demo Sideband Ports
 

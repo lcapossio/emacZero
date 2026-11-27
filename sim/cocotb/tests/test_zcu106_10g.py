@@ -57,7 +57,7 @@ SUITES = {
         "toplevel": "h_mac10g_test_loop",
         "sources": ["rtl/crc32_d64.v", "rtl/async_fifo.v",
                     "rtl/axis_async_frame_fifo.v", "rtl/cdc_event_count.v",
-                    "rtl/eth_mac_10g_tx.v", "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v",
+                    "rtl/eth_mac_10g_tx.v", "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v", "rtl/eth_pause_10g.v",
                     "rtl/eth_mac_sys_10g.v",
                     "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
                     "rtl/pcs10gbr_scrambler.v", "rtl/pcs10gbr_gearbox_tx.v",
@@ -81,7 +81,7 @@ SUITES = {
         "toplevel": "h_mac10g_dual",
         "sources": ["rtl/crc32_d64.v", "rtl/async_fifo.v",
                     "rtl/axis_async_frame_fifo.v", "rtl/cdc_event_count.v",
-                    "rtl/eth_mac_10g_tx.v", "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v",
+                    "rtl/eth_mac_10g_tx.v", "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v", "rtl/eth_pause_10g.v",
                     "rtl/eth_mac_sys_10g.v",
                     "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
                     "rtl/pcs10gbr_scrambler.v", "rtl/pcs10gbr_gearbox_tx.v",
@@ -438,6 +438,7 @@ async def mac_setup(dut):
     dut.inj_err.value = 0
     dut.clear.value = 0
     dut.service.value = 0
+    dut.throttle.value = 0
     dut.csr_go.value = 0
     dut.csr_write.value = 0
     dut.csr_addr.value = 0
@@ -542,6 +543,65 @@ async def mac_sweep_and_jumbo(dut):
     c = mac_counts(dut)
     assert c["bad_frames"] == 0 and c["seq_gaps"] == 0 and c["tuser_frames"] == 0, c
     assert c["good_frames"] == c["gen_frames"], c
+
+
+@cocotb.test(timeout_time=60, timeout_unit="ms")
+async def mac_pause_throttle(dut):
+    """The checker throttled to 6 beats in 16 (EIO [127:124] = 10), far
+    below line rate for 1514-byte frames: without PAUSE the RX FIFO
+    overflows (RX_DROP, sequence gaps); with automatic PAUSE the port's own
+    PAUSE frames loop back and slow its sender, so every frame arrives good
+    and in order and none is dropped. The PAUSE frames are counted sent and
+    received, in TX_FRAMES and RX_FRAMES, and dropped at the filter
+    (RX_DISCARD) before the checker."""
+    if dut._name != "h_mac10g_test_loop":
+        return
+    await mac_setup(dut)
+    dut.len.value = 1514
+    dut.throttle.value = 10
+    await ClockCycles(dut.clk, 20)
+    dut.enable.value = 1
+    await ClockCycles(dut.clk, 30000)
+    dut.enable.value = 0
+    await mac_drain(dut)
+    c = mac_counts(dut)
+    drops = await csr(dut, 0xE8)
+    assert drops > 0 and c["seq_gaps"] > 0, f"no overflow without PAUSE: {c}"
+    # automatic PAUSE: XOFF with room for four 1538-byte frames above it in
+    # the 32 KB RX FIFO
+    await app_pulse(dut, dut.clear)
+    for a in (0xB0, 0xC0, 0xE8, 0xEC, 0x8C):
+        await csr(dut, a, 0)
+    xoff = 32768 - 8 - 4 * 1538 - 1024
+    await csr(dut, 0x88, 0x400)          # PAUSE_QUANTA
+    await csr(dut, 0x9C, xoff)
+    await csr(dut, 0xA0, xoff // 2)
+    await csr(dut, 0x84, 0x6)            # rx_en, auto_en
+    st = await csr(dut, 0x84)
+    assert st & 0x10 == 0, f"auto_cfg_err, PAUSE_CTRL {st:02x}"
+    # the generator's count has no clear: count this run from here
+    g0 = int(dut.gen_frames.value)
+    dut.enable.value = 1
+    await ClockCycles(dut.clk, 60000)
+    dut.enable.value = 0
+    for _ in range(4000):
+        await ClockCycles(dut.clk, 100)
+        if int(dut.good_frames.value) + int(dut.bad_frames.value) >=                 int(dut.gen_frames.value) - g0:
+            break
+    await ClockCycles(dut.clk, 400)
+    c = mac_counts(dut)
+    c["gen_frames"] -= g0
+    ptx, prx = await csr(dut, 0x90), await csr(dut, 0x8C)
+    dut._log.info("automatic PAUSE: %d frames, %d PAUSE frames", c["gen_frames"], ptx)
+    assert c["gen_frames"] > 100
+    assert c["good_frames"] == c["gen_frames"], c
+    assert c["bad_frames"] == 0 and c["seq_gaps"] == 0 and c["tuser_frames"] == 0, c
+    assert await csr(dut, 0xE8) == 0, "RX_DROP with automatic PAUSE"
+    assert ptx > 0 and prx == ptx, (ptx, prx)
+    assert await csr(dut, 0xEC) == prx, "RX_DISCARD: the PAUSE frames"
+    assert await csr(dut, 0xB0) == c["gen_frames"] + ptx, "TX_FRAMES"
+    assert await csr(dut, 0xC0) == c["gen_frames"] + prx, "RX_FRAMES"
+    await csr(dut, 0x84, 0)
 
 
 @cocotb.test(timeout_time=20, timeout_unit="ms")

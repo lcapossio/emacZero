@@ -16,6 +16,7 @@ resets act on (default 0).
     python fpga/zcu106/scripts/sfp10g_test.py dual --sweep --len 1514 --len1 9000
     python fpga/zcu106/scripts/sfp10g_test.py dual --udp --len 9014 --seconds 10
     python fpga/zcu106/scripts/sfp10g_test.py fault --len 60
+    python fpga/zcu106/scripts/sfp10g_test.py --sfp 1 pause --len 1514
     python fpga/zcu106/scripts/sfp10g_test.py service --ip 192.168.10.200
     python fpga/zcu106/scripts/sfp10g_test.py csr 0xC0          # read a MAC CSR
     python fpga/zcu106/scripts/sfp10g_test.py csr 0x04 0x43     # write one
@@ -58,6 +59,18 @@ fault    link fault signalling over the same fibre: dual traffic of --len
          second traffic window, started and ended idle, must deliver every
          frame sent, both ways (generator, TX_FRAMES, RX_FRAMES and checker
          counts equal; no bad frame, sequence gap or FCS error).
+pause    802.3x PAUSE on the --sfp port in a loopback: MAC mode with --len
+         byte frames (60..6000) and the checker throttled to take a beat on
+         16 - --throttle of every 16 clk_app cycles, far below line rate.
+         First for 1 s without PAUSE, which must overflow the RX FIFO
+         (RX_DROP), then for --seconds with automatic PAUSE (XOFF set to
+         leave room for four frames above it, XON half of that, quanta
+         --quanta): the port's own PAUSE frames come back and slow its
+         sender, so every frame must arrive good and in order with no
+         RX_DROP. The PAUSE frames must be counted sent and received
+         (PAUSE_TX_CNT = PAUSE_RX_CNT > 0), in TX_FRAMES and RX_FRAMES, and
+         dropped at the address filter (RX_DISCARD). Prints the frame rate
+         against what the throttled checker can take.
 --udp    (mac, dual) the frames are IPv4 / UDP datagrams instead (10.0.0.2
          -> 10.0.0.1, port 5001 -> 5001, UDP payload --len - 42 bytes, UDP
          checksum 0), and the checker checks every IPv4 / UDP header field
@@ -159,6 +172,11 @@ MAC_COUNTERS = [  # (name, address, 64-bit)
     ("LOCAL_FAULTS", 0xA8, False), ("REMOTE_FAULTS", 0xAC, False),
 ]
 R_STATUS, R_IP_ADDR = 0x08, 0x40
+R_PAUSE_CTRL, R_PAUSE_Q, R_PAUSE_RX, R_PAUSE_TX = 0x84, 0x88, 0x8C, 0x90
+R_XOFF, R_XON, R_REFRESH = 0x9C, 0xA0, 0xA4
+P_RX_EN, P_AUTO, P_CFG_ERR = 2, 4, 0x10
+RX_FIFO_BYTES = 32768   # the lane's eth_mac_sys_10g, RX_FIFO_ADDR_WIDTH 12
+B_THROTTLE = 124        # [127:124] checker throttle
 CUT_LOST_MAX = 256      # fault: frames SFP1 may send into the dark (2..8 seen)
 ST_LOCAL_FAULT, ST_REMOTE_FAULT = 1 << 3, 1 << 4
 WINDOW_S = (1 << 22) / 50e6     # frequency meter window
@@ -698,6 +716,87 @@ def cmd_fault(b, args):
     return 0 if ok else 1
 
 
+def cmd_pause(b, args):
+    if not 60 <= args.len <= 6000:
+        raise SystemExit("--len must be 60..6000 (room for XOFF in the RX FIFO)")
+    if not 1 <= args.throttle <= 15:
+        raise SystemExit("--throttle must be 1..15")
+    b.set_bit(B_GEN, False)
+    time.sleep(0.01)
+    b.set_bit(B_SERVICE, False)
+    b.set_bit(B_MAC, True)
+    b.set_bit(B_SWEEP, False)
+    b.set_bit(B_UDP, False)
+    b.set_field(0, 3, LOOPBACK[args.loopback])
+    b.set_field(64, 16, args.len)
+    b.set_field(24, 8, 0)
+    b.csr(R_PAUSE_CTRL, 0)
+    b.set_field(B_THROTTLE, 4, args.throttle)
+    b.pulse(B_RXRST)
+    if wait_lock(b) is None:
+        show(b.read())
+        print("FAIL: no block lock")
+        return 1
+    try:
+        # without PAUSE: the throttled checker must lose frames
+        time.sleep(0.01)
+        b.pulse(B_CLEAR)
+        b.mac_clear()
+        run_gen(b, 1.0, "mac_gen_frames")
+        c0 = b.mac_counters()
+        print("  without PAUSE: RX_DROP %d of %d frames received"
+              % (c0["RX_DROP"], c0["RX_FRAMES"]))
+        if c0["RX_DROP"] == 0:
+            print("  FAIL: the checker keeps up without PAUSE, so this run tests "
+                  "nothing; use a higher --throttle or a longer --len")
+        # automatic PAUSE
+        flen = args.len + 24        # with FCS, preamble and gap
+        xoff = RX_FIFO_BYTES - 8 - 4 * flen - 1024
+        b.csr(R_PAUSE_Q, args.quanta)
+        b.csr(R_XOFF, xoff)
+        b.csr(R_XON, xoff // 2)
+        b.csr(R_REFRESH, 0)
+        b.csr(R_PAUSE_CTRL, P_RX_EN | P_AUTO)
+        st = b.csr(R_PAUSE_CTRL)
+        if st & P_CFG_ERR:
+            print("FAIL: auto_cfg_err (PAUSE_CTRL 0x%02x)" % st)
+            return 1
+        b.pulse(B_CLEAR)
+        b.mac_clear()
+        b.csr(R_PAUSE_RX, 0)
+        secs, sent = run_gen(b, args.seconds, "mac_gen_frames")
+        sent = sent[b.sfp]
+        time.sleep(0.05)
+        f = b.read()
+        c = b.mac_counters()
+        prx, ptx = b.csr(R_PAUSE_RX), b.csr(R_PAUSE_TX)
+    finally:
+        b.csr(R_PAUSE_CTRL, 0)
+        b.set_field(B_THROTTLE, 4, 0)
+    show(f)
+    print("  MAC counters: " + " ".join("%s %d" % kv for kv in c.items()))
+    beats = (args.len + 7) // 8
+    cap = (16 - args.throttle) / 16 * 200e6 / beats
+    pps = sent / secs
+    print("  XOFF %d XON %d quanta %d: sent %d frames in %.2f s, %.4f Mpps; the "
+          "throttled checker takes at most %.4f Mpps (%.1f%%); %d PAUSE frames "
+          "sent, %d received"
+          % (xoff, xoff // 2, args.quanta, sent, secs, pps / 1e6, cap / 1e6,
+             100 * pps / cap, ptx, prx))
+    ok = (c0["RX_DROP"] > 0
+          and sent > 0
+          and f["mac_good"] == sent & M32 and f["mac_bad"] == 0
+          and f["mac_tuser"] == 0 and f["mac_seq_gaps"] == 0
+          and c["RX_DROP"] == 0 and c["RX_ERR_FCS"] == 0
+          and c["TX_UNDERRUN"] == 0
+          and ptx > 0 and prx == ptx
+          and c["RX_DISCARD"] == prx
+          and c["TX_FRAMES"] == sent + ptx and c["RX_FRAMES"] == sent + prx
+          and f["lock_losses"] == 0 and f["block_lock"])
+    print("PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
 def cmd_service(b, args):
     b.set_bit(B_GEN, False)
     time.sleep(0.01)
@@ -776,6 +875,13 @@ def main():
     fp.add_argument("--off", type=float, default=1.0,
                     help="seconds with SFP1's transmitter off")
     fp.add_argument("--len", type=int, default=60)
+    pp = sub.add_parser("pause")
+    pp.add_argument("--loopback", choices=sorted(LOOPBACK), default="pma")
+    pp.add_argument("--seconds", type=float, default=5.0)
+    pp.add_argument("--len", type=int, default=1514)
+    pp.add_argument("--throttle", type=int, default=10,
+                    help="checker skips this many of every 16 cycles (1..15)")
+    pp.add_argument("--quanta", type=lambda x: int(x, 0), default=0x400)
     sp = sub.add_parser("service")
     sp.add_argument("--ip", default="192.168.137.200")
     sp.add_argument("--watch", type=float, default=0)
@@ -797,6 +903,8 @@ def main():
             return 0
         if args.cmd == "fault":
             return cmd_fault(b, args)
+        if args.cmd == "pause":
+            return cmd_pause(b, args)
         if args.cmd == "service":
             return cmd_service(b, args)
         if args.cmd == "dual":
