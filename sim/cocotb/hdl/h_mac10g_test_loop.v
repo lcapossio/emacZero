@@ -20,6 +20,7 @@ module h_mac10g_test_loop #(
     input  wire [7:0]  ipg,
     input  wire        inj_err,
     input  wire        clear,
+    input  wire        service,         // EIO [122]: the service stack
     output wire [31:0] gen_frames,
     output wire [31:0] good_frames,
     output wire [31:0] bad_frames,
@@ -42,7 +43,7 @@ module h_mac10g_test_loop #(
     wire [63:0]  gt_rxdata = two[OFFSET +: 64];
 
     // EIO control word (bit map in zcu106_10g_top.v), MAC mode on
-    wire [127:0] ctrl = {6'd0, csr_write, csr_go, csr_wdata, csr_addr, len,
+    wire [127:0] ctrl = {5'd0, service, csr_write, csr_go, csr_wdata, csr_addr, len,
                          32'd0, ipg, 8'd0, 1'b0, sweep, 1'b1, 2'b00, clear,
                          inj_err, enable, 8'd0};
 

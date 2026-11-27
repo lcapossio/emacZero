@@ -194,17 +194,14 @@ in its manifest), including a wrong IDELAYE2 generic, a wrong MMCM divider,
 a process moved from `clk_200` to `clk_125`, two swapped pads, the IDELAY
 load after reset removed, and the `tlast`-from-`tvalid` one above.
 
-**Known Verilog bug, reproduced as-is.** `udp_echo` counts the received
-payload in ADDR_W+1 bits (12 at BUF_SIZE 1536), and the count wraps. A
-payload of exactly 4096 or 8192 bytes, which the ZCU106 build (MAX_FRAME
-9018, payloads up to 8972 bytes) can receive once `jumbo_en` is set, is
-accepted with length 0. The reply's end
-test compares the 12-bit byte counter with the 32-bit `payload_len - 1` and
-never matches, so the echo transmits until reset, reading past the buffer
-(x in Verilog, 0 in VHDL). Payloads of 4097 to 5632 and 8193 to 8972 bytes
-wrap to a short length and get a truncated reply. The Arty build (MAX_FRAME 1518) cannot
-receive such a frame. The VHDL behaves the same; the fix, for both languages,
-is a separate change.
+**Fixed Verilog bug, once reproduced as-is.** `udp_echo` counted the
+received payload in ADDR_W+1 bits (12 at BUF_SIZE 1536) and let the count
+wrap, so a jumbo datagram of 4096 or 8192 bytes was accepted with length 0
+and echoed until reset, and longer ones got a truncated reply; a datagram
+whose first bytes arrived while a reply went out had its remainder echoed.
+The port reproduced both. Both languages now stop the count at BUF_SIZE,
+drop a longer datagram whole, and take the accept / drop decision at a
+datagram's first byte (CHANGELOG).
 
 `zcu106_top` has two VHDL files, `zcu106_top.vhd` and `zcu106_top_lb.vhd`,
 both declaring entity `zcu106_top`: `ZCU106_SFP1_LB` adds ports, which a VHDL

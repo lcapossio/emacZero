@@ -65,8 +65,9 @@ This project does not yet maintain long-lived release branches.
   byte per clock, and the ZCU106 10G design's service mode (EIO
   `ctrl[122]`, `sfp10g_test.py service --ip`) connects it to a port's
   `eth_mac_sys_10g` in place of the test traffic, so a PC can reach the
-  port through a 10G switch. `eth_mac_sys_10g` gains the 1G map's IP_ADDR
-  register (`0x40`, `cfg_ip_addr`). cocotb suite `net_service64`.
+  port through a 10G switch; each of the MAC's streams changes over between
+  frames. `eth_mac_sys_10g` gains the 1G map's IP_ADDR register (`0x40`,
+  `cfg_ip_addr`). cocotb suite `net_service64`.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
   with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while
@@ -246,16 +247,18 @@ This project does not yet maintain long-lived release branches.
   TXC 90 degrees behind the system clock, the release has a 2 ns window and
   fails recovery timing (WNS -0.2 to -0.35 ns on the Arty RGMII self-test
   builds). It has not shown up on hardware.
-- `udp_echo` (Verilog, and the VHDL port, which reproduces it): at `BUF_SIZE`
-  1536 the received payload length wraps every 4096 bytes. A payload of
-  exactly 4096 or 8192 bytes is accepted with length 0, and the echo then
-  transmits until reset; payloads of 4097 to 5632 and 8193 to 8972 bytes get a
-  truncated reply. Only a build that can receive such a frame is affected:
-  the ZCU106 demo (MAX_FRAME 9018) once `jumbo_en` is set, not the Arty build
-  (MAX_FRAME 1518).
 
 ### Fixed
 
+- `udp_echo` (Verilog and VHDL): the received payload length wrapped every
+  4096 bytes at `BUF_SIZE` 1536, so a jumbo datagram of exactly 4096 or 8192
+  bytes was accepted with length 0 and echoed until reset, and 4097 to 5632
+  or 8193 to 8972 bytes got a truncated reply (ZCU106 demo with `jumbo_en`;
+  the Arty build cannot receive such a frame). The count now stops at
+  `BUF_SIZE` and a longer datagram is dropped whole. Also, a datagram whose
+  first bytes arrived while a reply was going out had its remainder echoed
+  as a datagram of its own; it is now dropped whole, the decision taken at
+  its first byte as `icmp_echo` does. Proven equivalent.
 - **A PAUSE frame received while one of our frames was on the wire was cut
   short.** Its countdown started when it was recognized, so the rest of our
   frame used up part of the pause, and a quanta below about 24 received

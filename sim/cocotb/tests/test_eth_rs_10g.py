@@ -3,12 +3,14 @@
 """10G reconciliation sublayer link fault signalling (rtl/eth_rs_10g.v),
 IEEE 802.3 clause 46.3.4.
 
-  eth_rs_10g  RX: the reported fault against a model kept here as a list of
-              sequence positions (four of one type within 128 columns
-              report it; 128 columns without one of its type clear it), on
-              directed boundary cases (127 versus 128 columns, both column
-              positions, the other type, reserved and malformed sequences,
-              rx_valid gaps) and on random column streams. TX: the MAC's
+  eth_rs_10g  RX: the reported fault against a model kept here from
+              sequence positions (four of one type in a row, each fewer
+              than 128 columns after the sequence before, report it; 128
+              columns without a fault sequence of either type clear it),
+              on directed boundary cases (127 versus 128 columns, both
+              column positions, the other type keeping a fault, reserved
+              and malformed sequences, rx_valid gaps) and on random column
+              streams. TX: the MAC's
               words pass with one word of latency on tx_ce; with a local
               fault, all-idle words become remote fault sequences and
               nothing else changes; tx_fault follows either fault.
@@ -42,44 +44,34 @@ COL = {
 
 
 class Model:
-    """Link fault reporting, from the clause 46 rules, by column positions:
-    a count of one type's sequences starts at a sequence and lasts 128
-    columns; its fourth reports that fault. A reported fault is kept while
-    sequences of its type come no more than 128 columns apart; one of the
-    other type starts a count (the fault stays reported meanwhile), and a
-    count that runs out clears it."""
+    """Link fault reporting (IEEE 802.3 figure 46-11) by column positions:
+    the run of same-type sequences, the last sequence's column, and the
+    report. A sequence of the type of the run lengthens it, of the other
+    type starts a new run; a run of four reports its type. A column 128
+    after the last sequence (127 columns without one in between) ends the
+    run and clears the report."""
 
     def __init__(self):
         self.fault = NONE
-        self.count = None      # [type, first column, sequences]
-        self.last = None       # column of the last sequence of the fault's type
+        self.run = None        # [type, length]
+        self.last = None       # column of the last fault sequence
         self.n = 0             # columns seen
 
     def column(self, kind):
         p = self.n
         self.n += 1
         t = {"L": LOCAL, "R": REMOTE}.get(kind)
-        c = self.count
-        if c is not None and t == c[0] and c[2] == 3:
-            self.fault, self.last, self.count = t, p, None
-            return
-        if c is not None and p - c[1] >= 127:
-            self.count, self.fault = None, NONE
-        if self.count is None and self.fault != NONE:
-            if t == self.fault:
-                self.last = p
-            elif t is None:
-                if p - self.last >= 128:
-                    self.fault = NONE
-            else:
-                self.count = [t, p, 1]
-            return
         if t is None:
+            if self.last is not None and p - self.last >= 128:
+                self.fault, self.run, self.last = NONE, None, None
             return
-        if self.count is None or self.count[0] != t:
-            self.count = [t, p, 1]
+        self.last = p
+        if self.run is not None and self.run[0] == t:
+            self.run[1] += 1
         else:
-            self.count[2] += 1
+            self.run = [t, 1]
+        if self.run[1] >= 4:
+            self.fault = t
 
 
 async def setup(dut):
@@ -129,7 +121,7 @@ def fault(dut):
 
 @cocotb.test()
 async def rx_directed(dut):
-    """Boundaries of the 4-in-128 rule and of the 128-column clear."""
+    """Boundaries of the four-sequence rule and of the 128-column clear."""
     if dut._name != "h_eth_rs_10g":
         return
 
@@ -150,7 +142,11 @@ async def rx_directed(dut):
     await case(at(16, [0, 1, 2, 3]), LOCAL, "four")
     await case(at(16, [1, 2, 3, 4], "R"), REMOTE, "four remote, odd start")
     await case(at(140, [0, 42, 84, 127]), LOCAL, "fourth at column 127")
-    await case(at(140, [0, 42, 84, 128]), NONE, "fourth at column 128")
+    await case(at(400, [0, 100, 200, 300]), LOCAL, "100 columns apart")
+    await case(at(400, [0, 128, 256, 384]), LOCAL, "127 columns between each")
+    await case(at(400, [0, 128, 256, 385]), NONE, "128 before the fourth")
+    await case(at(140, [0, 1, 2, 131, 132, 133]), NONE,
+               "128 columns start the count again")
     await case(at(16, [0, 1, 2]) + at(2, [1]) + at(14, [1, 2, 3]), LOCAL,
                "a fourth of the same type after a gap")
     await case(["L", "R"] * 40, NONE, "alternating types")
@@ -163,9 +159,13 @@ async def rx_directed(dut):
                LOCAL, "kept by one more sequence")
     await case(at(4, [0, 1, 2, 3]) + ["I"] * 100 + ["L"] + ["I"] * 127 + ["D", "I"],
                NONE, "128 columns after that one")
-    # sequences late in a count's window do not stretch it
-    await case(at(132, [0, 126, 127]) + ["I"] * 124 + at(4, [0, 1]), NONE,
-               "count runs out after column 127")
+    # the other type keeps a reported fault: the clear needs 128 columns
+    # without a sequence of either type
+    lf_rf = at(4, [0, 1, 2, 3]) + at(100, [0], "R") + ["R"] + ["I"] * 127
+    await case(lf_rf, LOCAL, "remote sequences keep a local fault")
+    await case(lf_rf + ["I", "I"], NONE, "128 columns after the last remote")
+    await case(at(4, [0, 1, 2, 3]) + ["R", "L"] * 150, LOCAL,
+               "alternating types keep it")
     # local to remote: the report changes after four remote sequences
     await setup(dut)
     m = Model()
@@ -193,11 +193,17 @@ async def rx_random(dut):
     m = Model()
     seen = set()
     for _ in range(300):
-        kind = rng.choice("ILRQDLR")
-        n = rng.choice([1, 2, 3, 4, 5, 8, 60, 126, 127, 128, 129, 200])
+        kind = rng.choice("ILRQDLRsr")
         cols = []
-        for _ in range(n):
-            cols.append(kind if rng.random() < 0.8 else rng.choice("ILRD"))
+        if kind in "sr":
+            # sparse: sequences of one type tens of columns apart
+            t = kind.upper().replace("S", "L")
+            for _ in range(rng.choice([200, 400, 600])):
+                cols.append(t if rng.random() < 0.02 else "I")
+        else:
+            n = rng.choice([1, 2, 3, 4, 5, 8, 60, 126, 127, 128, 129, 200])
+            for _ in range(n):
+                cols.append(kind if rng.random() < 0.8 else rng.choice("ILRD"))
         if len(cols) % 2:
             cols.append("I")
         await send(dut, cols, m, valid_p=0.9, rng=rng)

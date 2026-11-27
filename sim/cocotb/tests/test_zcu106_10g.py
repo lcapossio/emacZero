@@ -437,6 +437,7 @@ async def mac_setup(dut):
     dut.ipg.value = 0
     dut.inj_err.value = 0
     dut.clear.value = 0
+    dut.service.value = 0
     dut.csr_go.value = 0
     dut.csr_write.value = 0
     dut.csr_addr.value = 0
@@ -563,6 +564,38 @@ async def mac_inject(dut):
     await app_pulse(dut, dut.clear)
     await ClockCycles(dut.app_clk, 6)
     assert mac_counts(dut)["bad_frames"] == 0
+
+
+@cocotb.test(timeout_time=40, timeout_unit="ms")
+async def mac_service_switch(dut):
+    """Service mode switched on and off at random times during traffic:
+    each of the MAC's streams changes hands only between frames, so the
+    checker sees no bad or merged frame (frames that arrive while the
+    service stack has the RX stream are lost to it, gaps), and afterwards
+    the traffic runs clean."""
+    if dut._name != "h_mac10g_test_loop":
+        return
+    await mac_setup(dut)
+    rng = random.Random(7)
+    dut.sweep.value = 1
+    dut.len.value = 400
+    dut.enable.value = 1
+    for _ in range(60):
+        await ClockCycles(dut.app_clk, rng.randint(10, 300))
+        dut.service.value = 1
+        await ClockCycles(dut.app_clk, rng.randint(10, 300))
+        dut.service.value = 0
+    dut.enable.value = 0
+    await ClockCycles(dut.clk, 20000)
+    c = mac_counts(dut)
+    dut._log.info("after the switching: %s", c)
+    assert c["bad_frames"] == 0 and c["tuser_frames"] == 0, c
+    assert c["seq_gaps"] > 0, "the service stack never had the RX stream"
+    assert c["good_frames"] < c["gen_frames"], c
+    await mac_run(dut, 300, 100000)
+    d = mac_counts(dut)
+    assert d["bad_frames"] == 0 and d["seq_gaps"] == c["seq_gaps"], d
+    assert d["good_frames"] - c["good_frames"] == d["gen_frames"] - c["gen_frames"], (c, d)
 
 
 # ---------------------------------------------------------------------------

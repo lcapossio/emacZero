@@ -830,7 +830,7 @@ async def sys_link_fault(dut):
     rs = dut.u_sys.u_rs
     frames = [make_frame(rng, rng.randint(60, 300), seq=i) for i in range(400)]
     mon = {"cyc": 0, "rise": None, "late": [], "rf": 0, "rf_bad": 0, "held": False,
-           "f_st": 0}
+           "send_rf": 0}
 
     async def watch():
         d = dut
@@ -850,12 +850,12 @@ async def sys_link_fault(dut):
             # begun after the fault was seen
             if start and mon["rise"] is not None and mon["cyc"] - mon["rise"] > 12:
                 mon["late"].append(mon["cyc"])
-            # the output word was chosen with last clock's settled fault
+            # the output word was chosen with last clock's send_rf
             if txd == RF_WORD and txc == 0x11:
                 mon["rf"] += 1
-                if mon["f_st"] != 1:
+                if mon["send_rf"] != 1:
                     mon["rf_bad"] += 1
-            mon["f_st"] = int(rs.f_st.value)
+            mon["send_rf"] = int(rs.send_rf.value)
             if f and int(d.s_axis_tvalid.value) and not int(d.s_axis_tready.value):
                 mon["held"] = True
 

@@ -10,14 +10,15 @@
 //                                                     RS <-'
 //
 // Link faults (eth_rs_10g, IEEE 802.3 clause 46.3.4): four local or remote
-// fault sequences within 128 columns on XGMII RX report that fault (STATUS
-// [3] / [4]); a PCS without block lock sends local fault sequences. While a
-// fault is reported the TX MAC starts no new frame: frames wait in the TX
-// FIFO and s_axis backpressures once it is full; the frame part-way out is
-// finished. With a local fault the idle words on XGMII TX become remote
+// fault sequences of one type on XGMII RX, each fewer than 128 columns after
+// the one before, report that fault (STATUS [3] / [4]); a PCS without block
+// lock sends local fault sequences. While a fault is reported the TX MAC
+// starts no new frame: frames wait in the TX FIFO and s_axis backpressures
+// once it is full; the frame part-way out is finished. With a local fault
+// the idle words on XGMII TX become remote
 // fault sequences, so the far end learns that its signal is not arriving;
 // with a remote fault they stay idles. Traffic resumes once the fault clears
-// (128 columns with no fault sequence of its type).
+// (128 columns with no fault sequence of either type).
 //
 // Both FIFOs are store-and-forward frame FIFOs (axis_async_frame_fifo):
 //   TX: the MAC starts a frame only once it is whole in the FIFO, so it never
@@ -213,7 +214,9 @@ module eth_mac_sys_10g #(
     wire lock_lost = lock_d && !lock_s[1];
 
     // link fault code (eth_rs_10g, rx domain): decoded once it held for two
-    // cycles, so a code passing between none and remote is not miscounted
+    // cycles, so a code passing between none and remote is not miscounted.
+    // Its bits arrive at most a cycle apart only when the path is bounded
+    // under a clk period, as the FIFOs' Gray pointers also need.
     wire [1:0] rx_fault;
     (* ASYNC_REG = "TRUE" *) reg [1:0] flt_s1;
     (* ASYNC_REG = "TRUE" *) reg [1:0] flt_s2;

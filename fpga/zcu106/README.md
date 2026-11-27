@@ -444,8 +444,10 @@ held off. With the transmitter back on, both faults must clear, the
 counters must have counted them
 (LOCAL_FAULTS, REMOTE_FAULTS) and traffic must resume. SFP0 -> SFP1, the
 direction that stayed lit, must lose nothing. SFP1 -> SFP0 may lose only the
-frames on the fibre before SFP1 saw the remote fault: one sequence gap and
-no bad frame. `status` also prints each MAC's link fault state.
+frames on the fibre before SFP1 saw the remote fault: one sequence gap of at
+most 256 frames, and no bad frame. The traffic after the recovery must be
+clean both ways (no bad frame, sequence gap or FCS error). `status` also
+prints each MAC's link fault state.
 
 `service` puts the `--sfp` port in service mode, for a fibre to a 10G
 switch with a PC on it. The port's `eth_mac_sys_10g` then carries the demo
@@ -475,7 +477,7 @@ with a "fibre" between them, traffic both ways at once (the `gt10g_reset`,
 `xgmii_test_loop*`, `mac10g_test_loop` and `mac10g_dual` cocotb suites; the
 last two simulate `zcu106_10g_lane` itself).
 The GT itself is only tested on the board. The two-port design meets
-timing (WNS +0.513 ns, WHS +0.011 ns).
+timing (WNS +0.429 ns, WHS +0.011 ns).
 
 Tested on the board, two ports (2026-11-27, 10GBASE-SR SFP+ in cages 0
 and 1, one duplex fibre between them), every run checked frame by frame by
@@ -506,9 +508,10 @@ underrun counter 0, no lock loss):
   inhibited, SFP0 reports a local fault and SFP1 a remote fault, and
   neither generator gets a frame out (0 in 1-2 s); both clear and traffic
   resumes when it comes back, each fault counted once. SFP0 -> SFP1 loses
-  nothing (60,120,048 of 60,120,048 64-byte frames); SFP1 -> SFP0 loses 2
-  to 8 frames in one gap, the ones on the fibre before SFP1 saw the remote
-  fault (one cut short, counted as an FCS error).
+  nothing (201,515,738 of 201,515,738 64-byte frames); SFP1 -> SFP0 loses
+  1 to 8 frames in one gap, the ones on the fibre before SFP1 saw the
+  remote fault (one cut short, counted as an FCS error); after the
+  recovery both directions run clean (no bad frame, gap or FCS error).
 
 Tested on the board, one port (2026-11-26, 10GBASE-SR SFP+ in cage 0,
 fibre to a switch):

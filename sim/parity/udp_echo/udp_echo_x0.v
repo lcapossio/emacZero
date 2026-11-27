@@ -22,9 +22,12 @@
 //   [42..]   payload      (echoed back)
 //
 // Buffer size limits the largest echoed payload. 1472 = max UDP/IP MTU at 1500
-// Ethernet payload size, but we buffer 1024 here to keep BRAM use small. UDP
-// packets larger than the buffer are simply dropped (RX state machine stops
-// pushing once full; the TX FSM uses captured length to bound transmission).
+// Ethernet payload size, but we buffer 1024 here to keep BRAM use small. A
+// datagram larger than the buffer is dropped whole, however long it is (the
+// byte count stops at BUF_SIZE and the datagram is marked too long). The
+// accept / drop decision is taken at a datagram's first byte and kept to its
+// last: one whose first byte arrives while a reply is pending or going out,
+// or that is not for LISTEN_PORT, is dropped whole.
 // Verilog 2001
 // =============================================================================
 
@@ -70,11 +73,24 @@ module udp_echo_x0 #(
     // =========================================================================
     localparam ADDR_W = $clog2(BUF_SIZE);
 
+    localparam [ADDR_W:0] CNT_0   = {(ADDR_W+1){1'b0}};
+    localparam [ADDR_W:0] CNT_MAX = BUF_SIZE[ADDR_W:0];
+
     reg [7:0]            udp_buf [0:BUF_SIZE-1];
     reg [ADDR_W:0]       payload_len;
-    reg [ADDR_W:0]       rx_cnt;
+    reg [ADDR_W:0]       rx_cnt;        // bytes stored of the datagram arriving
+    reg                  rx_ovf;        // it has more than BUF_SIZE bytes
+    reg                  rx_in_pkt;     // a datagram is arriving (first byte seen)
+    reg                  rx_drop;       // it is being dropped to its end
     reg                  pkt_ready;
-    reg                  rx_accept;
+
+    wire rx_busy    = reply_active || pkt_ready;
+    wire rx_port_ok = (LISTEN_PORT == 16'd0) || (udp_rx_dst_port == LISTEN_PORT);
+    wire rx_sop     = udp_rx_valid && !rx_in_pkt;
+    wire rx_skip    = rx_sop ? (rx_busy || !rx_port_ok) : rx_drop;
+    wire rx_store   = udp_rx_valid && !rx_skip && (rx_cnt < CNT_MAX);
+    // The byte that would be number BUF_SIZE+1 makes the datagram too long.
+    wire rx_ovf_now = rx_ovf || (udp_rx_valid && !rx_skip && (rx_cnt >= CNT_MAX));
 
     reg [31:0]           reply_dst_ip;
     reg [47:0]           reply_dst_mac;
@@ -83,10 +99,12 @@ module udp_echo_x0 #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rx_cnt         <= {(ADDR_W+1){1'b0}};
-            payload_len    <= {(ADDR_W+1){1'b0}};
+            rx_cnt         <= CNT_0;
+            rx_ovf         <= 1'b0;
+            rx_in_pkt      <= 1'b0;
+            rx_drop        <= 1'b0;
+            payload_len    <= CNT_0;
             pkt_ready      <= 1'b0;
-            rx_accept      <= 1'b0;
             reply_dst_ip   <= 32'd0;
             reply_dst_mac  <= 48'd0;
             reply_dst_port <= 16'd0;
@@ -94,39 +112,32 @@ module udp_echo_x0 #(
         end else begin
             pkt_ready <= 1'b0;
 
-            // While the TX FSM is replying, drop incoming UDP — the single
-            // buffer would otherwise be clobbered mid-transmit. Drains the
-            // input by counting bytes and then advancing on tlast.
+            // While a reply is pending or going out the single buffer must
+            // not be written: a datagram whose first byte arrives then is
+            // dropped whole, even if the reply ends before its last byte.
             if (udp_rx_valid) begin
-                if (rx_cnt == {(ADDR_W+1){1'b0}})
-                    rx_accept <= (LISTEN_PORT == 16'd0) ||
-                                 (udp_rx_dst_port == LISTEN_PORT);
+                if (rx_sop)
+                    rx_drop <= rx_busy || !rx_port_ok;
+                rx_in_pkt <= !udp_rx_last;
 
-                if (reply_active || pkt_ready ||
-                    ((rx_cnt == {(ADDR_W+1){1'b0}}) &&
-                     (LISTEN_PORT != 16'd0) &&
-                     (udp_rx_dst_port != LISTEN_PORT)) ||
-                    ((rx_cnt != {(ADDR_W+1){1'b0}}) && !rx_accept)) begin
-                    if (udp_rx_last) begin
-                        rx_cnt <= {(ADDR_W+1){1'b0}};
-                        rx_accept <= 1'b0;
-                    end
-                end else begin
-                    if (rx_cnt < BUF_SIZE[ADDR_W:0])
-                        udp_buf[rx_cnt[ADDR_W-1:0]] <= udp_rx_data;
+                if (rx_store) begin
+                    udp_buf[rx_cnt[ADDR_W-1:0]] <= udp_rx_data;
                     rx_cnt <= rx_cnt + 1'b1;
+                end
+                if (rx_ovf_now)
+                    rx_ovf <= 1'b1;
 
-                    if (udp_rx_last) begin
+                if (udp_rx_last) begin
+                    rx_cnt <= CNT_0;
+                    rx_ovf <= 1'b0;
+                    // stored: rx_cnt bytes before this one, and this one
+                    if (!rx_skip && !rx_ovf_now && !udp_rx_err) begin
                         payload_len    <= rx_cnt + 1'b1;
-                        rx_cnt         <= {(ADDR_W+1){1'b0}};
-                        if (!udp_rx_err && (rx_cnt + 1'b1) <= BUF_SIZE[ADDR_W:0]) begin
-                            pkt_ready      <= 1'b1;
-                            reply_dst_ip   <= udp_rx_src_ip;
-                            reply_dst_mac  <= rx_src_mac;
-                            reply_dst_port <= udp_rx_src_port;
-                            reply_src_port <= udp_rx_dst_port;
-                        end
-                        rx_accept <= 1'b0;
+                        pkt_ready      <= 1'b1;
+                        reply_dst_ip   <= udp_rx_src_ip;
+                        reply_dst_mac  <= rx_src_mac;
+                        reply_dst_port <= udp_rx_src_port;
+                        reply_src_port <= udp_rx_dst_port;
                     end
                 end
             end

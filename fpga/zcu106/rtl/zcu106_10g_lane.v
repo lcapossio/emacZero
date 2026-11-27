@@ -180,7 +180,7 @@ module zcu106_10g_lane #(
         a_clr    <= {a_clr[1:0], ctl_clear};
     end
     wire mac_app = a_mac[2];
-    // service mode is a static setting: change it only with no traffic
+    // service mode; each of the MAC's streams follows it between frames
     wire svc = a_svc[2];
 
     wire [63:0] mg_tdata, mr_tdata;
@@ -205,17 +205,41 @@ module zcu106_10g_lane #(
         .frames        (mac_gen_frames)
     );
 
-    // the MAC's streams go to the test traffic or to the service stack
+    // the MAC's streams go to the test traffic or to the service stack.
+    // Each stream changes hands only between frames (tx_svc / rx_svc follow
+    // svc once a frame's last beat has passed, or with none part-way), so a
+    // mode change never splices two frames; the source left out keeps its
+    // frame, whole, until the stream is handed back.
     wire [63:0] sv_tdata;
     wire [7:0]  sv_tkeep;
     wire        sv_tvalid, sv_tlast, sv_tready, svr_tready;
-    assign      gen_tready = mg_tready && !svc;
-    wire [63:0] tx_tdata  = svc ? sv_tdata  : mg_tdata;
-    wire [7:0]  tx_tkeep  = svc ? sv_tkeep  : mg_tkeep;
-    wire        tx_tvalid = svc ? sv_tvalid : mg_tvalid;
-    wire        tx_tlast  = svc ? sv_tlast  : mg_tlast;
-    assign      sv_tready = mg_tready && svc;
-    wire        mr_tready = svc ? svr_tready : 1'b1;
+    reg         tx_svc, tx_mid, rx_svc, rx_mid;
+    assign      gen_tready = mg_tready && !tx_svc;
+    wire [63:0] tx_tdata  = tx_svc ? sv_tdata  : mg_tdata;
+    wire [7:0]  tx_tkeep  = tx_svc ? sv_tkeep  : mg_tkeep;
+    wire        tx_tvalid = tx_svc ? sv_tvalid : mg_tvalid;
+    wire        tx_tlast  = tx_svc ? sv_tlast  : mg_tlast;
+    assign      sv_tready = mg_tready && tx_svc;
+    wire        mr_tready = rx_svc ? svr_tready : 1'b1;
+    wire        tx_take   = tx_tvalid && mg_tready;
+    wire        rx_take   = mr_tvalid && mr_tready;
+    always @(posedge clk_app or negedge app_rst_n) begin
+        if (!app_rst_n) begin
+            tx_svc <= 1'b0;
+            tx_mid <= 1'b0;
+            rx_svc <= 1'b0;
+            rx_mid <= 1'b0;
+        end else begin
+            if (tx_take)
+                tx_mid <= !tx_tlast;
+            if (tx_take ? tx_tlast : !tx_mid)
+                tx_svc <= svc;
+            if (rx_take)
+                rx_mid <= !mr_tlast;
+            if (rx_take ? mr_tlast : !rx_mid)
+                rx_svc <= svc;
+        end
+    end
     wire [31:0] cfg_ip_addr;
 
     net_service64 u_svc (
@@ -225,7 +249,7 @@ module zcu106_10g_lane #(
         .our_ip        (cfg_ip_addr),
         .s_axis_tdata  (mr_tdata),
         .s_axis_tkeep  (mr_tkeep),
-        .s_axis_tvalid (mr_tvalid && svc),
+        .s_axis_tvalid (mr_tvalid && rx_svc),
         .s_axis_tready (svr_tready),
         .s_axis_tlast  (mr_tlast),
         .s_axis_tuser  (mr_tuser),
@@ -335,7 +359,7 @@ module zcu106_10g_lane #(
         .udp           (a_udp[2]),
         .s_axis_tdata  (mr_tdata),
         .s_axis_tkeep  (mr_tkeep),
-        .s_axis_tvalid (mr_tvalid && !svc),
+        .s_axis_tvalid (mr_tvalid && !rx_svc),
         .s_axis_tlast  (mr_tlast),
         .s_axis_tuser  (mr_tuser),
         .good_frames   (mac_good),

@@ -81,14 +81,24 @@ architecture rtl of udp_echo is
     -- BUF_SIZE[ADDR_W:0] (the low ADDR_W+1 bits of the integer parameter)
     constant BUF_SIZE_V : unsigned(ADDR_W downto 0) := resize(to_unsigned(BUF_SIZE, 32), ADDR_W+1);
     constant CNT_0      : unsigned(ADDR_W downto 0) := (others => '0');
+    constant CNT_MAX    : unsigned(ADDR_W downto 0) := BUF_SIZE_V;
     constant PORT_0     : std_logic_vector(15 downto 0) := (others => '0');
 
     type udp_buf_t is array (integer range 0 to BUF_SIZE-1) of std_logic_vector(7 downto 0);
     signal udp_buf     : udp_buf_t;
     signal payload_len : unsigned(ADDR_W downto 0);
-    signal rx_cnt      : unsigned(ADDR_W downto 0);
+    signal rx_cnt      : unsigned(ADDR_W downto 0);   -- bytes stored of the datagram arriving
+    signal rx_ovf      : std_logic;                   -- it has more than BUF_SIZE bytes
+    signal rx_in_pkt   : std_logic;                   -- a datagram is arriving (first byte seen)
+    signal rx_drop     : std_logic;                   -- it is being dropped to its end
     signal pkt_ready   : std_logic;
-    signal rx_accept   : std_logic;
+
+    signal rx_busy    : std_logic;
+    signal rx_port_ok : std_logic;
+    signal rx_sop     : std_logic;
+    signal rx_skip    : std_logic;
+    signal rx_store   : std_logic;
+    signal rx_ovf_now : std_logic;
 
     signal reply_dst_ip   : std_logic_vector(31 downto 0);
     signal reply_dst_mac  : std_logic_vector(47 downto 0);
@@ -128,13 +138,24 @@ architecture rtl of udp_echo is
 
 begin
 
+    rx_busy    <= reply_active or pkt_ready;
+    rx_port_ok <= '1' when LISTEN_PORT = PORT_0 or udp_rx_dst_port = LISTEN_PORT else '0';
+    rx_sop     <= udp_rx_valid and not rx_in_pkt;
+    rx_skip    <= (rx_busy or not rx_port_ok) when rx_sop = '1' else rx_drop;
+    rx_store   <= '1' when udp_rx_valid = '1' and rx_skip = '0' and rx_cnt < CNT_MAX else '0';
+    -- The byte that would be number BUF_SIZE+1 makes the datagram too long.
+    rx_ovf_now <= '1' when rx_ovf = '1' or
+                           (udp_rx_valid = '1' and rx_skip = '0' and rx_cnt >= CNT_MAX) else '0';
+
     process (clk, rst_n)
     begin
         if rst_n = '0' then
             rx_cnt         <= (others => '0');
+            rx_ovf         <= '0';
+            rx_in_pkt      <= '0';
+            rx_drop        <= '0';
             payload_len    <= (others => '0');
             pkt_ready      <= '0';
-            rx_accept      <= '0';
             reply_dst_ip   <= (others => '0');
             reply_dst_mac  <= (others => '0');
             reply_dst_port <= (others => '0');
@@ -142,44 +163,34 @@ begin
         elsif rising_edge(clk) then
             pkt_ready <= '0';
 
-            -- While the TX FSM is replying, drop incoming UDP - the single
-            -- buffer would otherwise be clobbered mid-transmit. Drains the
-            -- input by counting bytes and then advancing on tlast.
+            -- While a reply is pending or going out the single buffer must
+            -- not be written: a datagram whose first byte arrives then is
+            -- dropped whole, even if the reply ends before its last byte.
             if udp_rx_valid = '1' then
-                if rx_cnt = CNT_0 then
-                    if LISTEN_PORT = PORT_0 or udp_rx_dst_port = LISTEN_PORT then
-                        rx_accept <= '1';
-                    else
-                        rx_accept <= '0';
-                    end if;
+                if rx_sop = '1' then
+                    rx_drop <= rx_busy or not rx_port_ok;
+                end if;
+                rx_in_pkt <= not udp_rx_last;
+
+                if rx_store = '1' then
+                    udp_buf(to_integer(rx_cnt(ADDR_W-1 downto 0))) <= udp_rx_data;
+                    rx_cnt <= rx_cnt + 1;
+                end if;
+                if rx_ovf_now = '1' then
+                    rx_ovf <= '1';
                 end if;
 
-                if reply_active = '1' or pkt_ready = '1' or
-                   (rx_cnt = CNT_0 and
-                    LISTEN_PORT /= PORT_0 and
-                    udp_rx_dst_port /= LISTEN_PORT) or
-                   (rx_cnt /= CNT_0 and rx_accept = '0') then
-                    if udp_rx_last = '1' then
-                        rx_cnt    <= (others => '0');
-                        rx_accept <= '0';
-                    end if;
-                else
-                    if rx_cnt < BUF_SIZE_V then
-                        udp_buf(to_integer(rx_cnt(ADDR_W-1 downto 0))) <= udp_rx_data;
-                    end if;
-                    rx_cnt <= rx_cnt + 1;
-
-                    if udp_rx_last = '1' then
+                if udp_rx_last = '1' then
+                    rx_cnt <= (others => '0');
+                    rx_ovf <= '0';
+                    -- stored: rx_cnt bytes before this one, and this one
+                    if rx_skip = '0' and rx_ovf_now = '0' and udp_rx_err = '0' then
                         payload_len    <= rx_cnt + 1;
-                        rx_cnt         <= (others => '0');
-                        if udp_rx_err = '0' and (rx_cnt + 1) <= BUF_SIZE_V then
-                            pkt_ready      <= '1';
-                            reply_dst_ip   <= udp_rx_src_ip;
-                            reply_dst_mac  <= rx_src_mac;
-                            reply_dst_port <= udp_rx_src_port;
-                            reply_src_port <= udp_rx_dst_port;
-                        end if;
-                        rx_accept <= '0';
+                        pkt_ready      <= '1';
+                        reply_dst_ip   <= udp_rx_src_ip;
+                        reply_dst_mac  <= rx_src_mac;
+                        reply_dst_port <= udp_rx_src_port;
+                        reply_src_port <= udp_rx_dst_port;
                     end if;
                 end if;
             end if;

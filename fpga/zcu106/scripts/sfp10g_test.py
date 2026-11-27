@@ -53,7 +53,9 @@ fault    link fault signalling over the same fibre: dual traffic of --len
          the transmitter back on, both faults must clear and traffic resume.
          SFP0 -> SFP1 must be lossless (every frame sent arrives, in order);
          SFP1 -> SFP0 may lose only the frames on the fibre before SFP1 saw
-         the remote fault: one sequence gap, no bad frame.
+         the remote fault: one sequence gap of at most CUT_LOST_MAX frames,
+         no bad frame. After the recovery, the second traffic window must
+         be clean both ways: no bad frame, sequence gap or FCS error.
 --udp    (mac, dual) the frames are IPv4 / UDP datagrams instead (10.0.0.2
          -> 10.0.0.1, port 5001 -> 5001, UDP payload --len - 42 bytes, UDP
          checksum 0), and the checker checks every IPv4 / UDP header field
@@ -155,6 +157,7 @@ MAC_COUNTERS = [  # (name, address, 64-bit)
     ("LOCAL_FAULTS", 0xA8, False), ("REMOTE_FAULTS", 0xAC, False),
 ]
 R_STATUS, R_IP_ADDR = 0x08, 0x40
+CUT_LOST_MAX = 256      # fault: frames SFP1 may send into the dark (2..8 seen)
 ST_LOCAL_FAULT, ST_REMOTE_FAULT = 1 << 3, 1 << 4
 WINDOW_S = (1 << 22) / 50e6     # frequency meter window
 
@@ -620,6 +623,12 @@ def cmd_fault(b, args):
         print("FAIL: no block lock after SFP1's transmitter came back")
         return 1
     time.sleep(0.1)
+    # counters at the start of the window after the recovery
+    fa = b.read_all()
+    ca = []
+    for q in both:
+        b.sfp = q
+        ca.append(b.mac_counters())
     g2 = [gen_count(b, q, "mac_gen_frames") for q in both]
     time.sleep(args.seconds)
     g3 = [gen_count(b, q, "mac_gen_frames") for q in both]
@@ -661,7 +670,16 @@ def cmd_fault(b, args):
                 and cr["RX_FRAMES"] == sent and cr["RX_ERR_FCS"] == 0 \
                 and fr["lock_losses"] == 0
         else:           # the frames on the fibre when it went dark
-            good = good and fr["mac_seq_gaps"] == 1 and 0 < lost < 100000
+            good = good and fr["mac_seq_gaps"] == 1 and 0 < lost <= CUT_LOST_MAX \
+                and cr["RX_FRAMES"] == fr["mac_good"]
+        # after the recovery: a clean window
+        d = {k: (fr[k] - fa[rx][k]) & M32
+             for k in ("mac_good", "mac_bad", "mac_tuser", "mac_seq_gaps")}
+        d_fcs = cr["RX_ERR_FCS"] - ca[rx]["RX_ERR_FCS"]
+        print("  after the recovery: good %d bad %d tuser %d seq_gaps %d, RX_ERR_FCS %d"
+              % (d["mac_good"], d["mac_bad"], d["mac_tuser"], d["mac_seq_gaps"], d_fcs))
+        good = good and d["mac_good"] > 1000 and d["mac_bad"] == 0 \
+            and d["mac_tuser"] == 0 and d["mac_seq_gaps"] == 0 and d_fcs == 0
         print("  %s" % ("ok" if good else "FAIL"))
         ok = ok and good
     print("PASS" if ok else "FAIL")

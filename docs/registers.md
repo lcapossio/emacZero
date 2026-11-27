@@ -472,8 +472,10 @@ RX frame part-way out on `m_axis` when the reset comes is ended with one
 extra beat carrying `tlast` and `tuser`.
 
 Link fault (IEEE 802.3 clause 46, `rtl/eth_rs_10g.v`): four local or remote
-fault sequences within 128 columns of the received XGMII report that fault
-in STATUS; it clears after 128 columns with none of its type. The PCS sends
+fault sequences of one type on the received XGMII, each fewer than 128
+columns after the one before, report that fault in STATUS. Sequences of the
+other type keep it reported (four of them in a row change it to that type);
+it clears after 128 columns with no fault sequence at all. The PCS sends
 local fault sequences while it has no block lock, so a dark or cut fibre
 shows as a local fault, and the far end, which then receives remote fault
 sequences, as a remote fault. With a local fault, idle time on the

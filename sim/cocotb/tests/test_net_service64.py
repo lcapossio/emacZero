@@ -13,6 +13,9 @@
                  every reply whole. A burst of back-to-back pings: icmp_echo
                  drops those arriving while it sends a reply (one buffer, as
                  on the 1G demo), the replies stay whole and in order.
+                 udp_echo: datagrams longer than its 1536-byte buffer, up
+                 to 8193 bytes, dropped whole, and one arriving during a
+                 reply dropped whole even when the reply ends first.
 """
 import random
 import struct
@@ -223,3 +226,35 @@ async def service(dut):
     # and the stack is free again afterwards
     r = await tb.ask(ping(OUR_IP, 9, 9, b"after"), True)
     assert check_ip(r, 1)[8:] == b"after"
+
+
+@cocotb.test()
+async def udp_limits(dut):
+    """udp_echo's buffer (1536 bytes) and its single reply: a datagram
+    longer than the buffer, of any length, is dropped whole (4096 and 8192
+    bytes once wrapped the byte count); one whose first byte arrives while
+    a reply goes out is dropped whole even when the reply ends first."""
+    tb = Bench(dut, 2)
+    await tb.start()
+    rng = tb.rng
+
+    async def echo(n):
+        data = rng.randbytes(n)
+        r = await tb.ask(udp(OUR_IP, 4000, ECHO_PORT, data), True)
+        u = check_ip(r, 17)
+        assert struct.unpack("!H", u[4:6])[0] == 8 + n and u[8:] == data, n
+
+    await echo(1536)
+    for n in (1537, 4095, 4096, 4097, 8192, 8193):
+        await tb.ask(udp(OUR_IP, 4000, ECHO_PORT, rng.randbytes(n)), False)
+        await echo(20)
+    # a short datagram, then a long one straight after it: the long one
+    # starts while the short one's reply goes out, and outlasts the reply
+    n0 = len(tb.got)
+    a = rng.randbytes(100)
+    await tb.send(udp(OUR_IP, 4001, ECHO_PORT, a), gap_p=0.0)
+    await tb.send(udp(OUR_IP, 4002, ECHO_PORT, rng.randbytes(1400)), gap_p=0.0)
+    await ClockCycles(dut.clk, 4000)
+    assert len(tb.got) == n0 + 1, ("replies", len(tb.got) - n0)
+    assert check_ip(tb.got[n0], 17)[8:] == a
+    await echo(30)
