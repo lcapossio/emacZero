@@ -17,8 +17,11 @@
 //               checksum, source 10.0.0.2, destination 10.0.0.1
 //   bytes 34-41 UDP header: ports 5001 -> 5001, length len - 34, checksum 0
 //               (none, as RFC 768 allows over IPv4)
-//   With csum_junk the IPv4 header checksum is sent as 0xDEAD and the UDP
-//   checksum as 0xBEEF instead: wrong, for a checksum inserter to correct.
+//   With csum_junk the IPv4 header checksum is sent XORed with 0x5555 and
+//   the UDP checksum as 0xBEEF instead, for a checksum inserter to correct.
+//   The header checksum is then wrong in every frame (never 0x0000 for
+//   0xFFFF or back), so a checker alone fails every frame whatever the UDP
+//   value happens to be.
 //   bytes 42-47 seq (little endian), ~seq[31:16] (seq[15:0] is checked
 //               against the identification, the rest against this)
 //   bytes 48-   the xorshift words as above, one per beat
@@ -168,8 +171,8 @@ module axis_test_gen64 (
                     flen          <= next_len;
                     fudp          <= udp;
                     fjunk         <= csum_junk;
-                    csum          <= csum_junk ? 16'hDEAD
-                                               : ip_csum(next_len - 16'd14, seq[15:0]);
+                    csum          <= ip_csum(next_len - 16'd14, seq[15:0]) ^
+                                     (csum_junk ? 16'h5555 : 16'h0000);
                     nbeats        <= next_nb;
                     beat          <= 13'd0;
                     m_axis_tdata  <= beat_data(13'd0, next_len, seq, udp, 16'd0, 1'b0);

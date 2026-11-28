@@ -493,8 +493,8 @@ and 9.927 Gb/s for 8972-byte ones (9014-byte frames).
 
 `mac --csum` tests the MAC's checksum offload (both lanes' MACs are built
 with `TX_CSUM_OFFLOAD` and `RX_CSUM_OFFLOAD`, off from reset). It sets EIO
-`[53]` with `[15]`: the generator sends 0xDEAD as the IPv4 header checksum
-and 0xBEEF as the UDP checksum, and the checker requires a correct, nonzero
+`[53]` with `[15]`: the generator sends the IPv4 header checksum XORed
+with 0x5555 (wrong in every frame) and 0xBEEF as the UDP checksum, and the checker requires a correct, nonzero
 UDP checksum, which it computes itself over each datagram and its
 pseudo-header. First, for `--seconds`, CTRL[7] and CTRL[9] are set: the
 inserter must correct every frame (all good at the checker) and none may

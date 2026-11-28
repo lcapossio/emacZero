@@ -80,9 +80,11 @@ def ref_frame(length, seq, udp):
 
 
 def junk_frame(length, seq):
-    """The UDP frame as sent with csum_junk: IPv4 checksum 0xDEAD, UDP 0xBEEF."""
+    """The UDP frame as sent with csum_junk: IPv4 checksum XOR 0x5555, UDP
+    0xBEEF."""
     fr = bytearray(ref_frame(length, seq, 1))
-    fr[24:26] = b"\xde\xad"
+    fr[24] ^= 0x55
+    fr[25] ^= 0x55
     fr[40:42] = b"\xbe\xef"
     return bytes(fr)
 
@@ -418,8 +420,10 @@ async def gen_inject(dut):
 
 @cocotb.test()
 async def gen_csum_junk(dut):
-    """csum_junk: the UDP frames carry 0xDEAD and 0xBEEF as checksums and are
-    otherwise the reference; the test frames do not change."""
+    """csum_junk: the UDP frames carry the IPv4 checksum XOR 0x5555 and
+    0xBEEF as checksums and are otherwise the reference; the test frames do
+    not change. The length 61 / seq 0x2282480e frame, for which 0xDEAD and
+    0xBEEF would both be correct, is wrong too."""
     if dut._name != "h_axis_test64":
         return
     rng = random.Random(31)
@@ -435,6 +439,9 @@ async def gen_csum_junk(dut):
             want = junk_frame(len(fr), seq) if udp else ref_frame(len(fr), seq, 0)
             assert fr == want, f"udp {udp} len {len(fr)} seq {seq}"
             seq += 1
+    for length, s in ((61, 0x2282480E), (60, 0), (1514, 0xFFFF)):
+        fr = junk_frame(length, s)
+        assert udp_fixed(fr)[24:26] != fr[24:26], (length, s)
 
 
 @cocotb.test()

@@ -184,6 +184,8 @@ MAC_COUNTERS = [  # (name, address, 64-bit)
 ]
 R_CTRL, R_STATUS, R_IP_ADDR = 0x04, 0x08, 0x40
 C_TX_CSUM, C_RX_CSUM = 0x80, 0x200     # CTRL[7], CTRL[9]
+C_PASS = 0x100                          # CTRL[8] passthrough
+RATE_MIN = 0.98     # of line rate: the least mac / dual accept with --ipg 0
 R_PAUSE_CTRL, R_PAUSE_Q, R_PAUSE_RX, R_PAUSE_TX = 0x84, 0x88, 0x8C, 0x90
 R_XOFF, R_XON, R_REFRESH = 0x9C, 0xA0, 0xA4
 P_RX_EN, P_AUTO, P_CFG_ERR = 2, 4, 0x10
@@ -472,6 +474,15 @@ def cmd_loop(b, args):
     return 0 if ok else 1
 
 
+def rate_ok(pps, line, ipg):
+    """With no idle cycles asked for, the generator must keep the line busy:
+    frames counted right at a fraction of the rate are a failure too."""
+    if ipg != 0 or pps >= RATE_MIN * line:
+        return True
+    print("  below %.0f%% of line rate with --ipg 0" % (100 * RATE_MIN))
+    return False
+
+
 def cmd_mac(b, args):
     if not 60 <= args.len <= 16000:
         raise SystemExit("--len must be 60..16000")
@@ -503,10 +514,12 @@ def cmd_mac(b, args):
         return 1
     time.sleep(0.01)
     if args.csum:
+        # each phase sets the bits it needs: inserter and checker on here,
+        # passthrough off (it would deliver the frames a checker fails)
         ctrl0 = b.csr(R_CTRL)
-        b.csr(R_CTRL, ctrl0 | C_TX_CSUM | C_RX_CSUM)
-        print("  checksum test: CTRL 0x%03x, inserter and checker on"
-              % (ctrl0 | C_TX_CSUM | C_RX_CSUM))
+        ctrl1 = (ctrl0 & ~C_PASS) | C_TX_CSUM | C_RX_CSUM
+        b.csr(R_CTRL, ctrl1)
+        print("  checksum test: CTRL 0x%03x, inserter and checker on" % ctrl1)
     b.pulse(B_CLEAR)
     b.mac_clear()
     secs, sent = run_gen(b, args.seconds, "mac_gen_frames", args.inject)
@@ -542,9 +555,12 @@ def cmd_mac(b, args):
           and c["RX_ERR_OVERSIZE"] == (sent if over else 0)
           and c["RX_ERR_CSUM"] == 0
           and f["lock_losses"] == 0 and f["block_lock"])
+    ok = rate_ok(pps, line, args.ipg) and ok
     if args.csum:
-        # the checker alone: every junk checksum fails it, every frame dropped
-        b.csr(R_CTRL, ctrl0 | C_RX_CSUM)
+        # the checker alone: every junk IPv4 checksum fails it, every frame
+        # is dropped (inserter and passthrough off)
+        ctrl2 = (ctrl0 & ~(C_PASS | C_TX_CSUM)) | C_RX_CSUM
+        b.csr(R_CTRL, ctrl2)
         b.pulse(B_CLEAR)
         b.mac_clear()
         _, sent2 = run_gen(b, 1.0, "mac_gen_frames")
@@ -554,7 +570,7 @@ def cmd_mac(b, args):
         b.csr(R_CTRL, ctrl0)
         b.set_bit(B_CSUM, False)
         print("  checker alone (CTRL 0x%03x): sent %d, RX_ERR_CSUM %d, RX_DISCARD %d, "
-              "checker good %d bad %d" % (ctrl0 | C_RX_CSUM, sent2, c2["RX_ERR_CSUM"],
+              "checker good %d bad %d" % (ctrl2, sent2, c2["RX_ERR_CSUM"],
                                           c2["RX_DISCARD"], f2["mac_good"], f2["mac_bad"]))
         ok = (ok and sent2 > 0
               and c2["RX_FRAMES"] == sent2 and c2["RX_ERR_CSUM"] == sent2 & M32
@@ -631,6 +647,7 @@ def cmd_dual(b, args):
                 and cr["RX_ERR_OVERSIZE"] == 0 and cr["RX_DROP"] == 0
                 and cr["RX_DISCARD"] == 0
                 and fr["lock_losses"] == 0 and fr["block_lock"])
+        good = rate_ok(pps, line, args.ipg) and good
         print("  %s" % ("ok" if good else "FAIL"))
         ok = ok and good
     print("PASS" if ok else "FAIL")
