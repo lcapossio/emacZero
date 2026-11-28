@@ -406,6 +406,7 @@ python fpga/zcu106/scripts/sfp10g_test.py status
 python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py mac --loopback pma --len 60 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py --sfp 1 mac --loopback pma --len 1514
+python fpga/zcu106/scripts/sfp10g_test.py mac --csum --sweep --len 1514 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py dual --len 60 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py dual --udp --len 9014 --seconds 10
 python fpga/zcu106/scripts/sfp10g_test.py fault --len 60
@@ -490,13 +491,25 @@ being the IPv4, UDP and Ethernet headers, the FCS, the preamble and the
 minimum gap. That is 9.571 Gb/s for 1472-byte datagrams (1514-byte frames)
 and 9.927 Gb/s for 8972-byte ones (9014-byte frames).
 
+`mac --csum` tests the MAC's checksum offload (both lanes' MACs are built
+with `TX_CSUM_OFFLOAD` and `RX_CSUM_OFFLOAD`, off from reset). It sets EIO
+`[53]` with `[15]`: the generator sends 0xDEAD as the IPv4 header checksum
+and 0xBEEF as the UDP checksum, and the checker requires a correct, nonzero
+UDP checksum, which it computes itself over each datagram and its
+pseudo-header. First, for `--seconds`, CTRL[7] and CTRL[9] are set: the
+inserter must correct every frame (all good at the checker) and none may
+fail the MAC's own check (RX_ERR_CSUM 0). Then, for 1 s, CTRL[9] alone:
+every frame must fail the check and be dropped (RX_ERR_CSUM = RX_DISCARD =
+frames sent, nothing at the checker). CTRL is put back after.
+
 Simulated: the reset sequencer against a model of the GT reset handshakes,
 both test paths through PCS -> serial loopback -> PCS, and both ports' lanes
 with a "fibre" between them, traffic both ways at once (the `gt10g_reset`,
 `xgmii_test_loop*`, `mac10g_test_loop` and `mac10g_dual` cocotb suites; the
-last two simulate `zcu106_10g_lane` itself).
-The GT itself is only tested on the board. The two-port design meets
-timing (WNS +0.429 ns, WHS +0.011 ns).
+last two simulate `zcu106_10g_lane` itself, `mac10g_test_loop` also the
+checksum test mode).
+The GT itself is only tested on the board. The two-port design, with the
+checksum offload in both MACs, meets timing (WNS +0.585 ns, WHS +0.011 ns).
 
 Tested on the board, two ports (2026-11-27, 10GBASE-SR SFP+ in cages 0
 and 1, one duplex fibre between them), every run checked frame by frame by
@@ -550,6 +563,16 @@ automatic PAUSE nothing was dropped or out of order, and the sender ran at
 10 s, 440,130 PAUSE frames sent, received and discarded at the filter). The
 same bitstream ran MAC mode at line rate (60, 1514, 9000 bytes) and service
 mode through the switch (ping, 6,000 UDP echoes, none lost or changed).
+
+Tested on the board, checksum offload (2026-11-28, SFP1 near-end PMA
+loopback): `mac --csum` at 60 bytes, 149,496,757 frames in 10 s at line
+rate, every junk checksum corrected by the inserter and the UDP checksum
+of each frame verified by the checker, none failing the MAC's own check;
+with the checker alone all 15,517,960 frames failed it and were dropped.
+Also `--csum` sweeping 60..1514 and 60..9014 (LPM receiver), 9014-byte
+frames (9.98 Gb/s) and an injected error (exactly one bad frame), all at
+99.9-100% of line rate. The same bitstream passed `mac`, `mac --udp`,
+`loop` and `pause` on SFP1 and service mode on SFP0 through the switch.
 
 Tested on the board, one port (2026-11-26, 10GBASE-SR SFP+ in cage 0,
 fibre to a switch):

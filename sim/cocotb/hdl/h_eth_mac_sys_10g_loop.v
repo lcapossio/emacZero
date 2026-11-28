@@ -12,7 +12,9 @@ module h_eth_mac_sys_10g_loop #(
     parameter OFFSET             = 37,
     parameter BER_TIMER_CYCLES   = 4000,
     parameter TX_FIFO_ADDR_WIDTH = 11,
-    parameter RX_FIFO_ADDR_WIDTH = 11
+    parameter RX_FIFO_ADDR_WIDTH = 11,
+    parameter TX_CSUM_OFFLOAD    = 0,
+    parameter RX_CSUM_OFFLOAD    = 0
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -74,7 +76,9 @@ module h_eth_mac_sys_10g_loop #(
     eth_mac_sys_10g #(
         .TX_FIFO_ADDR_WIDTH (TX_FIFO_ADDR_WIDTH),
         .RX_FIFO_ADDR_WIDTH (RX_FIFO_ADDR_WIDTH),
-        .MCAST_HASH_FILTER  (1)
+        .MCAST_HASH_FILTER  (1),
+        .TX_CSUM_OFFLOAD    (TX_CSUM_OFFLOAD),
+        .RX_CSUM_OFFLOAD    (RX_CSUM_OFFLOAD)
     ) u_sys (
         .clk (clk), .rst_n (rst_n),
         .s_axi_awaddr (s_axi_awaddr), .s_axi_awvalid (s_axi_awvalid),

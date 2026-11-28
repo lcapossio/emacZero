@@ -12,6 +12,9 @@ rtl/crc32_d64.v
 rtl/async_fifo.v
 rtl/axis_async_frame_fifo.v
 rtl/cdc_event_count.v
+rtl/sync_fifo.v
+rtl/csum_calc64.v
+rtl/tx_csum_off64.v
 rtl/eth_mac_10g_tx.v
 rtl/eth_mac_10g_rx.v
 rtl/eth_rs_10g.v

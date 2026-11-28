@@ -17,6 +17,8 @@
 //               checksum, source 10.0.0.2, destination 10.0.0.1
 //   bytes 34-41 UDP header: ports 5001 -> 5001, length len - 34, checksum 0
 //               (none, as RFC 768 allows over IPv4)
+//   With csum_junk the IPv4 header checksum is sent as 0xDEAD and the UDP
+//   checksum as 0xBEEF instead: wrong, for a checksum inserter to correct.
 //   bytes 42-47 seq (little endian), ~seq[31:16] (seq[15:0] is checked
 //               against the identification, the rest against this)
 //   bytes 48-   the xorshift words as above, one per beat
@@ -24,7 +26,7 @@
 // set, the length steps by one byte per frame from 60 up to len and wraps,
 // so every tkeep pattern and the whole range are exercised. ipg = idle
 // cycles between frames (0 = back to back; the MAC still adds the line gap).
-// udp and len are taken at the start of each frame. inj_err (a pulse) flips
+// udp, csum_junk and len are taken at the start of each frame. inj_err (a pulse) flips
 // bit 0 of the next payload word, once: the MAC sends it with a good FCS,
 // so only the checker's payload compare can catch it.
 // Verilog 2001
@@ -37,6 +39,7 @@ module axis_test_gen64 (
     input  wire [15:0] len,
     input  wire        sweep,
     input  wire        udp,
+    input  wire        csum_junk,
     input  wire [7:0]  ipg,
     input  wire        inj_err,
 
@@ -84,6 +87,7 @@ module axis_test_gen64 (
 
     reg [15:0] flen;                 // this frame's length
     reg        fudp;                 // this frame is a UDP datagram
+    reg        fjunk;                // its checksums are junk
     reg [15:0] csum;                 // this frame's IPv4 header checksum
     reg [15:0] swp;                  // sweep length for the next frame
     reg [12:0] beat;                 // beat index of m_axis_* in this frame
@@ -103,6 +107,7 @@ module axis_test_gen64 (
         input [31:0] s;
         input        u;
         input [15:0] c;
+        input        j;
         reg   [15:0] tl, ul;
         begin
             tl = l - 16'd14;
@@ -120,7 +125,7 @@ module axis_test_gen64 (
                     13'd2:   beat_data = {8'h11, 8'h40, 8'h00, 8'h40, s[7:0], s[15:8], tl[7:0], tl[15:8]};
                     13'd3:   beat_data = {8'h00, 8'h0A, 8'h02, 8'h00, 8'h00, 8'h0A, c[7:0], c[15:8]};
                     13'd4:   beat_data = {ul[7:0], ul[15:8], 8'h89, 8'h13, 8'h89, 8'h13, 8'h01, 8'h00};
-                    default: beat_data = {~s[31:16], s, 16'h0000};
+                    default: beat_data = {~s[31:16], s, j ? 16'hEFBE : 16'h0000};
                 endcase
         end
     endfunction
@@ -141,6 +146,7 @@ module axis_test_gen64 (
             frames        <= 32'd0;
             flen          <= 16'd60;
             fudp          <= 1'b0;
+            fjunk         <= 1'b0;
             csum          <= 16'd0;
             swp           <= 16'd60;
             beat          <= 13'd0;
@@ -161,10 +167,12 @@ module axis_test_gen64 (
                     busy          <= 1'b1;
                     flen          <= next_len;
                     fudp          <= udp;
-                    csum          <= ip_csum(next_len - 16'd14, seq[15:0]);
+                    fjunk         <= csum_junk;
+                    csum          <= csum_junk ? 16'hDEAD
+                                               : ip_csum(next_len - 16'd14, seq[15:0]);
                     nbeats        <= next_nb;
                     beat          <= 13'd0;
-                    m_axis_tdata  <= beat_data(13'd0, next_len, seq, udp, 16'd0);
+                    m_axis_tdata  <= beat_data(13'd0, next_len, seq, udp, 16'd0, 1'b0);
                     m_axis_tkeep  <= 8'hFF;
                     m_axis_tlast  <= 1'b0;
                     m_axis_tvalid <= 1'b1;
@@ -184,7 +192,7 @@ module axis_test_gen64 (
                     m_axis_tlast <= (beat + 13'd2 == nbeats);
                     m_axis_tkeep <= (beat + 13'd2 == nbeats) ? keep_of(flen[2:0]) : 8'hFF;
                     if (nxt <= seq_beat) begin
-                        m_axis_tdata <= beat_data(nxt, flen, seq, fudp, csum);
+                        m_axis_tdata <= beat_data(nxt, flen, seq, fudp, csum, fjunk);
                         if (nxt == seq_beat)
                             prbs <= xs({seq, ~seq});
                     end else begin       // payload words

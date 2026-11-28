@@ -63,6 +63,7 @@ module zcu106_10g_lane #(
     wire        ctl_gen_en    = ctrl[8];
     wire        ctl_inj       = ctrl[9];
     wire        ctl_clear     = ctrl[10];
+    wire        ctl_csum      = ctrl[53];
     wire        ctl_mac_mode  = ctrl[13];
     wire        ctl_sweep     = ctrl[14];
     wire        ctl_udp       = ctrl[15];
@@ -171,9 +172,10 @@ module zcu106_10g_lane #(
     // MAC mode: test frames through eth_mac_sys_10g; generator, checker and
     // CSRs on clk_app
     // =========================================================================
-    (* ASYNC_REG = "TRUE" *) reg [2:0] a_gen_en, a_inj, a_mac, a_clr, a_udp, a_svc;
+    (* ASYNC_REG = "TRUE" *) reg [2:0] a_gen_en, a_inj, a_mac, a_clr, a_udp, a_svc, a_cs;
     always @(posedge clk_app) begin
         a_svc    <= {a_svc[1:0], ctl_service};
+        a_cs     <= {a_cs[1:0], ctl_csum};
         a_udp    <= {a_udp[1:0], ctl_udp};
         a_gen_en <= {a_gen_en[1:0], ctl_gen_en};
         a_inj    <= {a_inj[1:0], ctl_inj};
@@ -205,6 +207,7 @@ module zcu106_10g_lane #(
         .len           (ctl_mac_len),
         .sweep         (ctl_sweep),
         .udp           (a_udp[2]),
+        .csum_junk     (a_cs[2]),
         .ipg           (ctl_ipg),
         .inj_err       (a_inj[1] && !a_inj[2] && mac_app),
         .m_axis_tdata  (mg_tdata),
@@ -319,6 +322,9 @@ module zcu106_10g_lane #(
         // received PAUSE frames (01:80:C2:00:00:01) are dropped at the
         // filter (RX_DISCARD) instead of reaching the checker
         .MCAST_HASH_FILTER  (1),
+        // checksum offload built, off from reset (CTRL[7] / CTRL[9])
+        .TX_CSUM_OFFLOAD    (1),
+        .RX_CSUM_OFFLOAD    (1),
         .MAC_ADDR_AT_RESET  (OUR_MAC)
     ) u_sys (
         .clk            (clk_app),
@@ -373,6 +379,7 @@ module zcu106_10g_lane #(
         .rst_n         (app_rst_n),
         .clear         (a_clr[2]),
         .udp           (a_udp[2]),
+        .csum          (a_cs[2]),
         .s_axis_tdata  (mr_tdata),
         .s_axis_tkeep  (mr_tkeep),
         .s_axis_tvalid (mr_tvalid && !rx_svc && chk_ready),

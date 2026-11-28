@@ -39,6 +39,9 @@ read_verilog [list \
     rtl/async_fifo.v \
     rtl/axis_async_frame_fifo.v \
     rtl/cdc_event_count.v \
+    rtl/sync_fifo.v \
+    rtl/csum_calc64.v \
+    rtl/tx_csum_off64.v \
     rtl/eth_mac_sys_10g.v \
     fpga/zcu106/rtl/gthe4_common_10g.v \
     fpga/zcu106/rtl/gthe4_channel_10g.v \

@@ -16,6 +16,10 @@ directly after the IPv6 fixed header. Sums cover the IP datagram only (IP
 length), not padding or trailer; UDP covers only its Length field's bytes and
 applies only when 8 <= that length <= the IP payload. The IPv4 header verdict
 needs only the header to be present, the L4 verdict the whole datagram.
+
+The 64-bit engine (rtl/csum_calc64.v) does not walk IPv4 options: it leaves
+the L4 checksum alone when any option byte is 0x83 or 0x89 (scan=True in
+_l4_applies / expect).
 """
 from dataclasses import dataclass, field
 import random
@@ -74,6 +78,11 @@ def ip4_opts_skip(opts: bytes) -> bool:
             return True
         i += n
     return False
+
+
+def ip4_opts_skip_scan(opts: bytes) -> bool:
+    """csum_calc64's rule: True if any option byte is 0x83 or 0x89."""
+    return any(b in (LSRR, SSRR) for b in opts)
 
 
 def random_opts(rng: random.Random, n: int) -> bytes:
@@ -192,9 +201,10 @@ class Packet:
             ph = self._addr_bytes + len(l4).to_bytes(4, "big") + bytes([0, 0, 0, self.proto])
         return csum(ph + bytes(l4))
 
-    def _l4_applies(self, udp_len: int = None) -> bool:
+    def _l4_applies(self, udp_len: int = None, scan: bool = False) -> bool:
         """Whether the L4 checksum applies, given the UDP Length (default:
-        as built; expect() passes the one in the frame)."""
+        as built; expect() passes the one in the frame). scan: IPv4 options
+        by csum_calc64's byte scan instead of the walk."""
         off = L4_CSUM_OFF.get(self.proto)
         if off is None or self.l4_len < off + 2:
             return False
@@ -202,8 +212,9 @@ class Packet:
         if self.proto == UDP and not 8 <= ul <= self.l4_len:
             return False
         if self.family == 4:
+            skip = ip4_opts_skip_scan if scan else ip4_opts_skip
             return (self.proto in (TCP, UDP, ICMP) and not self.mf and
-                    self.frag_off == 0 and not ip4_opts_skip(self._opts()))
+                    self.frag_off == 0 and not skip(self._opts()))
         if self.family == 6:
             return self.proto in (TCP, UDP, ICMPV6)
         return False
@@ -257,11 +268,12 @@ class Packet:
         return eth + b"\x86\xdd" + self._cut(bytes(hdr) + bytes(l4)) + self.trailer
 
     # ---- expectations ------------------------------------------------------
-    def expect(self, frame: bytes = None) -> Expect:
+    def expect(self, frame: bytes = None, scan: bool = False) -> Expect:
         """What the engine reports for this packet, sent as `frame` (default
         p.frame(); pass the padded frame when the MAC pads). Bytes past a
         truncated datagram's real end (padding, trailer) count where IP says
-        the datagram extends over them, as they do in the RTL."""
+        the datagram extends over them, as they do in the RTL. scan: the
+        64-bit engine's IPv4 options rule."""
         f = self.frame() if frame is None else frame
         l3 = self._l3_off()
         if self.family == 0:
@@ -283,7 +295,7 @@ class Packet:
         cover = self.l4_len
         if self.proto == UDP and done and self.l4_len >= 6:
             cover = int.from_bytes(f[l4s + 4:l4s + 6], "big")
-        applies = self._l4_applies(cover) and done
+        applies = self._l4_applies(cover, scan) and done
         l4_csum = l4_good = 0
         pos = l4s + L4_CSUM_OFF.get(self.proto, 0)
         if applies:

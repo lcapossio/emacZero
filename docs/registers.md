@@ -435,16 +435,17 @@ reads 0. CAPS `[9]` = 1 identifies it. There is no MDIO or IRQ.
 | Offset | Name | Access | Description |
 |-------:|------|--------|-------------|
 | `0x00` | VERSION | RO | As the 1G core |
-| `0x04` | CTRL | RW | `[0]` tx_en `[1]` rx_en `[2]` promisc `[6]` jumbo_en `[8]` passthrough (every address, bad frames delivered with tuser). tx_en / rx_en act between frames. |
+| `0x04` | CTRL | RW | `[0]` tx_en `[1]` rx_en `[2]` promisc `[6]` jumbo_en `[7]` tx_csum_off `[8]` passthrough (every address, bad frames delivered with tuser) `[9]` rx_csum_off. tx_en / rx_en act between frames; `[7]` / `[9]` only with the offload built (see below). |
 | `0x08` | STATUS | RO | `[0]` PCS block lock `[1]` PCS high BER `[2]` TX FIFO not empty `[3]` local fault `[4]` remote fault (link fault, see below) `[5]` TX paused by a received PAUSE frame |
 | `0x0C` / `0x10` | MAC_LO / MAC_HI | RW | Station address, as the 1G core |
 | `0x3C` | SCRATCH | RW | |
 | `0x40` | IP_ADDR | RW | IPv4 address for a board-level L3 stack (`cfg_ip_addr`), as the 1G core; reset value `IP_ADDR_AT_RESET` (default 192.168.137.200) |
 | `0x44` / `0x48` | MCAST_LO / MCAST_HI | RW | Multicast hash table, `MCAST_HASH_FILTER=1` only (same hash as the 1G core); without it every multicast frame is accepted |
+| `0x80` | RX_ERR_CSUM | RO/WC | Frames failed for a wrong IPv4 header or L4 checksum with no other error (`RX_CSUM_OFFLOAD=1`, CTRL[9]) |
 | `0x84` | PAUSE_CTRL | RW | As the 1G core: `[0]` tx_send (W1S) `[1]` rx_en `[2]` auto_en; RO `[3]` auto_active `[4]` auto_cfg_err `[5]` tx_pending |
 | `0x88` | PAUSE_QUANTA | RW | `[15:0]` quanta of the PAUSE frames sent |
 | `0x8C` / `0x90` | PAUSE_RX_CNT / PAUSE_TX_CNT | RO/WC | Valid PAUSE frames received / PAUSE frames sent; saturating, a write to either clears both |
-| `0x98` | CAPS | RO | `[0]` mcast_hash `[3]` = 1 (automatic PAUSE) `[8:4]` RX FIFO size, log2 bytes `[9]` = 1 `[31:16]` MAX_FRAME_JUMBO |
+| `0x98` | CAPS | RO | `[0]` mcast_hash `[1]` tx_csum `[2]` rx_csum `[3]` = 1 (automatic PAUSE) `[8:4]` RX FIFO size, log2 bytes `[9]` = 1 `[31:16]` MAX_FRAME_JUMBO |
 | `0x9C` / `0xA0` | PAUSE_XOFF / PAUSE_XON | RW | `[19:0]` automatic PAUSE levels, RX FIFO bytes; reset half and a quarter of the FIFO |
 | `0xA4` | PAUSE_REFRESH | RW | `[15:0]` XOFF repeat interval, quanta (0: half of PAUSE_QUANTA, at least 1) |
 | `0xA8` | LOCAL_FAULTS | RO/WC | Times a local fault was reported (STATUS `[3]` set) |
@@ -461,7 +462,7 @@ reads 0. CAPS `[9]` = 1 identifies it. There is no MDIO or IRQ.
 | `0xE8` | RX_DROP | RO/WC | Frames lost because the RX FIFO was full |
 | `0xEC` | RX_DISCARD | RO/WC | Frames dropped on purpose: filter, RX disabled, or bad without passthrough |
 | `0xF0` | TX_UNDERRUN | RO/WC | Cannot happen with the store-and-forward TX FIFO; kept as a check |
-| `0xF4` | TX_DROP | RO/WC | Frames too long for the TX FIFO, or thrown away while a transceiver reset held the TX path |
+| `0xF4` | TX_DROP | RO/WC | Frames too long for the TX FIFO (or, with `TX_CSUM_OFFLOAD=1`, for the checksum inserter's buffer of the same size), or thrown away while a transceiver reset held the TX path |
 | `0xF8` | TX_ERR | RO/WC | Frames sent with a bad FCS on purpose (`s_axis_tuser`) |
 | `0xFC` | LOCK_LOSS | RO/WC | Times PCS block lock was lost |
 
@@ -488,6 +489,31 @@ transmitted XGMII carries remote fault sequences instead. With either fault,
 the TX MAC finishes the frame it is sending and starts no new one: frames
 wait in the TX FIFO and `s_axis` is held off (no frame is dropped), until
 the fault clears.
+
+Checksum offload (parameters `TX_CSUM_OFFLOAD` and `RX_CSUM_OFFLOAD`,
+default 0; CAPS `[1]` / `[2]` tell software which were built) has the 1G
+core's scope and rules ([checksum offload scope](#0x04---ctrl)), with these
+differences:
+
+- TX (`rtl/tx_csum_off64.v`, CTRL[7], taken at each frame's first beat):
+  the inserter stores each frame before it sends it on, in a buffer as large
+  as the TX FIFO (`2**TX_FIFO_ADDR_WIDTH` words), so a frame waits there for
+  about its own length; at the same rate in and out it does not slow the
+  stream. A frame too long for the buffer is dropped (TX_DROP). A
+  transceiver TX reset throws frames away as they leave the inserter, so a
+  frame it still holds when the reset ends is sent, whole.
+- RX (`rtl/csum_calc64.v`, CTRL[9], taken at each frame's first beat): a
+  frame whose IPv4 header checksum or L4 checksum is wrong is a bad frame,
+  treated like one with a bad FCS: dropped (RX_DISCARD), or delivered with
+  `m_axis_tuser` under passthrough. It counts in RX_ERR_CSUM when it has no
+  MAC error (a frame with a bad FCS counts in RX_ERR_FCS only) and still
+  counts in RX_FRAMES. The check delays the received stream by 7
+  `xgmii_rx_clk` cycles.
+- IPv4 options are not walked: the L4 checksum is left alone (TX) or not
+  checked (RX) when any option byte is 0x83 or 0x89 (loose or strict source
+  route), so every source route is covered, and an unwalkable option list
+  without those bytes is still summed. The IPv4 header checksum is handled
+  whatever the options.
 
 PAUSE (`rtl/eth_pause_10g.v`) works as on the 1G core (PAUSE_CTRL and the
 automatic PAUSE rules above), with these differences:

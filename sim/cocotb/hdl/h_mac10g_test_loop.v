@@ -17,6 +17,8 @@ module h_mac10g_test_loop #(
     input  wire        enable,
     input  wire [15:0] len,
     input  wire        sweep,
+    input  wire        udp,             // EIO [15]: IPv4 / UDP frames
+    input  wire        csum,            // EIO [53]: checksum test mode
     input  wire [7:0]  ipg,
     input  wire        inj_err,
     input  wire        clear,
@@ -45,7 +47,7 @@ module h_mac10g_test_loop #(
 
     // EIO control word (bit map in zcu106_10g_top.v), MAC mode on
     wire [127:0] ctrl = {throttle, 1'b0, service, csr_write, csr_go, csr_wdata, csr_addr, len,
-                         32'd0, ipg, 8'd0, 1'b0, sweep, 1'b1, 2'b00, clear,
+                         10'd0, csum, 21'd0, ipg, 8'd0, udp, sweep, 1'b1, 2'b00, clear,
                          inj_err, enable, 8'd0};
 
     zcu106_10g_lane #(.BER_TIMER_CYCLES(BER_TIMER_CYCLES)) u_lane (

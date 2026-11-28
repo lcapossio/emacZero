@@ -180,6 +180,9 @@ module zcu106_10g_top (
     //   [15] MAC mode frames are IPv4 / UDP datagrams
     //   [23:16] frame words - 8   [31:24] idle words between frames
     //   [36:32] TXDIFFCTRL ^ 0x18   [44:40] TXPOSTCURSOR   [52:48] TXPRECURSOR
+    //   [53] MAC mode checksum test (with [15]): the generator sends junk IPv4
+    //   and UDP checksums (for the MAC's inserter, CTRL[7], to correct) and
+    //   the checker requires a correct UDP checksum instead of 0; static
     //   [79:64] MAC mode frame length in bytes, no FCS (60..16000; with the
     //   sweep, the top of the 60..len sweep). [31:24] is also the MAC mode
     //   gap, in clk_app cycles. [79:64], [31:24], [23:16], [15] and [14] are

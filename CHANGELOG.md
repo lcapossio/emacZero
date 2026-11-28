@@ -77,6 +77,16 @@ This project does not yet maintain long-lived release branches.
   fault. Automatic PAUSE runs from the RX FIFO level. The ZCU106 10G design
   gets a checker throttle (EIO `ctrl[127:124]`) and `sfp10g_test.py pause`.
   The XDC bounds each port's RX to TX clock paths instead of cutting them.
+- 10G checksum offload in `eth_mac_sys_10g` (parameters `TX_CSUM_OFFLOAD`,
+  `RX_CSUM_OFFLOAD`; CTRL[7] / CTRL[9], CAPS `[1]` / `[2]`, `0x80`
+  RX_ERR_CSUM, as on the 1G core): `rtl/csum_calc64.v` sums IPv4 / IPv6
+  TCP, UDP and ICMP packets 8 bytes per cycle; `rtl/tx_csum_off64.v` stores
+  each TX frame and writes its checksums at line rate; on RX a frame with a
+  wrong checksum is dropped like a bad frame, or flagged with passthrough.
+  IPv4 options are scanned for source routes rather than walked. The
+  ZCU106 10G design builds both, with a checksum test mode (EIO `ctrl[53]`,
+  `sfp10g_test.py mac --csum`). cocotb suites `csum_calc64`,
+  `tx_csum_off64`, `tx_csum_off64_small`, `eth_mac_sys_10g_csum`.
 - Automatic PAUSE (`PAUSE_CTRL[2]` auto_en): when the RX FIFO between the
   MAC and `m_axis` fills to PAUSE_XOFF (`0x9C`), the MAC sends a PAUSE frame
   with `PAUSE_QUANTA`, repeats it every PAUSE_REFRESH (`0xA4`) quanta while

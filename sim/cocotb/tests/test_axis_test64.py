@@ -13,7 +13,9 @@ and the IPv4 / UDP datagrams.
                flipped in any header byte or a payload byte, an IPv4
                identification other than seq (checksum still right), one
                byte short or long, or tuser set; a missing seq is one seq
-               gap.
+               gap. The checksum test mode: the generator's junk IPv4 and
+               UDP checksums, and the checker's UDP checksum check (correct
+               checksums good; 0, off by one bit, or a stale one bad).
 """
 import random
 
@@ -77,6 +79,27 @@ def ref_frame(length, seq, udp):
     return bytes(out[:length])
 
 
+def junk_frame(length, seq):
+    """The UDP frame as sent with csum_junk: IPv4 checksum 0xDEAD, UDP 0xBEEF."""
+    fr = bytearray(ref_frame(length, seq, 1))
+    fr[24:26] = b"\xde\xad"
+    fr[40:42] = b"\xbe\xef"
+    return bytes(fr)
+
+
+def udp_fixed(fr):
+    """fr with both checksums set as a checksum inserter would."""
+    fr = bytearray(fr)
+    fr[24:26] = b"\x00\x00"
+    fr[24:26] = (~csum16(fr[14:34]) & 0xFFFF).to_bytes(2, "big")
+    fr[40:42] = b"\x00\x00"
+    dg = bytes(fr[34:])
+    ph = fr[26:34] + b"\x00\x11" + len(dg).to_bytes(2, "big")
+    c = ~csum16(ph + dg + (b"\x00" if len(dg) & 1 else b"")) & 0xFFFF
+    fr[40:42] = (c or 0xFFFF).to_bytes(2, "big")
+    return bytes(fr)
+
+
 def parse_udp(fr):
     """Independent read of a UDP frame; returns the problems found."""
     bad = []
@@ -99,9 +122,9 @@ def parse_udp(fr):
 async def setup(dut):
     cocotb.start_soon(Clock(dut.clk, 5, "ns").start())
     dut.rst_n.value = 0
-    for n in ("g_enable", "g_sweep", "g_udp", "g_ipg", "g_inj_err", "g_tready",
-              "c_clear", "c_udp", "c_tdata", "c_tkeep", "c_tvalid", "c_tlast",
-              "c_tuser"):
+    for n in ("g_enable", "g_sweep", "g_udp", "g_csum_junk", "g_ipg", "g_inj_err",
+              "g_tready", "c_clear", "c_udp", "c_csum", "c_tdata", "c_tkeep",
+              "c_tvalid", "c_tlast", "c_tuser"):
         getattr(dut, n).value = 0
     dut.g_len.value = 60
     await ClockCycles(dut.clk, 4)
@@ -391,3 +414,81 @@ async def gen_inject(dut):
         await chk_send(dut, frames, rng)
         g, b, _, _ = counts(dut)
         assert (g, b) == (2, 1), (udp, g, b)
+
+
+@cocotb.test()
+async def gen_csum_junk(dut):
+    """csum_junk: the UDP frames carry 0xDEAD and 0xBEEF as checksums and are
+    otherwise the reference; the test frames do not change."""
+    if dut._name != "h_axis_test64":
+        return
+    rng = random.Random(31)
+    await setup(dut)
+    dut.g_csum_junk.value = 1
+    seq = 0
+    for udp, length, sweep, n in ((1, 60, 0, 10), (1, 1514, 0, 3), (1, 120, 1, 70),
+                                  (0, 100, 0, 5)):
+        dut.g_udp.value = udp
+        dut.g_len.value = length
+        dut.g_sweep.value = sweep
+        for fr in await gen_collect(dut, n, 0.8, rng):
+            want = junk_frame(len(fr), seq) if udp else ref_frame(len(fr), seq, 0)
+            assert fr == want, f"udp {udp} len {len(fr)} seq {seq}"
+            seq += 1
+
+
+@cocotb.test()
+async def chk_csum(dut):
+    """With csum the checker wants a correct UDP checksum: correct ones are
+    good at every length; 0, one flipped bit, a stale checksum (another
+    seq's) or the generator's junk are bad. It still checks the rest."""
+    if dut._name != "h_axis_test64":
+        return
+    rng = random.Random(37)
+    await setup(dut)
+    dut.c_udp.value = 1
+    dut.c_csum.value = 1
+    await clear(dut)
+    lens = list(range(60, 76)) + [1514, 9014] + [rng.randint(60, 2000) for _ in range(30)]
+    good = [udp_fixed(ref_frame(n, 500 + i, 1)) for i, n in enumerate(lens)]
+    await chk_send(dut, good, rng, gap_p=0.2)
+    assert counts(dut) == (len(good), 0, 0, 0), counts(dut)
+
+    seq = 600
+    for kind in ("zero", "bit", "stale", "junk", "payload", "csum off"):
+        for _ in range(4):
+            length = rng.choice([60, 61, 77, 128, 1514])
+            fr = bytearray(udp_fixed(ref_frame(length, seq + 1, 1)))
+            if kind == "zero":
+                fr[40:42] = b"\x00\x00"
+            elif kind == "bit":
+                fr[40 + rng.randrange(2)] ^= 1 << rng.randrange(8)
+            elif kind == "stale":
+                fr[40:42] = udp_fixed(ref_frame(length, seq + 7, 1))[40:42]
+            elif kind == "junk":
+                fr = bytearray(udp_fixed(junk_frame(length, seq + 1)))
+                fr[40:42] = b"\xbe\xef"
+            elif kind == "payload":
+                # a payload bit and the checksum both changed to match: the
+                # checksum passes, the payload check still fails it
+                j = rng.randrange(48, length)
+                fr[j] ^= 1 << rng.randrange(8)
+                fr = bytearray(udp_fixed(bytes(fr)))
+            g0, b0, _, _ = counts(dut)
+            frames = [udp_fixed(ref_frame(length, seq, 1)), bytes(fr)]
+            if kind == "csum off":
+                # the field must be 0 again with csum off, so a filled one fails
+                dut.c_csum.value = 0
+                frames = [ref_frame(length, seq, 1), bytes(fr)]
+            await chk_send(dut, frames, rng, gap_p=0.1)
+            dut.c_csum.value = 1
+            g1, b1, _, _ = counts(dut)
+            assert (g1 - g0, b1 - b0) == (1, 1), \
+                f"{kind} len {length}: good +{g1 - g0} bad +{b1 - b0}"
+            seq += 2
+
+    # csum with the test frames (udp off) changes nothing
+    dut.c_udp.value = 0
+    await clear(dut)
+    await chk_send(dut, [ref_frame(n, 900 + i, 0) for i, n in enumerate((60, 61, 300))], rng)
+    assert counts(dut) == (3, 0, 0, 0), counts(dut)

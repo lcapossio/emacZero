@@ -12,12 +12,16 @@
 // checksum 0), the IPv4 header checksum, the IPv4 total length against the
 // bytes received and the UDP length against it, seq[15:0] against the
 // identification and seq[31:16] against its complement, then the payload as
-// above. udp is taken with each frame's first beat. good_frames / bad_frames
+// above. With csum as well, the UDP checksum must instead be correct and
+// not 0: the checker sums the datagram with its pseudo-header itself, so a
+// checksum inserter is checked independently of any checker in the MAC.
+// udp and csum are taken with each frame's first beat. good_frames / bad_frames
 // count the verdicts; tuser_frames the frames the MAC flagged; seq_gaps the
 // frames whose seq is not one more than the last good-header frame's (one
 // with every check up to and including seq passed; the first frame after
 // reset or clear is not counted). The AXIS input is registered once (one
-// cycle of latency) so the RX FIFO's RAM output does not feed the checks.
+// cycle of latency) so the RX FIFO's RAM output does not feed the checks,
+// and a frame's verdict is counted the cycle after its last beat.
 // Verilog 2001
 // =============================================================================
 
@@ -26,6 +30,7 @@ module axis_test_chk64 (
     input  wire        rst_n,
     input  wire        clear,
     input  wire        udp,
+    input  wire        csum,
 
     input  wire [63:0] s_axis_tdata,
     input  wire [7:0]  s_axis_tkeep,
@@ -62,7 +67,7 @@ module axis_test_chk64 (
     // registered input
     reg [63:0] i_tdata;
     reg [7:0]  i_tkeep;
-    reg        i_tvalid, i_tlast, i_tuser, i_udp;
+    reg        i_tvalid, i_tlast, i_tuser, i_udp, i_csum;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             i_tdata  <= 64'd0;
@@ -71,6 +76,7 @@ module axis_test_chk64 (
             i_tlast  <= 1'b0;
             i_tuser  <= 1'b0;
             i_udp    <= 1'b0;
+            i_csum   <= 1'b0;
         end else begin
             i_tdata  <= s_axis_tdata;
             i_tkeep  <= s_axis_tkeep;
@@ -78,6 +84,7 @@ module axis_test_chk64 (
             i_tlast  <= s_axis_tlast;
             i_tuser  <= s_axis_tuser;
             i_udp    <= udp;
+            i_csum   <= csum;
         end
     end
 
@@ -85,6 +92,7 @@ module axis_test_chk64 (
     reg [15:0] bytes;               // bytes of this frame before this beat
     reg [15:0] flen;                // expected frame length
     reg        fudp;                // this frame is checked as UDP
+    reg        fcs;                 // ... with its UDP checksum
     reg [15:0] ip_id;               // UDP: identification (beat 2)
     reg [17:0] ip_ps;               // UDP: 0xD914 + total length + id (beat 2)
     reg [15:0] ip_ul;               // UDP: expected UDP length (beat 2)
@@ -108,6 +116,7 @@ module axis_test_chk64 (
     end
 
     wire        u        = (beat == 13'd0) ? i_udp : fudp;
+    wire        cs       = (beat == 13'd0) ? i_csum : fcs;
     wire [12:0] seq_beat = u ? 13'd5 : 13'd2;
     wire [31:0] r_seq    = u ? i_tdata[47:16] : i_tdata[31:0];
 
@@ -143,13 +152,37 @@ module axis_test_chk64 (
                                     (ip_v != 16'hFFFF);
                 13'd4:   beat_bad = i_tlast || (i_tdata[47:0] != UHDR4) ||
                                     (be3 != ip_ul);
-                13'd5:   beat_bad = (i_tdata[15:0] != 16'h0000) ||
+                13'd5:   beat_bad = (cs ? (i_tdata[15:0] == 16'h0000)
+                                       : (i_tdata[15:0] != 16'h0000)) ||
                                     (i_tdata[63:48] != ~r_seq[31:16]) ||
                                     (r_seq[15:0] != ip_id) ||
                                     (i_tlast && i_tkeep != 8'hFF);
                 default: beat_bad = ((i_tdata ^ exp) & m) != 64'd0;
             endcase
     end
+
+    // UDP checksum: the datagram (bytes 34.., from lane 2 of beat 4) as
+    // 16-bit words, summed per beat; the pseudo-header (10.0.0.2, 10.0.0.1,
+    // protocol 17, UDP length) is added with the verdict
+    function [17:0] sum4;
+        input [63:0] x;
+        begin
+            sum4 = {2'b00, x[7:0],   x[15:8]}  + {2'b00, x[23:16], x[31:24]} +
+                   {2'b00, x[39:32], x[47:40]} + {2'b00, x[55:48], x[63:56]};
+        end
+    endfunction
+    wire [63:0] u_bytes = (beat == 13'd4) ? {i_tdata[63:16], 16'd0} :
+                          (beat >  13'd4) ? (i_tdata & m) : 64'd0;
+    reg  [31:0] u_acc;
+    wire [31:0] u_new = ((beat == 13'd0) ? 32'd0 : u_acc) + {14'd0, sum4(u_bytes)};
+
+    // verdict, the cycle after the last beat
+    reg         v_pend, v_bad, v_tuser, v_cs;
+    reg  [31:0] v_sum;
+    wire [31:0] v_tot = v_sum + 32'h0000_1403 + 32'h0000_0011 + {16'd0, ip_ul};
+    wire [16:0] v_f1  = {1'b0, v_tot[15:0]} + {1'b0, v_tot[31:16]};
+    wire [15:0] v_f2  = v_f1[15:0] + {15'd0, v_f1[16]};
+    wire        v_err = v_bad || (v_cs && v_f2 != 16'hFFFF);
 
     wire [15:0] rlen    = {i_tdata[55:48], i_tdata[63:56]};
     wire [15:0] tot     = bytes + {12'd0, nkeep};
@@ -167,6 +200,13 @@ module axis_test_chk64 (
             bytes        <= 16'd0;
             flen         <= 16'd0;
             fudp         <= 1'b0;
+            fcs          <= 1'b0;
+            u_acc        <= 32'd0;
+            v_pend       <= 1'b0;
+            v_bad        <= 1'b0;
+            v_tuser      <= 1'b0;
+            v_cs         <= 1'b0;
+            v_sum        <= 32'd0;
             ip_id        <= 16'd0;
             ip_ps        <= 18'd0;
             ip_ul        <= 16'd0;
@@ -184,9 +224,24 @@ module axis_test_chk64 (
                 seq_gaps     <= 32'd0;
                 have_seq     <= 1'b0;
             end
+            v_pend <= 1'b0;
+            if (v_pend) begin
+                if (v_err) begin
+                    if (!clear) bad_frames <= bad_frames + 32'd1;
+                    bad_pulse <= 1'b1;
+                end else begin
+                    if (!clear) good_frames <= good_frames + 32'd1;
+                    good_pulse <= 1'b1;
+                end
+                if (v_tuser && !clear)
+                    tuser_frames <= tuser_frames + 32'd1;
+            end
             if (i_tvalid) begin
-                if (beat == 13'd0)
+                u_acc <= u_new;
+                if (beat == 13'd0) begin
                     fudp <= i_udp;
+                    fcs  <= i_csum;
+                end
                 if (beat == 13'd1 && !u)
                     flen <= rlen;
                 if (beat == 13'd2 && u) begin
@@ -210,16 +265,12 @@ module axis_test_chk64 (
                     beat  <= 13'd0;
                     bytes <= 16'd0;
                     bad   <= 1'b0;
-                    if (bad || beat_bad || i_tuser || tot != the_len ||
-                        beat < seq_beat) begin
-                        if (!clear) bad_frames <= bad_frames + 32'd1;
-                        bad_pulse <= 1'b1;
-                    end else begin
-                        if (!clear) good_frames <= good_frames + 32'd1;
-                        good_pulse <= 1'b1;
-                    end
-                    if (i_tuser && !clear)
-                        tuser_frames <= tuser_frames + 32'd1;
+                    v_pend  <= 1'b1;
+                    v_bad   <= bad || beat_bad || i_tuser || tot != the_len ||
+                               beat < seq_beat;
+                    v_tuser <= i_tuser;
+                    v_cs    <= u && cs;
+                    v_sum   <= u_new;
                 end else begin
                     beat  <= (beat == 13'h1FFF) ? beat : beat + 13'd1;
                     bytes <= tot;

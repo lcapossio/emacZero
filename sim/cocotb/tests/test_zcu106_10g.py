@@ -17,8 +17,10 @@
                        loopback -> pcs10gbr -> eth_mac_sys_10g ->
                        axis_test_chk64: minimum frames at line rate through
                        both clock crossings, a length sweep, jumbo frames,
-                       an injected payload error counted once, and the MAC's
-                       counters read through axil_cmd_master
+                       an injected payload error counted once, the MAC's
+                       counters read through axil_cmd_master, and the
+                       checksum test mode: junk checksums corrected by the
+                       MAC's inserter, or dropped / flagged by its checker
   mac10g_dual          both ports (two zcu106_10g_lane) with a fibre between
                        them, each direction on its own clock: traffic both
                        ways at once at line rate, every length 64..1518
@@ -57,6 +59,7 @@ SUITES = {
         "toplevel": "h_mac10g_test_loop",
         "sources": ["rtl/crc32_d64.v", "rtl/async_fifo.v",
                     "rtl/axis_async_frame_fifo.v", "rtl/cdc_event_count.v",
+                    "rtl/sync_fifo.v", "rtl/csum_calc64.v", "rtl/tx_csum_off64.v",
                     "rtl/eth_mac_10g_tx.v", "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v", "rtl/eth_pause_10g.v",
                     "rtl/eth_mac_sys_10g.v",
                     "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
@@ -81,6 +84,7 @@ SUITES = {
         "toplevel": "h_mac10g_dual",
         "sources": ["rtl/crc32_d64.v", "rtl/async_fifo.v",
                     "rtl/axis_async_frame_fifo.v", "rtl/cdc_event_count.v",
+                    "rtl/sync_fifo.v", "rtl/csum_calc64.v", "rtl/tx_csum_off64.v",
                     "rtl/eth_mac_10g_tx.v", "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v", "rtl/eth_pause_10g.v",
                     "rtl/eth_mac_sys_10g.v",
                     "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
@@ -434,6 +438,8 @@ async def mac_setup(dut):
     dut.enable.value = 0
     dut.len.value = 60
     dut.sweep.value = 0
+    dut.udp.value = 0
+    dut.csum.value = 0
     dut.ipg.value = 0
     dut.inj_err.value = 0
     dut.clear.value = 0
@@ -925,3 +931,60 @@ async def dual_inject(dut):
     c0, c1 = ports[0].counts(), ports[1].counts()
     assert c1["bad"] == 1 and c1["good"] + 1 == c0["gen"] and c1["gaps"] == 0, c1
     assert c0["bad"] == 0 and c0["good"] == c1["gen"], c0
+
+
+@cocotb.test(timeout_time=40, timeout_unit="ms")
+async def mac_csum(dut):
+    """Checksum test mode (EIO [53] with UDP frames): the generator sends
+    junk IPv4 and UDP checksums and the checker wants correct ones. With
+    the MAC's inserter and checker on (CTRL[7], CTRL[9]) every frame is
+    good and none fails the MAC's check; with the checker alone every frame
+    fails it and is dropped (RX_ERR_CSUM, RX_DISCARD), or with passthrough
+    is delivered with tuser."""
+    if dut._name != "h_mac10g_test_loop":
+        return
+    await mac_setup(dut)
+    ctrl0 = await csr(dut, 0x04)
+    assert (await csr(dut, 0x98) >> 1) & 3 == 3, "CAPS: checksum offload built"
+    dut.udp.value = 1
+    dut.csum.value = 1
+    dut.sweep.value = 1
+    dut.len.value = 300
+    await ClockCycles(dut.clk, 20)
+    for ctrl, n, want in ((0x280, 600, "good"), (0x200, 200, "dropped"),
+                          (0x300, 200, "tuser")):
+        await csr(dut, 0x04, ctrl0 | ctrl)
+        await app_pulse(dut, dut.clear)
+        for a in (0x80, 0xB0, 0xC0, 0xEC, 0xF4):
+            await csr(dut, a, 0)
+        g0 = int(dut.gen_frames.value)
+        dut.enable.value = 1
+        for _ in range(100000):
+            await RisingEdge(dut.app_clk)
+            if int(dut.gen_frames.value) - g0 >= n:
+                break
+        dut.enable.value = 0
+        await ClockCycles(dut.clk, 20)
+        sent = int(dut.gen_frames.value) - g0
+        for _ in range(500):            # the inserter and TX FIFO hold frames
+            if await csr(dut, 0xC0) >= sent:
+                break
+            await ClockCycles(dut.clk, 200)
+        await ClockCycles(dut.clk, 400)
+        c = mac_counts(dut)
+        rx_cs, disc = await csr(dut, 0x80), await csr(dut, 0xEC)
+        dut._log.info("CTRL %03x: %d frames, %s; RX_ERR_CSUM %d", ctrl0 | ctrl, sent,
+                      c, rx_cs)
+        assert await csr(dut, 0xB0) == sent and await csr(dut, 0xC0) == sent
+        assert await csr(dut, 0xF4) == 0, "TX_DROP"
+        if want == "good":
+            assert c["good_frames"] == sent and c["bad_frames"] == 0, c
+            assert c["seq_gaps"] == 0 and c["tuser_frames"] == 0, c
+            assert rx_cs == 0 and disc == 0, (rx_cs, disc)
+        elif want == "dropped":
+            assert c["good_frames"] == 0 and c["bad_frames"] == 0, c
+            assert rx_cs == sent and disc == sent, (rx_cs, disc, sent)
+        else:
+            assert c["good_frames"] == 0 and c["bad_frames"] == sent, c
+            assert c["tuser_frames"] == sent and rx_cs == sent and disc == 0, c
+    await csr(dut, 0x04, ctrl0)

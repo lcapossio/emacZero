@@ -4,10 +4,10 @@
 // eth_mac_sys_10g.v - 10G Ethernet MAC system: 64-bit AXI4-Stream in the
 // application clock domain, XGMII to a 10GBASE-R PCS, AXI4-Lite CSRs
 //
-//   clk domain           | xgmii_tx_clk               | xgmii_rx_clk
-//   s_axis -> TX frame FIFO -> eth_mac_10g_tx -> RS -> XGMII TX (to the PCS)
-//   m_axis <- RX frame FIFO <- filter <- eth_mac_10g_rx <- XGMII RX
-//                                                     RS <-'
+//   clk domain                       | xgmii_tx_clk             | xgmii_rx_clk
+//   s_axis -> [csum insert] -> TX frame FIFO -> eth_mac_10g_tx -> RS -> XGMII TX
+//   m_axis <- RX frame FIFO <- filter <- [csum check] <- eth_mac_10g_rx <- XGMII RX
+//                                                                   RS <-'
 //
 // Link faults (eth_rs_10g, IEEE 802.3 clause 46.3.4): four local or remote
 // fault sequences of one type on XGMII RX, each fewer than 128 columns after
@@ -30,6 +30,27 @@
 // started, and are not held by a received pause or by CTRL[0], only by a
 // link fault. A TX arbiter picks the source of each frame as its first beat
 // is offered to the MAC and keeps it until the last beat is taken.
+//
+// Checksum offload (the 1G core's CTRL[7] / CTRL[9], scope of csum_calc64):
+//   TX_CSUM_OFFLOAD=1: tx_csum_off64 ahead of the TX FIFO. With CTRL[7] set
+//     (taken at a frame's first beat) it writes the IPv4 header checksum and
+//     the TCP / UDP / ICMP / ICMPv6 checksum of each frame, whatever was in
+//     those fields; a UDP checksum computing to 0 goes out as 0xFFFF. It
+//     stores each frame first (a buffer of 2**TX_FIFO_ADDR_WIDTH words), so
+//     a frame waits there about its own length; a frame too long for it is
+//     dropped (TX_DROP). A transceiver TX reset throws frames away as they
+//     leave the inserter, so a frame it holds when the reset ends (taken
+//     before or during the reset) is sent whole.
+//   RX_CSUM_OFFLOAD=1: csum_calc64 checks each received frame (CTRL[9],
+//     taken at its first beat), and a frame whose IPv4 header checksum or
+//     L4 checksum is wrong is a bad frame like one with a bad FCS: dropped
+//     (RX_DISCARD), or delivered with tuser under passthrough. A UDP
+//     checksum of 0 means none and passes. Such frames, with no MAC error,
+//     count in RX_ERR_CSUM; they still count in RX_FRAMES. The check delays
+//     the RX stream by 7 xgmii_rx_clk cycles.
+//   IPv4 options: csum_calc64 does not walk them; the L4 checksum is left
+//   alone (TX) or not checked (RX) when any option byte is 0x83 or 0x89,
+//   so every source route is covered (see rtl/csum_calc64.v).
 //
 // Both FIFOs are store-and-forward frame FIFOs (axis_async_frame_fifo):
 //   TX: the MAC starts a frame only once it is whole in the FIFO, so it never
@@ -58,8 +79,10 @@
 // keep their meaning there):
 //   0x00 VERSION   RO  {MAJOR, MINOR, ID} from rtl/version.vh
 //   0x04 CTRL      RW  [0] tx_en  [1] rx_en  [2] promisc  [6] jumbo_en
+//                      [7] tx_csum_off (TX_CSUM_OFFLOAD=1)
 //                      [8] passthrough (accept every address, deliver bad
 //                          frames with tuser)
+//                      [9] rx_csum_off (RX_CSUM_OFFLOAD=1)
 //                      tx_en / rx_en act between frames only, as on the 1G
 //                      core: a frame part-way through is finished whole.
 //   0x08 STATUS    RO  [0] PCS block lock  [1] PCS high BER
@@ -81,7 +104,8 @@
 //   0x9C PAUSE_XOFF    RW  [19:0] automatic PAUSE XOFF level, RX FIFO bytes
 //   0xA0 PAUSE_XON     RW  [19:0] XON level (reset: half / a quarter of the FIFO)
 //   0xA4 PAUSE_REFRESH RW  [15:0] XOFF repeat interval, quanta (0: quanta / 2)
-//   0x98 CAPS      RO  [0] MCAST_HASH_FILTER  [3] automatic PAUSE
+//   0x98 CAPS      RO  [0] MCAST_HASH_FILTER  [1] TX_CSUM_OFFLOAD
+//                      [2] RX_CSUM_OFFLOAD  [3] automatic PAUSE
 //                      [8:4] RX FIFO size, log2 bytes
 //                      [9] 1 = 10G core (64-bit streams, this map)
 //                      [31:16] MAX_FRAME_JUMBO
@@ -93,13 +117,15 @@
 //   0xC8/CC RX_BYTES   their bytes, FCS included
 //   0xD0 RX_ERR_FCS    0xD4 RX_ERR_CTL (control character or bad SFD)
 //   0xD8 RX_ERR_OVERSIZE   0xDC RX_ERR_UNDERSIZE
+//   0x80 RX_ERR_CSUM   frames with a wrong IP / L4 checksum and no MAC error
+//                      (CTRL[9])
 //   0xE0 RX_BCAST      0xE4 RX_MCAST (good frames)
 //   0xE8 RX_DROP       frames lost because the RX FIFO was full
 //   0xEC RX_DISCARD    frames dropped on purpose (filter, RX disabled, bad)
 //   0xF0 TX_UNDERRUN   (cannot happen with the store-and-forward FIFO; kept
 //                       as a check)
-//   0xF4 TX_DROP       frames too long for the TX FIFO, or thrown away by
-//                      a TX crossing reset
+//   0xF4 TX_DROP       frames too long for the TX FIFO (or the checksum
+//                      buffer), or thrown away by a TX crossing reset
 //   0xF8 TX_ERR        frames sent with a bad FCS on purpose (tuser)
 //   0xFC LOCK_LOSS     times PCS block lock was lost
 //   0xA8 LOCAL_FAULTS  times a local fault was reported
@@ -137,6 +163,8 @@ module eth_mac_sys_10g #(
     parameter TX_FIFO_ADDR_WIDTH = 11,      // 2**n 8-byte words (11: 16 KB)
     parameter RX_FIFO_ADDR_WIDTH = 11,
     parameter MCAST_HASH_FILTER  = 0,
+    parameter TX_CSUM_OFFLOAD    = 0,       // 1: build the TX checksum inserter
+    parameter RX_CSUM_OFFLOAD    = 0,       // 1: build the RX checksum checker
     // Reset values, for designs with no CPU: TXRX_EN_AT_RESET sets CTRL[1:0],
     // JUMBO_AT_RESET CTRL[6], MAC_ADDR_AT_RESET the station address,
     // IP_ADDR_AT_RESET IP_ADDR (the 1G core's 192.168.137.200 by default).
@@ -223,6 +251,8 @@ module eth_mac_sys_10g #(
     wire cfg_promisc = ctrl[2];
     wire cfg_jumbo   = ctrl[6];
     wire cfg_pass    = ctrl[8];
+    wire cfg_tx_csum = ctrl[7];
+    wire cfg_rx_csum = ctrl[9];
 
     // ---- status synchronizers
     (* ASYNC_REG = "TRUE" *) reg [1:0] lock_s;
@@ -306,37 +336,89 @@ module eth_mac_sys_10g #(
     wire t_rx_rst_n = rxt_s[2];     // RX crossing, xgmii_rx_clk side
 
     // =========================================================================
-    // TX: gating, frame FIFO, MAC
+    // TX: gating, checksum inserter, frame FIFO, MAC
     // =========================================================================
     // tx_en acts between frames (as eth_mac_sys): tx_en_eff follows CTRL[0]
     // only when no frame is part-way accepted and no first beat is waiting.
-    // While the TX crossing is in reset, and for the rest of a frame part-way
-    // written when it began (tx_flush), beats are taken and thrown away.
-    reg  tx_en_eff, tx_mid, tx_flush;
-    wire txf_s_ready;
-    wire tx_dump     = !a_tx_rst_n || tx_flush;
+    reg  tx_en_eff, tx_mid;
+    wire g_ready;                   // ready of the stage after the gate
     wire tx_take     = s_axis_tvalid && s_axis_tready;
     wire tx_mid_next = tx_take ? !s_axis_tlast : tx_mid;
     wire tx_hold     = s_axis_tvalid && tx_en_eff && !s_axis_tready;
-    wire tx_dumped   = tx_take && s_axis_tlast && tx_dump;   // one frame lost
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             tx_mid    <= 1'b0;
-            tx_flush  <= 1'b0;
             tx_en_eff <= (TXRX_EN_AT_RESET != 0);
         end else begin
             tx_mid <= tx_mid_next;
-            if (!a_tx_rst_n)
-                tx_flush <= tx_mid_next;
-            else if (tx_take && s_axis_tlast)
-                tx_flush <= 1'b0;
             if (!tx_mid_next && !tx_hold)
                 tx_en_eff <= cfg_tx_en;
         end
     end
-    assign s_axis_tready = tx_en_eff && (tx_dump || txf_s_ready);
+    assign s_axis_tready = tx_en_eff && g_ready;
 
-    wire        txf_ovf;
+    // the stream written to the TX FIFO: the gated s_axis, or the inserter's
+    // output (w_drop: a frame too long for its buffer, cut, to be dropped)
+    wire [63:0] w_tdata;
+    wire [7:0]  w_tkeep;
+    wire        w_tvalid, w_tlast, w_tuser, w_drop, w_tready;
+
+    generate
+        if (TX_CSUM_OFFLOAD != 0) begin : g_tx_csum
+            tx_csum_off64 #(
+                .BUF_ADDR_WIDTH (TX_FIFO_ADDR_WIDTH)
+            ) u_tx_csum (
+                .clk           (clk),
+                .rst_n         (rst_n),
+                .enable        (cfg_tx_csum),
+                .s_axis_tdata  (s_axis_tdata),
+                .s_axis_tkeep  (s_axis_tkeep),
+                .s_axis_tvalid (s_axis_tvalid && tx_en_eff),
+                .s_axis_tready (g_ready),
+                .s_axis_tlast  (s_axis_tlast),
+                .s_axis_tuser  (s_axis_tuser),
+                .m_axis_tdata  (w_tdata),
+                .m_axis_tkeep  (w_tkeep),
+                .m_axis_tvalid (w_tvalid),
+                .m_axis_tready (w_tready),
+                .m_axis_tlast  (w_tlast),
+                .m_axis_tuser  (w_tuser),
+                .m_drop        (w_drop)
+            );
+        end else begin : g_no_tx_csum
+            assign w_tdata  = s_axis_tdata;
+            assign w_tkeep  = s_axis_tkeep;
+            assign w_tvalid = s_axis_tvalid && tx_en_eff;
+            assign w_tlast  = s_axis_tlast;
+            assign w_tuser  = s_axis_tuser;
+            assign w_drop   = 1'b0;
+            assign g_ready  = w_tready;
+        end
+    endgenerate
+
+    // While the TX crossing is in reset, and for the rest of a frame part-way
+    // written when it began (tx_flush), words are taken and thrown away.
+    reg  w_mid, tx_flush;
+    wire txf_s_ready;
+    wire tx_dump    = !a_tx_rst_n || tx_flush;
+    wire w_take     = w_tvalid && w_tready;
+    wire w_mid_next = w_take ? !w_tlast : w_mid;
+    wire tx_dumped  = w_take && w_tlast && tx_dump;      // one frame lost
+    assign w_tready = tx_dump || txf_s_ready;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            w_mid    <= 1'b0;
+            tx_flush <= 1'b0;
+        end else begin
+            w_mid <= w_mid_next;
+            if (!a_tx_rst_n)
+                tx_flush <= w_mid_next;
+            else if (w_take && w_tlast)
+                tx_flush <= 1'b0;
+        end
+    end
+
+    wire        txf_ovf, txf_drop;
     wire [TX_FIFO_ADDR_WIDTH:0] txf_count;
     wire [72:0] txf_m_data;
     wire        txf_m_last, txf_m_valid, txf_m_ready;
@@ -348,13 +430,13 @@ module eth_mac_sys_10g #(
     ) u_tx_fifo (
         .wr_clk            (clk),
         .wr_rst_n          (a_tx_rst_n),
-        .s_data            ({s_axis_tuser, s_axis_tkeep, s_axis_tdata}),
-        .s_last            (s_axis_tlast),
-        .s_drop            (1'b0),
-        .s_valid           (s_axis_tvalid && tx_en_eff && !tx_dump),
+        .s_data            ({w_tuser, w_tkeep, w_tdata}),
+        .s_last            (w_tlast),
+        .s_drop            (w_drop),
+        .s_valid           (w_tvalid && !tx_dump),
         .s_ready           (txf_s_ready),
         .wr_frame_ok       (),
-        .wr_frame_drop     (),
+        .wr_frame_drop     (txf_drop),
         .wr_frame_overflow (txf_ovf),
         .wr_count          (txf_count),
         .rd_clk            (xgmii_tx_clk),
@@ -495,18 +577,19 @@ module eth_mac_sys_10g #(
     // RX: MAC, filter, frame FIFO
     // =========================================================================
     // configuration into the RX domain (quasi-static, see header)
-    (* ASYNC_REG = "TRUE" *) reg [115:0] rcfg_s1;
-    (* ASYNC_REG = "TRUE" *) reg [115:0] rcfg_s2;
+    (* ASYNC_REG = "TRUE" *) reg [116:0] rcfg_s1;
+    (* ASYNC_REG = "TRUE" *) reg [116:0] rcfg_s2;
     always @(posedge xgmii_rx_clk or negedge t_rx_rst_n) begin
         if (!t_rx_rst_n) begin
-            rcfg_s1 <= 116'd0;
-            rcfg_s2 <= 116'd0;
+            rcfg_s1 <= 117'd0;
+            rcfg_s2 <= 117'd0;
         end else begin
-            rcfg_s1 <= {cfg_rx_en, cfg_promisc, cfg_jumbo, cfg_pass,
+            rcfg_s1 <= {cfg_rx_csum, cfg_rx_en, cfg_promisc, cfg_jumbo, cfg_pass,
                         mc_hash, mac_addr};
             rcfg_s2 <= rcfg_s1;
         end
     end
+    wire        r_csum    = rcfg_s2[116];
     wire        r_rx_en   = rcfg_s2[115];
     wire        r_promisc = rcfg_s2[114];
     wire        r_jumbo   = rcfg_s2[113];
@@ -545,10 +628,98 @@ module eth_mac_sys_10g #(
         .stat_is_mcast      (st_mc)
     );
 
+    // checksum check: drx is mrx with tuser also set on the last beat of a
+    // frame whose checksums are wrong (with RX_CSUM_OFFLOAD=0, mrx itself)
+    wire [63:0] drx_tdata;
+    wire [7:0]  drx_tkeep;
+    wire        drx_tvalid, drx_tlast, drx_tuser;
+    wire        rx_csum_evt;        // such a frame with no MAC error
+
+    generate
+        if (RX_CSUM_OFFLOAD != 0) begin : g_rx_csum
+            // CTRL[9], taken with a frame's first beat, rides as the tag
+            reg  ck_mid, ck_en_f;
+            wire ck_en = ck_mid ? ck_en_f : r_csum;
+            always @(posedge xgmii_rx_clk or negedge t_rx_rst_n) begin
+                if (!t_rx_rst_n) begin
+                    ck_mid  <= 1'b0;
+                    ck_en_f <= 1'b0;
+                end else if (mrx_tvalid) begin
+                    if (!ck_mid)
+                        ck_en_f <= r_csum;
+                    ck_mid <= !mrx_tlast;
+                end
+            end
+
+            wire        c_v, c_ip4, c_l4_ok, c_l4_udp;
+            wire        c_tag;
+            wire [15:0] c_ip_sum, c_l4_sum, c_l4_fld;
+            csum_calc64 #(.TAG_W(1)) u_rx_csum (
+                .clk          (xgmii_rx_clk),
+                .rst_n        (t_rx_rst_n),
+                .zero_fields  (1'b0),
+                .in_valid     (mrx_tvalid),
+                .in_data      (mrx_tdata),
+                .in_keep      (mrx_tkeep),
+                .in_last      (mrx_tlast),
+                .in_tag       (ck_en),
+                .res_valid    (c_v),
+                .res_tag      (c_tag),
+                .res_done     (),
+                .res_ip4      (c_ip4),
+                .res_ip_sum   (c_ip_sum),
+                .res_ip_pos   (),
+                .res_l4_ok    (c_l4_ok),
+                .res_l4_udp   (c_l4_udp),
+                .res_l4_sum   (c_l4_sum),
+                .res_l4_pos   (),
+                .res_l4_field (c_l4_fld)
+            );
+            wire ip_bad = c_ip4 && (c_ip_sum != 16'hFFFF);
+            wire l4_bad = c_l4_ok && !(c_l4_udp && c_l4_fld == 16'h0000) &&
+                          (c_l4_sum != 16'hFFFF);
+
+            // The result comes LATENCY (6) cycles after the frame's last
+            // beat, registered here as ck_bad; the stream is delayed 7
+            // cycles to meet it with that beat.
+            localparam DL = 7, DW = 74;   // {tuser, tlast, tkeep, tdata}
+            reg          ck_bad;
+            reg [DL-1:0] dl_v;
+            reg [DL*DW-1:0] dl_d;   // no reset: shift registers
+            always @(posedge xgmii_rx_clk or negedge t_rx_rst_n) begin
+                if (!t_rx_rst_n) begin
+                    ck_bad <= 1'b0;
+                    dl_v   <= {DL{1'b0}};
+                end else begin
+                    ck_bad <= c_v && c_tag && (ip_bad || l4_bad);
+                    dl_v   <= {dl_v[DL-2:0], mrx_tvalid};
+                end
+            end
+            always @(posedge xgmii_rx_clk)
+                dl_d <= {dl_d[(DL-1)*DW-1:0],
+                         mrx_tuser, mrx_tlast, mrx_tkeep, mrx_tdata};
+
+            wire [DW-1:0] dl_q = dl_d[DL*DW-1 -: DW];
+            assign drx_tvalid  = dl_v[DL-1];
+            assign drx_tdata   = dl_q[63:0];
+            assign drx_tkeep   = dl_q[71:64];
+            assign drx_tlast   = dl_q[72];
+            assign drx_tuser   = dl_q[73] || (dl_q[72] && ck_bad);
+            assign rx_csum_evt = drx_tvalid && dl_q[72] && ck_bad && !dl_q[73];
+        end else begin : g_no_rx_csum
+            assign drx_tdata   = mrx_tdata;
+            assign drx_tkeep   = mrx_tkeep;
+            assign drx_tvalid  = mrx_tvalid;
+            assign drx_tlast   = mrx_tlast;
+            assign drx_tuser   = mrx_tuser;
+            assign rx_csum_evt = 1'b0;
+        end
+    endgenerate
+
     // address filter on the first beat (bytes 0..5 = destination address)
     reg         r_mid;              // past the first beat of a frame
-    wire [47:0] dst = {mrx_tdata[7:0],   mrx_tdata[15:8],  mrx_tdata[23:16],
-                       mrx_tdata[31:24], mrx_tdata[39:32], mrx_tdata[47:40]};
+    wire [47:0] dst = {drx_tdata[7:0],   drx_tdata[15:8],  drx_tdata[23:16],
+                       drx_tdata[31:24], drx_tdata[39:32], drx_tdata[47:40]};
     wire        dst_bc = &dst;
     wire        dst_mc = dst[40] && !dst_bc;
     wire [5:0]  hidx   = dst[5:0]   ^ dst[11:6]  ^ dst[17:12] ^ dst[23:18] ^
@@ -557,13 +728,13 @@ module eth_mac_sys_10g #(
     wire        accept = r_rx_en && (r_pass || r_promisc || dst == r_mac ||
                                      dst_bc || (dst_mc && mc_ok));
     wire        rx_drop = (!r_mid && !accept) ||
-                          (mrx_tlast && mrx_tuser && !r_pass);
+                          (drx_tlast && drx_tuser && !r_pass);
 
     always @(posedge xgmii_rx_clk or negedge t_rx_rst_n) begin
         if (!t_rx_rst_n)
             r_mid <= 1'b0;
-        else if (mrx_tvalid)
-            r_mid <= !mrx_tlast;
+        else if (drx_tvalid)
+            r_mid <= !drx_tlast;
     end
 
     wire rxf_drop, rxf_ovf;
@@ -578,10 +749,10 @@ module eth_mac_sys_10g #(
     ) u_rx_fifo (
         .wr_clk            (xgmii_rx_clk),
         .wr_rst_n          (t_rx_rst_n),
-        .s_data            ({mrx_tuser, mrx_tkeep, mrx_tdata}),
-        .s_last            (mrx_tlast),
+        .s_data            ({drx_tuser, drx_tkeep, drx_tdata}),
+        .s_last            (drx_tlast),
         .s_drop            (rx_drop),
-        .s_valid           (mrx_tvalid),
+        .s_valid           (drx_tvalid),
         .s_ready           (),
         .wr_frame_ok       (),
         .wr_frame_drop     (rxf_drop),
@@ -689,8 +860,11 @@ module eth_mac_sys_10g #(
     // Both ends of a count reset with their crossing, together with the
     // last value seen, so a crossing reset loses events in flight but never
     // makes a counter jump.
-    wire [7:0] c_rx_drop, c_rx_disc, c_tx_unr, c_prx, c_ptx;
-    reg  [7:0] p_rx_drop, p_rx_disc, p_tx_unr, p_prx, p_ptx;  // at the last clk cycle
+    wire [7:0] c_rx_drop, c_rx_disc, c_tx_unr, c_prx, c_ptx, c_csum;
+    reg  [7:0] p_rx_drop, p_rx_disc, p_tx_unr, p_prx, p_ptx, p_csum;  // at the last clk cycle
+    cdc_event_count #(.WIDTH(8)) u_cnt_csum (
+        .src_clk (xgmii_rx_clk), .src_rst_n (t_rx_rst_n), .inc (rx_csum_evt),
+        .dst_clk (clk), .dst_rst_n (a_rx_rst_n), .count (c_csum));
     cdc_event_count #(.WIDTH(8)) u_cnt_pause_rx (
         .src_clk (xgmii_rx_clk), .src_rst_n (t_rx_rst_n), .inc (rx_pause_evt),
         .dst_clk (clk), .dst_rst_n (a_rx_rst_n), .count (c_prx));
@@ -717,6 +891,8 @@ module eth_mac_sys_10g #(
     end
     always @(posedge clk or negedge a_rx_rst_n)
         if (!a_rx_rst_n) p_prx <= 8'd0; else p_prx <= c_prx;
+    always @(posedge clk or negedge a_rx_rst_n)
+        if (!a_rx_rst_n) p_csum <= 8'd0; else p_csum <= c_csum;
     always @(posedge clk or negedge a_tx_rst_n) begin
         if (!a_tx_rst_n) begin
             p_tx_unr <= 8'd0;
@@ -731,7 +907,8 @@ module eth_mac_sys_10g #(
     wire [7:0] d_tx_unr  = c_tx_unr  - p_tx_unr;
     wire [7:0] d_prx     = c_prx - p_prx;
     wire [7:0] d_ptx     = c_ptx - p_ptx;
-    reg  [31:0] n_rx_drop, n_rx_disc, n_tx_unr, n_pause_rx, n_pause_tx;
+    wire [7:0] d_csum    = c_csum - p_csum;
+    reg  [31:0] n_rx_drop, n_rx_disc, n_tx_unr, n_pause_rx, n_pause_tx, n_rx_csum;
     wire [32:0] s_prx = {1'b0, n_pause_rx} + {25'd0, d_prx};
     wire [32:0] s_ptx = {1'b0, n_pause_tx} + {25'd0, d_ptx};
 
@@ -770,7 +947,9 @@ module eth_mac_sys_10g #(
     localparam [31:0] CTRL_RST = ((TXRX_EN_AT_RESET != 0) ? 32'h3 : 32'h0) |
                                  ((JUMBO_AT_RESET   != 0) ? 32'h40 : 32'h0);
     localparam [31:0] CAPS = {MAX_FRAME_JUMBO[15:0], 6'd0, 1'b1,
-                              RX_FIFO_ADDR_WIDTH[4:0] + 5'd3, 1'b1, 2'd0,
+                              RX_FIFO_ADDR_WIDTH[4:0] + 5'd3, 1'b1,
+                              (RX_CSUM_OFFLOAD   != 0) ? 1'b1 : 1'b0,
+                              (TX_CSUM_OFFLOAD   != 0) ? 1'b1 : 1'b0,
                               (MCAST_HASH_FILTER != 0) ? 1'b1 : 1'b0};
 
     wire [31:0] wd_mac_hi = wmask({16'd0, mac_addr[47:32]}, s_axi_wdata, s_axi_wstrb);
@@ -802,6 +981,7 @@ module eth_mac_sys_10g #(
             n_rx_drop <= 32'd0;
             n_rx_disc <= 32'd0;
             n_tx_unr  <= 32'd0;
+            n_rx_csum <= 32'd0;
             n_tx_frames <= 64'd0; n_tx_bytes <= 64'd0;
             n_rx_frames <= 64'd0; n_rx_bytes <= 64'd0;
             n_tx_err  <= 32'd0; n_tx_drop <= 32'd0; n_lock_loss <= 32'd0;
@@ -833,7 +1013,9 @@ module eth_mac_sys_10g #(
             n_rx_drop <= n_rx_drop + {24'd0, d_rx_drop};
             n_rx_disc <= n_rx_disc + {24'd0, d_rx_disc};
             n_tx_unr  <= n_tx_unr  + {24'd0, d_tx_unr};
-            if (txf_ovf || tx_dumped) n_tx_drop <= n_tx_drop + 32'd1;
+            n_rx_csum <= n_rx_csum + {24'd0, d_csum};
+            n_tx_drop <= n_tx_drop + {31'd0, txf_ovf} + {31'd0, txf_drop} +
+                         {31'd0, tx_dumped};
             if (lock_lost) n_lock_loss <= n_lock_loss + 32'd1;
             if (lf_new) n_lf <= n_lf + 32'd1;
             if (rf_new) n_rf <= n_rf + 32'd1;
@@ -882,6 +1064,7 @@ module eth_mac_sys_10g #(
                     8'hEC: n_rx_disc  <= 32'd0;
                     8'hF0: n_tx_unr   <= 32'd0;
                     8'hF4: n_tx_drop  <= 32'd0;
+                    8'h80: n_rx_csum  <= 32'd0;
                     8'hF8: n_tx_err   <= 32'd0;
                     8'hFC: n_lock_loss <= 32'd0;
                     8'hA8: n_lf <= 32'd0;
@@ -931,6 +1114,7 @@ module eth_mac_sys_10g #(
                     8'hEC: s_axi_rdata <= n_rx_disc;
                     8'hF0: s_axi_rdata <= n_tx_unr;
                     8'hF4: s_axi_rdata <= n_tx_drop;
+                    8'h80: s_axi_rdata <= n_rx_csum;
                     8'hF8: s_axi_rdata <= n_tx_err;
                     8'hFC: s_axi_rdata <= n_lock_loss;
                     8'hA8: s_axi_rdata <= n_lf;

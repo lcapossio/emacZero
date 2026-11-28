@@ -32,6 +32,16 @@
                             PAUSE frames go ahead of queued data and are not
                             held, and automatic PAUSE keeps a slow sink from
                             losing frames.
+  eth_mac_sys_10g_csum      the same system built with TX_CSUM_OFFLOAD and
+                            RX_CSUM_OFFLOAD: every test above with the
+                            offload idle, then random IPv4 / IPv6 packets
+                            (wrong checksums in, VLAN tags, fragments,
+                            options, truncated datagrams) with the inserter
+                            on and off and the checker on (bad frames
+                            dropped and counted, or flagged with
+                            passthrough) and off, against lib/csum.py;
+                            line rate with the inserter on; a checksum error
+                            on a frame with a bad FCS counts as an FCS error.
 """
 import os
 import random
@@ -40,6 +50,8 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge
 from cocotb.utils import get_sim_time
+
+from lib.csum import Packet, random_packet, pad60, UDP, TCP, TPID_8021Q
 
 
 SUITES = {
@@ -60,7 +72,8 @@ SUITES = {
     "eth_mac_sys_10g_loop": {
         "toplevel": "h_eth_mac_sys_10g_loop",
         "sources": ["rtl/crc32_d64.v", "rtl/async_fifo.v", "rtl/axis_async_frame_fifo.v",
-                    "rtl/cdc_event_count.v", "rtl/eth_mac_10g_tx.v",
+                    "rtl/cdc_event_count.v", "rtl/sync_fifo.v", "rtl/csum_calc64.v",
+                    "rtl/tx_csum_off64.v", "rtl/eth_mac_10g_tx.v",
                     "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v", "rtl/eth_pause_10g.v",
                     "rtl/eth_mac_sys_10g.v",
                     "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
@@ -70,8 +83,25 @@ SUITES = {
                     "sim/cocotb/hdl/h_eth_mac_sys_10g_loop.v"],
         "skip_vhdl": "10G MAC is Verilog only so far",
     },
+    "eth_mac_sys_10g_csum": {
+        "toplevel": "h_eth_mac_sys_10g_loop",
+        "sources": ["rtl/crc32_d64.v", "rtl/async_fifo.v", "rtl/axis_async_frame_fifo.v",
+                    "rtl/cdc_event_count.v", "rtl/sync_fifo.v", "rtl/csum_calc64.v",
+                    "rtl/tx_csum_off64.v", "rtl/eth_mac_10g_tx.v",
+                    "rtl/eth_mac_10g_rx.v", "rtl/eth_rs_10g.v", "rtl/eth_pause_10g.v",
+                    "rtl/eth_mac_sys_10g.v",
+                    "rtl/pcs10gbr_enc.v", "rtl/pcs10gbr_dec.v",
+                    "rtl/pcs10gbr_scrambler.v", "rtl/pcs10gbr_gearbox_tx.v",
+                    "rtl/pcs10gbr_gearbox_rx.v", "rtl/pcs10gbr_block_lock.v",
+                    "rtl/pcs10gbr_ber_mon.v", "rtl/pcs10gbr.v",
+                    "sim/cocotb/hdl/h_eth_mac_sys_10g_loop.v"],
+        "params": {"TX_CSUM_OFFLOAD": 1, "RX_CSUM_OFFLOAD": 1},
+        "env": {"SYS10G_CSUM": "1"},
+        "skip_vhdl": "10G MAC is Verilog only so far",
+    },
 }
 
+CSUM = os.environ.get("SYS10G_CSUM") == "1"     # offload built
 GT_NS = 6.206          # 161.13 MHz transceiver user clock
 APP_NS = 5.0           # 200 MHz application clock
 
@@ -306,10 +336,12 @@ R_TX_UNR, R_TX_DROP, R_TX_ERR, R_LOCK_LOSS = 0xF0, 0xF4, 0xF8, 0xFC
 R_LOCAL_F, R_REMOTE_F = 0xA8, 0xAC
 R_PAUSE_CTRL, R_PAUSE_Q, R_PAUSE_RX, R_PAUSE_TX = 0x84, 0x88, 0x8C, 0x90
 R_XOFF, R_XON, R_REFRESH = 0x9C, 0xA0, 0xA4
+R_RX_CSUM = 0x80
 C_TX, C_RX, C_PROMISC, C_JUMBO, C_PASS = 1, 2, 4, 0x40, 0x100
+C_TXCS, C_RXCS = 0x80, 0x200
 COUNTERS32 = [R_RX_FCS, R_RX_CTL, R_RX_OVER, R_RX_UNDER, R_RX_BC, R_RX_MC,
               R_RX_DROP, R_RX_DISC, R_TX_UNR, R_TX_DROP, R_TX_ERR, R_LOCK_LOSS,
-              R_LOCAL_F, R_REMOTE_F, R_PAUSE_RX, R_PAUSE_TX]
+              R_LOCAL_F, R_REMOTE_F, R_PAUSE_RX, R_PAUSE_TX, R_RX_CSUM]
 COUNTERS64 = [R_TX_FRAMES, R_TX_BYTES, R_RX_FRAMES, R_RX_BYTES]
 
 
@@ -530,6 +562,7 @@ async def sys_csr(dut):
     caps = await tb.read(R_CAPS)
     assert caps >> 16 == 9018 and caps & (1 << 9) and caps & 1, f"CAPS {caps:08x}"
     assert (caps >> 4) & 0x1F == 14, "RX FIFO size field"
+    assert (caps >> 1) & 3 == (3 if CSUM else 0), f"CAPS csum bits {caps:08x}"
     assert await tb.read(R_CTRL) == 0
     await tb.write(R_SCRATCH, 0xA5A5_5A5A)
     assert await tb.read(R_SCRATCH) == 0xA5A5_5A5A
@@ -1272,4 +1305,120 @@ async def sys_pause_cfg_edges(dut):
     assert got == want, [g.hex()[-8:] for g in got]
     assert not (await tb.read(R_PAUSE_CTRL)) & P_PEND
     assert await tb.read(R_PAUSE_TX) == 2
+    tb.stop()
+
+
+# ---------------------------------------------------------------------------
+# Checksum offload (eth_mac_sys_10g_csum)
+# ---------------------------------------------------------------------------
+def tx_wire(p: Packet, en: bool) -> bytes:
+    """The frame as sent (no FCS) by the inserter, enabled or not."""
+    f = bytearray(p.frame())
+    if en:
+        e = p.expect(scan=True)
+        if e.done:
+            if e.ip4:
+                f[e.ip_csum_pos:e.ip_csum_pos + 2] = e.ip_csum.to_bytes(2, "big")
+            if e.l4_ok:
+                c = 0xFFFF if (e.l4_udp and e.l4_csum == 0) else e.l4_csum
+                f[e.l4_csum_pos:e.l4_csum_pos + 2] = c.to_bytes(2, "big")
+    return pad60(bytes(f))
+
+
+def rx_bad(p: Packet, wire: bytes) -> bool:
+    """The RX checker's verdict on the received frame."""
+    e = p.expect(wire, scan=True)
+    return (e.ip4 and not e.ip_good) or (e.l4_ok and not e.l4_good)
+
+
+@cocotb.test()
+async def sys_csum_random(dut):
+    """Random packets: inserter on with the checker dropping bad frames,
+    inserter off with the checker flagging them (passthrough), both off,
+    and the inserter alone."""
+    if not (is_sys(dut) and CSUM):
+        return
+    tb = SysBench(dut, seed=40)
+    await tb.start()
+    rng = tb.rng
+    for ctrl, n in ((C_TX | C_RX | C_TXCS | C_RXCS, 250),
+                    (C_TX | C_RX | C_RXCS | C_PASS, 250),
+                    (C_TX | C_RX, 80),
+                    (C_TX | C_RX | C_TXCS, 80)):
+        en = bool(ctrl & C_TXCS)
+        await tb.setup(ctrl)
+        await tb.clear_counters()
+        tb.got.clear()
+        pk = [random_packet(rng, max_l4=rng.choice([60, 300, 1400])) for _ in range(n)]
+        wires = [tx_wire(p, en) for p in pk]
+        bad = [bool(ctrl & C_RXCS) and rx_bad(p, w) for p, w in zip(pk, wires)]
+        await tb.send([p.frame() for p in pk], gap_p=0.05)
+        if ctrl & C_PASS:
+            want = list(zip(wires, [int(b) for b in bad]))
+        else:
+            want = [(w, 0) for w, b in zip(wires, bad) if not b]
+        await tb.wait_frames(len(want))
+        got = [(g[0], g[1]) for g in tb.got]
+        for k, (g, w) in enumerate(zip(got, want)):
+            assert g == w, (f"ctrl {ctrl:03x} frame {k}: got tuser {g[1]} want {w[1]}, "
+                            + ("same" if g[0] == w[0] else "different") + " bytes")
+        assert len(got) == len(want), f"ctrl {ctrl:03x}: {len(got)} of {len(want)} frames"
+        c = await tb.counters()
+        nb = sum(bad)
+        dut._log.info("ctrl %03x: %d frames, %d checksum errors", ctrl, n, nb)
+        assert c[R_RX_CSUM] == nb, f"RX_ERR_CSUM {c[R_RX_CSUM]} want {nb}"
+        assert c[R_RX_DISC] == (0 if ctrl & C_PASS else nb)
+        assert c[R_RX_FRAMES] == n and c[R_TX_FRAMES] == n
+        if en:
+            # after the inserter only a datagram not whole in its frame can
+            # fail (its header checksum is left as it came)
+            for p, b in zip(pk, bad):
+                assert not b or not p.expect(scan=True).done, \
+                    f"inserted checksums failed the check ({p})"
+    tb.stop()
+
+
+@cocotb.test()
+async def sys_csum_line_rate(dut):
+    """500 back-to-back 60-byte UDP frames with the inserter and the checker
+    on: all delivered with correct checksums, at line rate."""
+    if not (is_sys(dut) and CSUM):
+        return
+    tb = SysBench(dut, seed=41)
+    await tb.start()
+    await tb.setup(C_TX | C_RX | C_TXCS | C_RXCS)
+    pk = [Packet(family=4, proto=UDP, l4_len=26, bad_ip=True, bad_l4=True,
+                 seed=i).build() for i in range(500)]
+    await tb.send([p.frame() for p in pk])
+    await tb.wait_frames(500)
+    assert [g[0] for g in tb.got] == [tx_wire(p, True) for p in pk]
+    assert all(g[1] == 0 for g in tb.got)
+    t = [g[2] for g in tb.got]
+    per = (t[450] - t[50]) / 400
+    want = 84 / 8 * 33 / 32 * GT_NS
+    dut._log.info("%.2f ns per frame, line rate %.2f ns", per, want)
+    assert abs(per / want - 1) < 0.005, f"{per:.2f} ns per frame, want {want:.2f}"
+    c = await tb.counters()
+    assert c[R_RX_CSUM] == 0 and c[R_RX_DISC] == 0 and c[R_TX_DROP] == 0
+    tb.stop()
+
+
+@cocotb.test()
+async def sys_csum_with_fcs_error(dut):
+    """A frame with a bad FCS and a wrong checksum counts as an FCS error
+    only; the same frame with a good FCS as a checksum error."""
+    if not (is_sys(dut) and CSUM):
+        return
+    tb = SysBench(dut, seed=42)
+    await tb.start()
+    await tb.setup(C_TX | C_RX | C_RXCS | C_PASS)
+    p = Packet(family=4, proto=TCP, l4_len=100, bad_l4=True, vlan=TPID_8021Q,
+               seed=3).build()
+    good = Packet(family=4, proto=UDP, l4_len=40, seed=4).build()
+    await tb.send([(p.frame(), 1), p.frame(), good.frame()])
+    await tb.wait_frames(3)
+    assert [(g[0], g[1]) for g in tb.got] == [(p.frame(), 1), (p.frame(), 1),
+                                             (good.frame(), 0)]
+    c = await tb.counters()
+    assert c[R_RX_FCS] == 1 and c[R_RX_CSUM] == 1, (c[R_RX_FCS], c[R_RX_CSUM])
     tb.stop()

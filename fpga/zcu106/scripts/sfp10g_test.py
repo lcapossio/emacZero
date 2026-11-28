@@ -12,6 +12,7 @@ resets act on (default 0).
     python fpga/zcu106/scripts/sfp10g_test.py loop --loopback pma --seconds 10
     python fpga/zcu106/scripts/sfp10g_test.py mac --loopback pma --len 60 --seconds 10
     python fpga/zcu106/scripts/sfp10g_test.py --sfp 1 mac --loopback pma --len 1514
+    python fpga/zcu106/scripts/sfp10g_test.py mac --csum --sweep --len 1514
     python fpga/zcu106/scripts/sfp10g_test.py dual --len 60 --seconds 10
     python fpga/zcu106/scripts/sfp10g_test.py dual --sweep --len 1514 --len1 9000
     python fpga/zcu106/scripts/sfp10g_test.py dual --udp --len 9014 --seconds 10
@@ -37,6 +38,14 @@ mac      the same through the 10G MAC system eth_mac_sys_10g (MAC mode):
          exactly one bad frame (sent with a good FCS, caught by the payload
          compare). Above 9014 bytes every frame must be counted oversize and
          dropped by the MAC; --sweep and --inject need --len <= 9014.
+         --csum (implies --udp, --len <= 9014) tests the MAC's checksum
+         offload: the generator sends junk IPv4 and UDP checksums and the
+         checker requires a correct UDP checksum (it sums each datagram
+         itself). First for --seconds with the MAC's inserter and checker on
+         (CTRL[7], CTRL[9]): every frame must arrive good, none failing the
+         MAC's check (RX_ERR_CSUM 0). Then for 1 s with the checker alone:
+         every frame must fail it and be dropped (RX_ERR_CSUM = RX_DISCARD =
+         frames sent, none at the checker). CTRL is restored after.
 dual     MAC mode on both ports at once over a fibre from SFP0 to SFP1 (no
          loopback): each port sends --len byte frames (port 1 --len1 if
          given; --sweep makes both sweep 60..their length) and checks every
@@ -157,6 +166,7 @@ LOOPBACK = {"none": 0, "pcs": 1, "pma": 2}
 B_TXPOL, B_RXPOL, B_LPM, B_TXRST, B_RXRST = 3, 4, 5, 6, 7
 B_GEN, B_INJ, B_CLEAR, B_GTRST, B_LASER_OFF = 8, 9, 10, 11, 12
 B_MAC, B_SWEEP, B_UDP = 13, 14, 15
+B_CSUM = 53             # checksum test mode (with B_UDP)
 B_CSR_GO, B_CSR_WRITE, B_SERVICE, B_TX_INHIBIT = 120, 121, 122, 123
 
 # eth_mac_sys_10g CSRs (rtl/eth_mac_sys_10g.v)
@@ -170,8 +180,10 @@ MAC_COUNTERS = [  # (name, address, 64-bit)
     ("TX_UNDERRUN", 0xF0, False), ("TX_DROP", 0xF4, False),
     ("TX_ERR", 0xF8, False), ("LOCK_LOSS", 0xFC, False),
     ("LOCAL_FAULTS", 0xA8, False), ("REMOTE_FAULTS", 0xAC, False),
+    ("RX_ERR_CSUM", 0x80, False),
 ]
-R_STATUS, R_IP_ADDR = 0x08, 0x40
+R_CTRL, R_STATUS, R_IP_ADDR = 0x04, 0x08, 0x40
+C_TX_CSUM, C_RX_CSUM = 0x80, 0x200     # CTRL[7], CTRL[9]
 R_PAUSE_CTRL, R_PAUSE_Q, R_PAUSE_RX, R_PAUSE_TX = 0x84, 0x88, 0x8C, 0x90
 R_XOFF, R_XON, R_REFRESH = 0x9C, 0xA0, 0xA4
 P_RX_EN, P_AUTO, P_CFG_ERR = 2, 4, 0x10
@@ -469,11 +481,16 @@ def cmd_mac(b, args):
         # is flagged anyway: neither can be checked
         raise SystemExit("--sweep and --inject need --len <= 9014 "
                          "(the RX MAC's jumbo limit)")
+    if args.csum:
+        if args.len > 9014:
+            raise SystemExit("--csum needs --len <= 9014")
+        args.udp = True
     b.set_bit(B_GEN, False)
     time.sleep(0.01)
     b.set_bit(B_MAC, True)
     b.set_bit(B_SWEEP, args.sweep)
     b.set_bit(B_UDP, args.udp)
+    b.set_bit(B_CSUM, args.csum)
     b.set_field(0, 3, LOOPBACK[args.loopback])
     b.set_bit(B_LPM, args.lpm)
     b.set_field(64, 16, args.len)
@@ -485,6 +502,11 @@ def cmd_mac(b, args):
         print("FAIL: no block lock")
         return 1
     time.sleep(0.01)
+    if args.csum:
+        ctrl0 = b.csr(R_CTRL)
+        b.csr(R_CTRL, ctrl0 | C_TX_CSUM | C_RX_CSUM)
+        print("  checksum test: CTRL 0x%03x, inserter and checker on"
+              % (ctrl0 | C_TX_CSUM | C_RX_CSUM))
     b.pulse(B_CLEAR)
     b.mac_clear()
     secs, sent = run_gen(b, args.seconds, "mac_gen_frames", args.inject)
@@ -518,7 +540,26 @@ def cmd_mac(b, args):
           and c["RX_ERR_FCS"] == 0 and c["RX_DROP"] == 0
           and c["RX_FRAMES"] == delivered
           and c["RX_ERR_OVERSIZE"] == (sent if over else 0)
+          and c["RX_ERR_CSUM"] == 0
           and f["lock_losses"] == 0 and f["block_lock"])
+    if args.csum:
+        # the checker alone: every junk checksum fails it, every frame dropped
+        b.csr(R_CTRL, ctrl0 | C_RX_CSUM)
+        b.pulse(B_CLEAR)
+        b.mac_clear()
+        _, sent2 = run_gen(b, 1.0, "mac_gen_frames")
+        sent2 = sent2[b.sfp]
+        f2 = b.read()
+        c2 = b.mac_counters()
+        b.csr(R_CTRL, ctrl0)
+        b.set_bit(B_CSUM, False)
+        print("  checker alone (CTRL 0x%03x): sent %d, RX_ERR_CSUM %d, RX_DISCARD %d, "
+              "checker good %d bad %d" % (ctrl0 | C_RX_CSUM, sent2, c2["RX_ERR_CSUM"],
+                                          c2["RX_DISCARD"], f2["mac_good"], f2["mac_bad"]))
+        ok = (ok and sent2 > 0
+              and c2["RX_FRAMES"] == sent2 and c2["RX_ERR_CSUM"] == sent2 & M32
+              and c2["RX_DISCARD"] == sent2 & M32 and c2["RX_ERR_FCS"] == 0
+              and f2["mac_good"] == 0 and f2["mac_bad"] == 0)
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -533,6 +574,7 @@ def cmd_dual(b, args):
     b.set_bit(B_MAC, True, both)
     b.set_bit(B_SWEEP, args.sweep, both)
     b.set_bit(B_UDP, args.udp, both)
+    b.set_bit(B_CSUM, False, both)
     b.set_field(0, 3, LOOPBACK["none"], both)
     b.set_bit(B_LPM, args.lpm, both)
     b.set_field(24, 8, args.ipg, both)
@@ -860,6 +902,8 @@ def main():
     mp.add_argument("--lpm", action="store_true", help="LPM receiver instead of DFE")
     mp.add_argument("--inject", action="store_true")
     mp.add_argument("--udp", action="store_true", help="IPv4 / UDP datagrams")
+    mp.add_argument("--csum", action="store_true",
+                    help="checksum offload test (IPv4 / UDP, junk checksums)")
     dp = sub.add_parser("dual")
     dp.add_argument("--seconds", type=float, default=5.0)
     dp.add_argument("--len", type=int, default=60)

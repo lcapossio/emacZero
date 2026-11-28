@@ -259,6 +259,8 @@ LINT_SOURCES = [
     "rtl/eth_pause_10g.v",
     "rtl/axis_async_frame_fifo.v",
     "rtl/cdc_event_count.v",
+    "rtl/csum_calc64.v",
+    "rtl/tx_csum_off64.v",
     "rtl/eth_mac_sys_10g.v",
     "fpga/zcu106/rtl/gt10g_reset.v",
     "fpga/zcu106/rtl/xgmii_test_gen.v",
@@ -293,9 +295,12 @@ VERILATOR_LINT_ARGS = [
     "-f", "rtl/eth_mac_sys.f",
 ]
 
-# Further Verilator lint runs with the same flags: (top module, filelist)
+# Further Verilator lint runs with the same flags: (top module, filelist,
+# extra arguments such as -G parameter overrides)
 VERILATOR_LINT_EXTRA_TOPS = [
     ("eth_mac_sys_10g", "rtl/eth_mac_sys_10g.f"),
+    ("eth_mac_sys_10g", "rtl/eth_mac_sys_10g.f",
+     "-GTX_CSUM_OFFLOAD=1", "-GRX_CSUM_OFFLOAD=1"),
     ("pcs10gbr", "rtl/eth_mac_sys_10g.f"),
 ]
 
@@ -303,11 +308,11 @@ VERILATOR_LINT_EXTRA_TOPS = [
 def _verilator_lint_cmds():
     """The 1G top's lint command, then one per VERILATOR_LINT_EXTRA_TOPS."""
     cmds = [" ".join([VERILATOR_BIN, *VERILATOR_LINT_ARGS])]
-    for top, flist in VERILATOR_LINT_EXTRA_TOPS:
+    for top, flist, *extra in VERILATOR_LINT_EXTRA_TOPS:
         args = list(VERILATOR_LINT_ARGS)
         args[args.index("--top-module") + 1] = top
         args[args.index("-f") + 1] = flist
-        cmds.append(" ".join([VERILATOR_BIN, *args]))
+        cmds.append(" ".join([VERILATOR_BIN, *args, *extra]))
     return cmds
 
 
